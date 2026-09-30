@@ -28,6 +28,7 @@ export function processQueue(st, p, R) {
       schedule(st, { ...e, t: st.t + e.every * (0.8 + 0.4 * st.rng()) });
     } else if (e.type === 'ingress') startIngress(st, p, R, e);
     else if (e.type === 'fail') setFail(st, p, e.on);
+    else if (e.type === 'endDist') endDisturbance(st);
   }
 }
 

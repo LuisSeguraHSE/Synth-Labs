@@ -33,6 +33,8 @@ export const DEFAULTS = {
   L: 12, W: 8, H: 6, insulation: 'medio', U: 0.25, tExt: 30, rhExt: 65,
   // Control
   sp: 2, alarmOffset: 3, hyst: 1, control: 'onoff', pidPreset: 'normal', Kp: 1.4, Ki: 0.3, Kd: 0.05,
+  ctrlMode: 'auto', uMan: 60, spRamp: 0, minOn: 120, minOff: 180, uMin: 25, // manual/auto, rampa de SP [°C/min, 0 = escalón], anti-ciclo [s], carga mínima [%]
+  condApproach: 10, condDirty: false,                                       // T cond = T ext + aproximación (+8 K si el condensador está sucio)
   // Sistema frigorífico equivalente
   refrigOn: true, capNom: 30, capAvail: 100, eta: 0.55, UAcoil: 5.8, evapFail: false,
   fan: 70, fanFlow: 9, fanPow: 1.8,

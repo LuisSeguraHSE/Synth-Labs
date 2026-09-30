@@ -185,3 +185,14 @@ fieldset { border: 1px solid var(--line); border-radius: 8px; } legend { color: 
 
 /* Modos de visualización: Operación < Ingeniería < Simulación */
 body.mode-op [data-level=eng], body.mode-op [data-level=sim], body.mode-eng [data-level=sim] { display: none !important; }
+
+/* Faceplate del controlador y variables físicas */
+.fp { display: grid; grid-template-columns: 1fr; gap: 8px; justify-items: center; } .fp .kv { width: 100%; }
+.fp canvas { width: 150px; height: 150px; display: block; background: var(--panel2); border: 1px solid var(--line); border-radius: 6px; }
+.fp .kv { font-size: 11.5px; }
+.faceplate h3 .right.man { color: var(--warn); }
+.btn2 { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin: 8px 0; } .btn2 button { font-size: 12px; padding: 6px 6px; }
+.btn2 button.on { background: linear-gradient(180deg, #5a1d1d, #331010); border-color: var(--crit); color: #ffe1e1; }
+.ptbl { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 8px; }
+.ptbl td { padding: 3px 0; border-bottom: 1px solid var(--line); } .ptbl td:nth-child(2) { text-align: right; font-variant-numeric: tabular-nums; font-weight: 600; white-space: nowrap; }
+.ptbl td small { color: var(--mut); font-weight: 400; } .ptbl tr.h td { color: var(--mut); font-size: 10.5px; text-transform: uppercase; letter-spacing: .08em; padding-top: 8px; }

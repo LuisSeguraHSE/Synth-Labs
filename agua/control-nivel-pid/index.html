@@ -6,72 +6,166 @@
 <script src="../../shared/sim.js"></script>
 <script src="../../shared/gfx.js"></script>
 <script>
-// Tanque (integrador): dh/dt = (u·Qmax − demanda)/A. PID con anti-windup. Unidad: segundos.
-const A = 2, HMAX = 4, QMAX = 50; // m², m, L/s
+// Tanque (integrador): A·dh/dt = Qin − Qout. Bomba con curva H–Q y variador (u → n/n0, leyes de afinidad).
+// Salida por válvula: Qout = Cv·apertura·√(h) con demanda base + escalón cada 120 s. PID con anti-windup. Unidad: s.
+const A = 2, HMAX = 4, QMAX = 50, H0 = 28, RHO = 1000, G = 9.81, HSTAT = 6; // m², m, L/s, m, kg/m³, m/s², m (estática)
+const pumpQ = (u, h) => { // punto de operación: H_bomba(Q,u) = H0·u² − k·Q² = HSTAT + h  ⇒ Q
+  const need = HSTAT + h - H0 * u * u; if (need >= 0) return 0;
+  return Math.min(QMAX * 1.1, Math.sqrt(-need / (H0 / (QMAX * QMAX) * 0.8)));
+};
 SL.app({
   title: 'Agua · Control de nivel PID',
-  desc: 'Sintoniza Kp/Ki/Kd. La demanda cambia en escalón cada 120 s: observa sobreimpulso, error y esfuerzo de la bomba.',
+  desc: 'Sintoniza Kp/Ki/Kd, cambia a manual, dispara fugas o fallas de bomba y observa P, I, D, saturación y energía. Clic en los equipos para inspeccionar.',
   unit: 's', dt: 0.1, sample: 1,
   params: [
+    { sec: 'Control (LIC-101)', id: 'mode', label: 'Modo', opts: ['Automático (PID)', 'Manual'], value: 0, reset: false },
     { id: 'sp', label: 'Setpoint de nivel', min: 0.5, max: 3.5, step: 0.1, value: 2, unit: 'm' },
-    { id: 'kp', label: 'Kp', min: 0, max: 6, step: 0.1, value: 1.5 },
-    { id: 'ki', label: 'Ki', min: 0, max: 0.5, step: 0.01, value: 0.05 },
-    { id: 'kd', label: 'Kd', min: 0, max: 10, step: 0.5, value: 0 },
-    { id: 'dem', label: 'Demanda base', min: 0, max: 40, step: 1, value: 20, unit: 'L/s' },
+    { id: 'kp', label: 'Kp', min: 0, max: 6, step: 0.1, value: 1.5, unit: '1/m' },
+    { id: 'ki', label: 'Ki', min: 0, max: 0.5, step: 0.01, value: 0.05, unit: '1/(m·s)' },
+    { id: 'kd', label: 'Kd', min: 0, max: 10, step: 0.5, value: 0, unit: 's/m' },
+    { id: 'man', label: 'Salida manual', min: 0, max: 100, step: 1, value: 50, unit: '%' },
+    { id: 'tf', label: 'Filtro del transmisor (τ)', min: 0, max: 10, step: 0.5, value: 1, unit: 's' },
+    { sec: 'Proceso', id: 'dem', label: 'Demanda base', min: 0, max: 40, step: 1, value: 20, unit: 'L/s' },
     { id: 'step', label: 'Escalón de demanda', min: 0, max: 20, step: 1, value: 10, unit: 'L/s' },
+    { id: 'eta', label: 'Eficiencia bomba+motor', min: 0.3, max: 0.85, step: 0.01, value: 0.62 },
   ],
-  init(p) { return { h: 1, i: 0, e0: p.sp - 1, u: 0, iae: 0, maxh: 1, q: p.dem }; },
+  init(p) { return { h: 1, pv: 1, i: 0, e0: p.sp - 1, u: 0, raw: 0, P: 0, I: 0, D: 0, iae: 0, ise: 0, maxh: 1, q: p.dem, qin: 0, leak: 0, trip: false, sat: false, kwh: 0, pel: 0, head: 0, starts: 0, run0: false }; },
   step(s, dt, p, r) {
     s.q = p.dem + (Math.floor((s.t || 0) / 120) % 2 ? p.step : 0);
-    const e = p.sp - s.h, d = (e - s.e0) / dt;
-    const raw = p.kp * e + p.ki * s.i + p.kd * d;
-    s.u = SL.clamp(raw, 0, 1);
-    if (raw === s.u) s.i += e * dt; // anti-windup por condicionamiento
+    // Transmisor con ruido + filtro de primer orden
+    const meas = s.h + (r() - 0.5) * 0.01;
+    s.pv += p.tf > 0 ? (meas - s.pv) * Math.min(1, dt / p.tf) : meas - s.pv;
+    const e = p.sp - s.pv, d = (e - s.e0) / dt;
+    s.P = p.kp * e; s.I = p.ki * s.i; s.D = p.kd * d;
+    s.raw = s.P + s.I + s.D;
+    if (p.mode === 1) { s.u = p.man / 100; s.i = p.ki > 0 ? (s.u - s.P) / p.ki : s.i; s.sat = false; } // bumpless: la integral sigue a la salida manual
+    else { s.u = SL.clamp(s.raw, 0, 1); s.sat = s.raw !== s.u; if (!s.sat) s.i += e * dt; }
     s.e0 = e;
-    s.h = SL.clamp(s.h + ((s.u * QMAX - s.q) / 1000 / A) * dt, 0, HMAX);
-    s.iae += Math.abs(e) * dt; s.maxh = Math.max(s.maxh, s.h);
+    const u = s.trip ? 0 : s.u, run = u > 0.02;
+    if (run && !s.run0) s.starts++; s.run0 = run;
+    s.qin = pumpQ(u, s.h);                               // L/s
+    s.head = HSTAT + s.h;                                 // m (altura total contra la que bombea)
+    const qout = s.h > 0.01 ? s.q + s.leak : 0;
+    s.h = SL.clamp(s.h + ((s.qin - qout) / 1000 / A) * dt, 0, HMAX);
+    s.dhdt = (s.qin - qout) / 1000 / A;
+    s.phyd = (RHO * G * (s.qin / 1000) * s.head) / 1000; // kW hidráulicos
+    s.pel = run ? s.phyd / p.eta + 0.4 : 0;               // kW eléctricos (+ pérdidas en vacío)
+    s.kwh += (s.pel * dt) / 3600;
+    s.iae += Math.abs(e) * dt; s.ise += e * e * dt; s.maxh = Math.max(s.maxh, s.h);
   },
   draw(g, s, p, W, H) {
-    const x = 330, y = 64, w = 160, h = 290, py = (v) => y + h - (v / HMAX) * h, u = s.u || 0, t = s.t || 0;
-    // Reservorio, bomba y línea de impulsión
+    const x = 330, y = 64, w = 160, h = 290, py = (v) => y + h - (v / HMAX) * h, u = s.trip ? 0 : s.u || 0, t = s.t || 0;
     g.fillStyle = SL.vgrad(g, 392, 40, '#1f5f8f', '#123a58'); g.fillRect(30, 392, 180, 38); g.fillStyle = 'rgba(191,230,255,.25)'; g.fillRect(30, 392, 180, 3);
     SL.text(g, 'Reservorio', 120, 446, '#8b9bb0', '11px system-ui', 'center');
     SL.pipe(g, [[96, 400], [96, 344]], 8);
     SL.pipe(g, [[122, 318], [122, 36], [410, 36], [410, y - 8]], 9);
-    SL.flow(g, 122, 300, 122, 50, Math.round(u * 5), '#9fe3ff'); SL.flow(g, 132, 36, 400, 36, Math.round(u * 5), '#9fe3ff');
-    SL.pump(g, 110, 336, 24, u > 0.02, t * u * 10);
-    SL.tag(g, `P-101 · ${(100 * u).toFixed(0)} %`, 150, 292, u > 0.02 ? SL.STATE.run : SL.STATE.idle);
-    // Tanque con nivel, setpoint y PV
-    SL.tank(g, x, y, w, h, s.h / HMAX, { max: HMAX, ticks: 8 });
+    const nf = Math.round((s.qin / QMAX) * 5);
+    SL.flow(g, 122, 300, 122, 50, nf, '#9fe3ff'); SL.flow(g, 132, 36, 400, 36, nf, '#9fe3ff');
+    SL.pump(g, 110, 336, 24, u > 0.02, t * u * 10); SL.hot('pump', 80, 306, 60, 60);
+    SL.tag(g, s.trip ? 'P-101 · TRIP' : `P-101 · ${(100 * u).toFixed(0)} %`, 150, 292, s.trip ? SL.STATE.down : u > 0.02 ? SL.STATE.run : SL.STATE.idle);
+    SL.tag(g, `FT ${s.qin.toFixed(1)} L/s`, 250, 36, '#9fe3ff'); SL.hot('ft', 205, 26, 90, 20);
+    SL.tank(g, x, y, w, h, s.h / HMAX, { max: HMAX, ticks: 8 }); SL.hot('tank', x, y, w, h);
     g.strokeStyle = '#f5b942'; g.setLineDash([8, 5]); g.lineWidth = 1.5; g.beginPath(); g.moveTo(x - 16, py(p.sp)); g.lineTo(x + w + 16, py(p.sp)); g.stroke(); g.setLineDash([]);
     SL.tag(g, `SP ${p.sp.toFixed(1)} m`, x + w + 52, py(p.sp), '#f5b942');
-    SL.tag(g, `PV ${s.h.toFixed(2)} m`, x + w / 2, Math.max(y + 16, py(s.h) - 14), '#9fe3ff');
-    // Descarga con válvula y demanda
+    SL.tag(g, `PV ${s.pv.toFixed(2)} m`, x + w / 2, Math.max(y + 16, py(s.h) - 14), '#9fe3ff');
+    SL.tag(g, `dh/dt ${(s.dhdt * 1000 || 0).toFixed(1)} mm/s`, x + w / 2, y + h + 14, Math.abs(s.dhdt) < 2e-4 ? SL.STATE.idle : SL.STATE.info);
     const oy = y + h - 16;
     SL.pipe(g, [[x + w, oy], [770, oy]], 9);
     SL.flow(g, x + w + 12, oy, 760, oy, Math.round(s.q / 8), '#9fe3ff');
     const vx = 650; g.fillStyle = '#c3ccd6'; g.beginPath(); g.moveTo(vx - 10, oy - 8); g.lineTo(vx + 10, oy + 8); g.lineTo(vx + 10, oy - 8); g.lineTo(vx - 10, oy + 8); g.closePath(); g.fill();
     g.fillStyle = '#5b6b80'; g.fillRect(vx - 1.5, oy - 22, 3, 14); g.fillRect(vx - 9, oy - 25, 18, 3);
+    SL.hot('valve', vx - 14, oy - 28, 28, 40);
     SL.tag(g, `Demanda ${s.q.toFixed(0)} L/s`, 700, oy + 26, SL.STATE.down);
-    // Instrumentación ISA: transmisor de nivel y controlador
+    if (s.leak > 0) { // fuga: goteo bajo el tanque
+      for (let k = 0; k < 6; k++) { const yy = y + h + 4 + ((t * 60 + k * 9) % 50); g.fillStyle = 'rgba(159,227,255,.7)'; g.beginPath(); g.arc(x + w - 30 + (k % 2) * 6, yy, 2, 0, 7); g.fill(); }
+      SL.tag(g, `Fuga ${s.leak.toFixed(0)} L/s`, x + w - 20, y + h + 42, SL.STATE.down);
+    }
     const bubble = (bx, by, a, b) => { g.fillStyle = '#0b1117'; g.beginPath(); g.arc(bx, by, 18, 0, 7); g.fill(); g.strokeStyle = '#9fe3ff'; g.lineWidth = 1.5; g.stroke(); g.beginPath(); g.moveTo(bx - 18, by); g.lineTo(bx + 18, by); g.stroke(); SL.text(g, a, bx, by - 4, '#e6edf3', '600 10px system-ui', 'center'); SL.text(g, b, bx, by + 12, '#e6edf3', '10px system-ui', 'center'); };
     g.setLineDash([4, 4]); g.strokeStyle = 'rgba(159,227,255,.55)'; g.lineWidth = 1.2;
     g.beginPath(); g.moveTo(x + w, y + 230); g.lineTo(540, y + 230); g.lineTo(600, 130); g.stroke();
     g.beginPath(); g.moveTo(600, 112); g.lineTo(600, 16); g.lineTo(180, 16); g.lineTo(180, 318); g.stroke();
     g.setLineDash([]);
     bubble(540, y + 230, 'LT', '101'); bubble(600, 130, 'LIC', '101');
-    SL.tag(g, `u = ${(100 * u).toFixed(0)} %`, 660, 130, SL.STATE.info);
+    SL.hot('lt', 520, y + 210, 40, 40); SL.hot('lic', 580, 110, 40, 40);
+    SL.tag(g, `${p.mode ? 'MAN' : 'AUTO'} · u = ${(100 * s.u).toFixed(0)} %${s.sat ? ' · SAT' : ''}`, 690, 130, p.mode ? SL.STATE.warn : s.sat ? SL.STATE.block : SL.STATE.info);
+    // Barras P / I / D del controlador (contribución a u)
+    const bars = [['P', s.P, '#4fc3f7'], ['I', s.I, '#3ecf8e'], ['D', s.D, '#ba68c8']];
+    bars.forEach(([n, v, col], k) => {
+      const bx = 640 + k * 34, by0 = 200, hh = SL.clamp(v, -1, 1) * 50;
+      g.fillStyle = '#0a1016'; g.fillRect(bx, by0 - 50, 22, 100); g.strokeStyle = '#2e3e52'; g.strokeRect(bx + 0.5, by0 - 49.5, 21, 99);
+      g.fillStyle = col; g.fillRect(bx + 2, hh > 0 ? by0 - hh : by0, 18, Math.abs(hh));
+      g.strokeStyle = '#8b9bb0'; g.beginPath(); g.moveTo(bx, by0); g.lineTo(bx + 22, by0); g.stroke();
+      SL.text(g, n, bx + 11, by0 + 64, col, '600 11px system-ui', 'center');
+    });
+    SL.hot('lic', 636, 146, 104, 124);
+  },
+  vars(s, p) {
+    const e = p.sp - s.pv;
+    return {
+      fis: [
+        ['Nivel real h', s.h.toFixed(3), 'm', s.h / HMAX, '#9fe3ff'],
+        ['Volumen', (s.h * A).toFixed(2), 'm³', s.h / HMAX],
+        ['Caudal entrada Qin', s.qin.toFixed(1), 'L/s', s.qin / QMAX],
+        ['Caudal salida Qout', (s.q + s.leak).toFixed(1), 'L/s', (s.q + s.leak) / QMAX],
+        ['dh/dt', (s.dhdt * 1000).toFixed(2), 'mm/s'],
+        ['Altura total bomba', s.head.toFixed(2), 'm'],
+        ['Potencia hidráulica', (s.phyd || 0).toFixed(2), 'kW'],
+        ['Potencia eléctrica', s.pel.toFixed(2), 'kW', s.pel / 25, '#c98500'],
+        ['Energía', s.kwh.toFixed(3), 'kWh'],
+        ['kWh/m³ bombeado', s.qin > 0.5 ? ((s.pel / (s.qin * 3.6))).toFixed(3) : '—', ''],
+      ],
+      ctl: [
+        ['Modo', p.mode ? 'MANUAL' : 'AUTO', '', null, p.mode ? '#f5b942' : '#3ecf8e'],
+        ['SP', p.sp.toFixed(2), 'm'], ['PV filtrada', s.pv.toFixed(3), 'm'],
+        ['Error e = SP − PV', e.toFixed(3), 'm', Math.abs(e) / 2, Math.abs(e) < 0.05 ? '#3ecf8e' : '#f5b942'],
+        ['Término P = Kp·e', s.P.toFixed(3), ''], ['Término I = Ki·∫e', s.I.toFixed(3), ''], ['Término D = Kd·de/dt', s.D.toFixed(3), ''],
+        ['Salida calculada', (100 * s.raw).toFixed(1), '%'],
+        ['Salida aplicada u (MV)', (100 * s.u).toFixed(1), '%', s.u],
+        ['Anti-windup', s.sat ? 'ACTIVO (satura)' : 'inactivo', '', null, s.sat ? '#f5b942' : undefined],
+        ['Estado integral ∫e', s.i.toFixed(2), 'm·s'],
+        ['IAE / ISE', `${s.iae.toFixed(1)} / ${s.ise.toFixed(2)}`, ''],
+        ['Arranques de bomba', s.starts, ''],
+      ],
+    };
+  },
+  actions: [
+    { label: 'Escalón SP +0.5 m', run: (s, p, r, api) => api.set('sp', Math.min(3.5, +(p.sp + 0.5).toFixed(1))) },
+    { label: 'Escalón SP −0.5 m', run: (s, p, r, api) => api.set('sp', Math.max(0.5, +(p.sp - 0.5).toFixed(1))) },
+    { label: 'Fuga 8 L/s', kind: 'warn', on: (s) => s.leak > 0, run: (s) => { s.leak = s.leak ? 0 : 8; SL.log(s, s.leak ? 'Fuga de 8 L/s en el tanque' : 'Fuga reparada', s.leak ? 'warn' : 'ok'); } },
+    { label: 'Trip de bomba', kind: 'crit', on: (s) => s.trip, run: (s) => { s.trip = !s.trip; SL.log(s, s.trip ? 'P-101 disparó (trip térmico)' : 'P-101 rearmada', s.trip ? 'crit' : 'ok'); } },
+    { label: 'Auto ⇄ Manual', on: (s, p) => p.mode === 1, run: (s, p, r, api) => { api.set('mode', p.mode ? 0 : 1); if (p.mode) api.set('man', Math.round(100 * s.u)); SL.log(s, p.mode ? 'LIC-101 a MANUAL (sin salto)' : 'LIC-101 a AUTO', 'info'); } },
+    { label: 'Reset integral', run: (s) => { s.i = 0; } },
+  ],
+  inspect(s, p, id) {
+    const u = s.trip ? 0 : s.u;
+    if (id === 'pump') return { title: 'P-101 · Bomba centrífuga con VFD', sub: 'Curva H = H0·(n/n0)² − k·Q²; cruza con la curva del sistema (estática + nivel).',
+      fis: [['Velocidad n/n0', (100 * u).toFixed(0), '%', u], ['Caudal', s.qin.toFixed(1), 'L/s', s.qin / QMAX], ['Altura total', s.head.toFixed(2), 'm'], ['Shut-off H0·u²', (H0 * u * u).toFixed(1), 'm'], ['P hidráulica', (s.phyd || 0).toFixed(2), 'kW'], ['P eléctrica', s.pel.toFixed(2), 'kW'], ['η', (100 * p.eta).toFixed(0), '%']],
+      ctl: [['Estado', s.trip ? 'TRIP' : u > 0.02 ? 'MARCHA' : 'PARADA', '', null, s.trip ? '#ef5350' : u > 0.02 ? '#3ecf8e' : '#8b9bb0'], ['Consigna VFD', (100 * s.u).toFixed(0), '%'], ['Arranques', s.starts, '']],
+      actions: [{ label: s.trip ? 'Rearmar' : 'Forzar trip', run: (s) => { s.trip = !s.trip; } }] };
+    if (id === 'tank') return { title: 'TK-101 · Tanque de regulación', sub: `A = ${A} m² · altura útil ${HMAX} m`,
+      fis: [['Nivel', s.h.toFixed(3), 'm', s.h / HMAX], ['Volumen', (A * s.h).toFixed(2), 'm³'], ['Qin − Qout', (s.qin - s.q - s.leak).toFixed(1), 'L/s'], ['dh/dt', (s.dhdt * 1000).toFixed(2), 'mm/s'], ['Nivel máximo', s.maxh.toFixed(2), 'm'], ['Fuga', s.leak.toFixed(0), 'L/s']],
+      ctl: [['SP', p.sp.toFixed(2), 'm'], ['Tiempo a vaciar', s.dhdt < -1e-4 ? (s.h / -s.dhdt / 60).toFixed(1) + ' min' : '—', '']],
+      actions: [{ label: s.leak ? 'Reparar fuga' : 'Provocar fuga', run: (s) => { s.leak = s.leak ? 0 : 8; } }] };
+    if (id === 'lt') return { title: 'LT-101 · Transmisor de nivel', sub: 'Radar, ruido ±5 mm, filtro de primer orden.',
+      fis: [['Nivel real', s.h.toFixed(3), 'm'], ['Lectura filtrada', s.pv.toFixed(3), 'm'], ['Desfase', ((s.pv - s.h) * 1000).toFixed(1), 'mm']], ctl: [['τ filtro', p.tf, 's']] };
+    if (id === 'lic') return { title: 'LIC-101 · Controlador PID', sub: 'u = Kp·e + Ki·∫e + Kd·de/dt, saturado 0–100 % con anti-windup por integración condicional.',
+      fis: [], ctl: this.vars(s, p).ctl,
+      actions: [{ label: p.mode ? 'Pasar a AUTO' : 'Pasar a MANUAL', run: (s, p, r, api) => { api.set('mode', p.mode ? 0 : 1); if (p.mode) api.set('man', Math.round(100 * s.u)); } }, { label: 'Reset integral', run: (s) => { s.i = 0; } }] };
+    if (id === 'ft') return { title: 'FT-101 · Caudalímetro de impulsión', fis: [['Caudal', s.qin.toFixed(2), 'L/s', s.qin / QMAX], ['Caudal', (s.qin * 3.6).toFixed(1), 'm³/h'], ['Velocidad en DN150', (s.qin / 1000 / (Math.PI * 0.075 ** 2)).toFixed(2), 'm/s']], ctl: [] };
+    if (id === 'valve') return { title: 'Salida a red · demanda', fis: [['Demanda', s.q.toFixed(0), 'L/s'], ['Fuga', s.leak.toFixed(0), 'L/s']], ctl: [['Escalón cada', 120, 's'], ['Tamaño escalón', p.step, 'L/s']],
+      actions: [{ label: 'Demanda +5 L/s', run: (s, p, r, api) => api.set('dem', Math.min(40, p.dem + 5)) }, { label: 'Demanda −5 L/s', run: (s, p, r, api) => api.set('dem', Math.max(0, p.dem - 5)) }] };
   },
   kpis(s, p) {
     return [
-      { label: 'Nivel (PV)', value: s.h.toFixed(2) + ' m' },
-      { label: 'Error actual', value: (p.sp - s.h).toFixed(3) + ' m' },
+      { label: 'Nivel (PV)', value: s.pv.toFixed(2) + ' m' },
+      { label: 'Error actual', value: (p.sp - s.pv).toFixed(3) + ' m' },
       { label: 'Salida bomba', value: (100 * s.u).toFixed(0) + ' %' },
       { label: 'IAE acumulado', value: s.iae.toFixed(1) },
       { label: 'Nivel máximo', value: s.maxh.toFixed(2) + ' m' },
       { label: 'Demanda', value: s.q.toFixed(0) + ' L/s' },
+      { label: 'Energía', value: s.kwh.toFixed(3) + ' kWh' },
     ];
   },
-  series: (s, p) => ({ Nivel: s.h, Setpoint: p.sp, 'Bomba %': 100 * s.u, 'Demanda L/s': s.q }),
+  series: (s, p) => ({ Nivel: s.h, Setpoint: p.sp, 'Bomba %': 100 * s.u, 'Qin L/s': s.qin, 'Qout L/s': s.q + s.leak }),
 });
 </script></body></html>
