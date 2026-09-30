@@ -4,6 +4,7 @@
 <body><div id="app"></div>
 <script src="../../shared/controls.js"></script>
 <script src="../../shared/sim.js"></script>
+<script src="../../shared/gfx.js"></script>
 <script>
 // Ciclo: cola pala → carga → acarreo → cola chancador → descarga → retorno. Unidad de tiempo: minutos.
 const S = { x: 110, y: 330 }, C = { x: 690, y: 120 };
@@ -39,23 +40,28 @@ SL.app({
     s.wq += (s.qS.length + s.qC.length) * dt;
   },
   draw(g, s, p, W, H) {
-    g.lineWidth = 6; g.strokeStyle = '#2a3646'; g.lineCap = 'round';
-    for (const o of [-14, 14]) { g.beginPath(); g.moveTo(S.x + o, S.y + o); g.lineTo(C.x + o, C.y + o); g.stroke(); }
-    g.font = '13px system-ui'; g.textAlign = 'center';
-    g.fillStyle = '#f5b942'; g.fillRect(S.x - 40, S.y - 25, 60, 50); g.fillStyle = '#000'; g.fillText('PALA', S.x - 10, S.y + 4);
-    g.fillStyle = '#ef5350'; g.fillRect(C.x - 20, C.y - 25, 60, 50); g.fillStyle = '#000'; g.fillText('CHANCADOR', C.x + 10, C.y + 4);
+    // Rajo en terrazas (izquierda) y plataforma de planta (derecha)
+    ['#3a2f25', '#342a21', '#2e251d', '#282019'].forEach((c, i) => { g.fillStyle = c; g.fillRect(0, 300 + i * 34, 260 - i * 50, 34); g.fillStyle = 'rgba(255,255,255,.05)'; g.fillRect(0, 300 + i * 34, 260 - i * 50, 2); });
+    g.fillStyle = '#2a3038'; g.fillRect(600, C.y + 44, 200, 10);
+    SL.road(g, [[S.x, S.y], [C.x, C.y]], 54);
+    // Correa del chancador a la pila de acopio
+    g.fillStyle = '#6e5a46'; g.beginPath(); g.moveTo(C.x + 40, C.y + 44); g.quadraticCurveTo(C.x + 72, C.y - 10 - Math.min(30, s.tons / 3000), C.x + 104, C.y + 44); g.fill();
+    SL.belt(g, [[C.x + 26, C.y + 36], [C.x + 70, C.y + 4]], 10);
+    SL.excavator(g, S.x - 44, S.y + 30, { s: 0.9, t: s.t, busy: !!s.shov });
+    SL.crusher(g, C.x + 4, C.y + 44, { s: 0.85, load: s.crus ? 1 : 0.35, state: s.crus ? 'run' : 'idle' });
+    SL.tag(g, `PALA · ${s.shov ? 'cargando' : 'en espera'}`, S.x - 20, S.y - 58, s.shov ? SL.STATE.run : SL.STATE.idle);
+    SL.tag(g, `CHANCADOR · ${s.crus ? 'recibiendo' : 'en espera'}`, C.x - 20, C.y - 44, s.crus ? SL.STATE.run : SL.STATE.idle);
     s.trucks.forEach((t) => {
-      let q;
+      let q, dir = 1;
       if (t.ph === 'haul') q = pt(S, C, 1 - t.rem / t.tot, -14);
-      else if (t.ph === 'ret') q = pt(C, S, 1 - t.rem / t.tot, 14 - 0);
-      else if (t.ph === 'qS') q = { x: S.x + 30 + 20 * (s.qS.indexOf(t) + 1), y: S.y + 40 };
-      else if (t.ph === 'qC') q = { x: C.x - 30 - 20 * (s.qC.indexOf(t) + 1), y: C.y - 40 };
-      else q = t.ph === 'load' ? { x: S.x + 30, y: S.y } : { x: C.x - 30, y: C.y };
-      g.fillStyle = t.ph === 'haul' ? '#f5b942' : t.ph === 'ret' ? '#4fc3f7' : t.ph.startsWith('q') ? '#ef5350' : '#3ecf8e';
-      g.fillRect(q.x - 7, q.y - 5, 14, 10);
+      else if (t.ph === 'ret') { q = pt(C, S, 1 - t.rem / t.tot, 14); dir = -1; }
+      else if (t.ph === 'qS') { q = { x: S.x + 50 + 30 * (s.qS.indexOf(t) + 1), y: S.y + 54 }; dir = -1; }
+      else if (t.ph === 'qC') q = { x: C.x - 56 - 30 * (s.qC.indexOf(t) + 1), y: C.y - 26 };
+      else if (t.ph === 'load') { q = { x: S.x + 34, y: S.y + 10 }; dir = -1; } else q = { x: C.x - 36, y: C.y + 40 };
+      const loaded = t.ph === 'haul' || t.ph === 'qC' || t.ph === 'dump';
+      SL.haulTruck(g, q.x, q.y + 6, { s: 0.72, dir, loaded, state: t.ph.startsWith('q') ? 'block' : t.ph === 'load' || t.ph === 'dump' ? 'info' : 'run' });
     });
-    g.textAlign = 'left'; g.fillStyle = '#8b9bb0';
-    g.fillText('Amarillo: cargado · Azul: vacío · Rojo: en cola · Verde: operando', 12, H - 12);
+    SL.text(g, 'Tolva con material = cargado · LED: verde en ruta · amarillo en cola · azul cargando/descargando', 12, H - 12);
   },
   kpis(s, p) {
     const h = Math.max(s.t || 0, 1) / 60;

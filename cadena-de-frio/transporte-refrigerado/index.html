@@ -4,6 +4,7 @@
 <body><div id="app"></div>
 <script src="../../shared/controls.js"></script>
 <script src="../../shared/sim.js"></script>
+<script src="../../shared/gfx.js"></script>
 <script>
 // Camión refrigerado con reparto multi-parada. Unidad: minutos.
 const PTS = (n) => Array.from({ length: n + 2 }, (_, i) => [60 + (i * 680) / (n + 1), 250 - 90 * Math.sin((i / (n + 1)) * Math.PI) - (i % 2) * 18]);
@@ -43,16 +44,23 @@ SL.app({
   },
   draw(g, s, p, W, H) {
     const pts = PTS(p.n), L = SL.len(pts);
-    SL.belt(g, pts, 6, '#2a3646');
-    pts.forEach((q, i) => { if (i && i <= p.n) { g.fillStyle = s.stop === i ? '#ef5350' : '#4fc3f7'; g.beginPath(); g.arc(q[0], q[1], 8, 0, 7); g.fill(); SL.text(g, 'P' + i, q[0], q[1] - 14, '#8b9bb0', '11px system-ui', 'center'); } });
-    const total = (p.n + 1) * p.drive + p.n * p.dwell, q = SL.along(pts, SL.clamp(s.t / total, 0, 1) * L);
-    g.fillStyle = s.open ? '#ef5350' : '#3ecf8e'; g.fillRect(q.x - 18, q.y - 28, 36, 16);
-    const f = SL.clamp((s.tp - p.sp) / Math.max(p.lim - p.sp, 1), 0, 1.4);
-    g.fillStyle = '#10151c'; g.fillRect(40, 300, 720, 110);
-    SL.text(g, `Aire ${s.ta.toFixed(1)} °C · Producto ${s.tp.toFixed(1)} °C (umbral ${p.lim} °C)`, 60, 330, s.tp > p.lim ? '#ef5350' : '#3ecf8e', '15px system-ui');
-    g.fillStyle = '#243040'; g.fillRect(60, 345, 680, 14); g.fillStyle = SL.color(1 - Math.min(1, f)); g.fillRect(60, 345, 680 * Math.min(1, f / 1.4), 14);
-    SL.text(g, s.done ? 'Ruta completada' : s.open ? `Descargando en P${s.stop}: PUERTA ABIERTA` : 'En ruta: puerta cerrada', 60, 385, s.open ? '#ef5350' : '#8b9bb0', '13px system-ui');
-    if (p.mode === 1) SL.text(g, 'Prefrío + cortina de tiras + alerta por telemetría', 60, 403, '#4fc3f7', '12px system-ui');
+    SL.road(g, pts, 18);
+    SL.building(g, pts[0][0] - 50, pts[0][1] - 66, 76, 52, { load: 0.8 }); SL.text(g, 'CD', pts[0][0] - 12, pts[0][1] - 72, '#8b9bb0', '600 11px system-ui', 'center');
+    pts.forEach((q, i) => { if (i && i <= p.n) { SL.store(g, q[0] - 22, q[1] - 74, 44, 38, 'P' + i); if (s.stop === i) SL.tag(g, 'descargando', q[0], q[1] - 88, SL.STATE.warn); } });
+    const total = (p.n + 1) * p.drive + p.n * p.dwell, d = SL.clamp(s.t / total, 0, 1) * L, q = SL.along(pts, d), q2 = SL.along(pts, Math.min(L, d + 3));
+    const dir = q2.x >= q.x ? 1 : -1;
+    SL.van(g, q.x - 14 * dir, q.y + 8, { s: 0.85, dir, reefer: true, open: s.open, body: '#e8eef5', cab: '#1f6f8b' });
+    if (s.open) SL.led(g, q.x, q.y - 34, 3, SL.STATE.warn);
+    // Registrador de temperatura (data logger)
+    const over = s.tp > p.lim, f = SL.clamp((s.tp - p.sp) / Math.max(p.lim - p.sp, 1), 0, 1.4);
+    SL.rr(g, 30, 296, 740, 124, 8); g.fillStyle = '#0b1117'; g.fill(); g.strokeStyle = '#2e3e52'; g.stroke();
+    SL.text(g, 'REGISTRADOR DE TEMPERATURA', 48, 318, '#8b9bb0', '600 11px system-ui');
+    SL.text(g, `${s.ta.toFixed(1)} °C`, 48, 356, '#9fe3ff', '600 26px ui-monospace, monospace'); SL.text(g, 'aire', 48, 372, '#8b9bb0', '11px system-ui');
+    SL.text(g, `${s.tp.toFixed(1)} °C`, 190, 356, over ? '#ef5350' : '#3ecf8e', '600 26px ui-monospace, monospace'); SL.text(g, `producto (umbral ${p.lim} °C)`, 190, 372, '#8b9bb0', '11px system-ui');
+    SL.gauge(g, 380, 336, 360, 14, Math.min(1, f / 1.4), SL.color(1 - Math.min(1, f)), over ? '⚠ SOBRE UMBRAL' : 'dentro de rango');
+    SL.text(g, s.done ? 'Ruta completada' : s.open ? `Descargando en P${s.stop}: PUERTA ABIERTA` : 'En ruta: puerta cerrada', 380, 376, s.open ? '#f5b942' : '#8b9bb0', '12px system-ui');
+    SL.led(g, 740, 318, 3, over ? SL.STATE.down : SL.STATE.run);
+    if (p.mode === 1) SL.text(g, 'Prefrío + cortina de tiras + alerta por telemetría', 48, 404, '#4fc3f7', '12px system-ui');
   },
   kpis(s, p) {
     return [

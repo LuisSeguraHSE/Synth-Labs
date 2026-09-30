@@ -4,6 +4,7 @@
 <body><div id="app"></div>
 <script src="../../shared/controls.js"></script>
 <script src="../../shared/sim.js"></script>
+<script src="../../shared/gfx.js"></script>
 <script>
 // Recepción y chequeo. Unidad: segundos. Camiones → descarga → conteo/foto/sello → ok / no conforme → slot.
 SL.app({
@@ -41,23 +42,30 @@ SL.app({
     }
   },
   draw(g, s, p, W, H) {
-    const hoy = p.mode === 0, y = 200;
-    g.fillStyle = '#243040'; g.fillRect(20, y - 45, 110, 90); SL.text(g, 'MUELLE', 75, y - 50, '#8b9bb0', '11px system-ui', 'center');
-    if (s.dock) { g.fillStyle = '#4fc3f7'; g.fillRect(25, y - 30, 100, 60); SL.text(g, 'Camión #' + s.dock.id, 75, y - 6, '#000', '12px system-ui', 'center'); SL.text(g, s.dock.left + ' por bajar', 75, y + 14, '#000', '12px system-ui', 'center'); }
-    SL.text(g, 'Patio: ' + s.patio.length + ' camión(es) esperando', 20, y + 75, s.patio.length ? '#ef5350' : '#3ecf8e', '13px system-ui');
-    for (let i = 0; i < s.patio.length; i++) { g.fillStyle = '#ef5350'; g.fillRect(20 + i * 50, y + 85, 42, 22); }
+    const hoy = p.mode === 0, y = 190, fy = y + 44;
+    g.fillStyle = '#2a3440'; g.fillRect(10, fy, 150, 8); SL.text(g, 'MUELLE', 84, fy + 22, '#8b9bb0', '11px system-ui', 'center');
+    if (s.dock) { SL.van(g, 100, fy, { s: 1.4, dir: -1, open: true }); SL.tag(g, `Camión #${s.dock.id} · ${s.dock.left} por bajar`, 84, y - 46, SL.STATE.info); }
+    SL.text(g, `Patio: ${s.patio.length} camión(es) esperando`, 14, 330, s.patio.length ? '#ef5350' : '#3ecf8e', '600 12px system-ui');
+    for (let i = 0; i < Math.min(s.patio.length, 3); i++) SL.van(g, 70 + i * 90, 400, { s: 0.8, dir: -1, body: '#c9d1d9', cab: '#5b6b80' });
+    const box = (x, yy, bad) => SL.carton(g, x, yy, 16, 13, bad ? '#d4a33a' : '#b98a58');
     if (hoy) {
-      SL.text(g, 'Bultos en piso (recuento manual)', 170, y - 60, '#ef5350', '13px system-ui');
-      for (let i = 0; i < s.buf.length; i++) { g.fillStyle = s.buf[i].bad ? '#f5b942' : '#c59b6d'; g.fillRect(170 + (i % 13) * 18, y - 45 + Math.floor(i / 13) * 18, 14, 14); }
-      [0, 1, 2].forEach((i) => { const c = s.ctl[i]; g.fillStyle = c && c.b ? '#3ecf8e' : '#2a3646'; g.beginPath(); g.arc(440 + i * 45, y + 10, 16, 0, 7); g.fill(); });
+      g.fillStyle = 'rgba(239,83,80,.05)'; g.fillRect(168, y - 70, 250, 120); g.strokeStyle = 'rgba(239,83,80,.35)'; g.setLineDash([6, 4]); g.strokeRect(168.5, y - 69.5, 249, 119); g.setLineDash([]);
+      SL.text(g, 'Bultos en piso (recuento manual)', 172, y - 78, '#ef5350', '600 12px system-ui');
+      s.buf.forEach((b, i) => box(176 + (i % 13) * 18, y - 60 + Math.floor(i / 13) * 16, b.bad));
+      [0, 1, 2].forEach((i) => { const c = s.ctl[i]; SL.person(g, 440 + i * 36, fy, { dir: -1, busy: !!(c && c.b), carry: c && c.b ? '#b98a58' : null }); SL.led(g, 440 + i * 36, y - 10, 2.4, c && c.b ? SL.STATE.run : SL.STATE.idle, !!(c && c.b)); });
     } else {
-      SL.belt(g, [[135, y], [450, y]], 22);
-      for (let i = 0; i < s.buf.length; i++) { g.fillStyle = s.buf[i].bad ? '#f5b942' : '#c59b6d'; g.fillRect(400 - i * 26, y - 7, 18, 14); }
-      g.fillStyle = s.ctl[0] && s.ctl[0].b ? '#3ecf8e' : '#2a3646'; g.fillRect(455, y - 28, 60, 56); SL.text(g, 'Control', 485, y - 2, '#fff', '11px system-ui', 'center'); SL.text(g, 'foto·sello', 485, y + 14, '#fff', '10px system-ui', 'center');
+      SL.belt(g, [[150, y], [452, y]], 22);
+      s.buf.forEach((b, i) => box(420 - i * 24, y - 7, b.bad));
+      SL.machine(g, 452, y - 58, 84, 74, { label: 'Control', sub: 'conteo·foto', state: s.ctl[0] && s.ctl[0].b ? 'run' : 'idle', fs: 12 });
+      SL.person(g, 494, fy + 14, { dir: -1, busy: !!(s.ctl[0] && s.ctl[0].b) });
+      SL.person(g, 150, fy, { dir: 1, busy: !!s.dock });
     }
-    g.strokeStyle = '#2a3646'; g.lineWidth = 6; g.beginPath(); g.moveTo(520, y); g.lineTo(600, y); g.lineTo(600, y - 80); g.moveTo(600, y); g.lineTo(600, y + 80); g.stroke();
-    g.fillStyle = '#143a2a'; g.fillRect(630, y - 120, 140, 70); SL.text(g, 'Slot / picking: ' + s.ok, 700, y - 80, '#3ecf8e', '14px system-ui', 'center');
-    g.fillStyle = '#4a2424'; g.fillRect(630, y + 50, 140, 70); SL.text(g, 'No conforme: ' + s.nc, 700, y + 90, '#ef5350', '14px system-ui', 'center');
+    SL.belt(g, [[536, y], [600, y], [600, y - 76]], 16); SL.belt(g, [[600, y], [600, y + 76]], 16);
+    g.fillStyle = '#f5b942'; g.fillRect(596, y - 4, 8, 8); SL.text(g, 'desvío', 612, y + 4, '#8b9bb0', '10px system-ui');
+    SL.shelf(g, 626, y - 150, 160, 70, 3, Math.min(1, s.ok / 300), 3); SL.tag(g, `Slot / picking: ${s.ok}`, 706, y - 162, SL.STATE.run);
+    g.strokeStyle = '#ef5350'; g.lineWidth = 1.5; g.strokeRect(630.5, y + 70.5, 150, 70); g.fillStyle = 'rgba(239,83,80,.06)'; g.fillRect(631, y + 71, 149, 69);
+    for (let i = 0; i < Math.min(s.nc, 20); i++) box(638 + (i % 8) * 17, y + 120 - Math.floor(i / 8) * 14, true);
+    SL.tag(g, `No conforme: ${s.nc}`, 706, y + 156, SL.STATE.down);
   },
   kpis(s, p) {
     const hrs = Math.max(s.t, 1) / 3600;

@@ -4,6 +4,7 @@
 <body><div id="app"></div>
 <script src="../../shared/controls.js"></script>
 <script src="../../shared/sim.js"></script>
+<script src="../../shared/gfx.js"></script>
 <script>
 // Packing e-commerce. Unidad: segundos desde las 15:00. Olas de pedidos; pico 17:00–20:00.
 const hh = (t) => { const h = 15 + t / 3600; return String(Math.floor(h)).padStart(2, '0') + ':' + String(Math.floor((h % 1) * 60)).padStart(2, '0'); };
@@ -44,19 +45,27 @@ SL.app({
     if (h >= p.cut && s.back === null) s.back = s.q.length + s.st.slice(0, p.n).filter((k) => k.o).length;
   },
   draw(g, s, p, W, H) {
-    const hoy = p.mode === 0, y = 225, cap = 30;
-    if (!hoy) { SL.belt(g, [[70, y], [560, y]], 22); s.q.slice(0, cap).forEach((o, i) => { g.fillStyle = o.ty > 80 ? '#ef5350' : '#c59b6d'; g.fillRect(75 + i * 16, y - 7, 12, 14); }); }
+    const hoy = p.mode === 0, y = 225, cap = 30, h = 15 + (s.t || 0) / 3600;
+    const col = (o) => (o.ty > 80 ? '#c0504d' : o.ty < 50 ? '#d9c7a3' : '#b98a58');
+    if (!hoy) {
+      SL.belt(g, [[40, y], [640, y], [640, 110], [660, 110]], 22); SL.belt(g, [[640, y], [660, y]], 22); SL.belt(g, [[640, y], [640, 340], [660, 340]], 22);
+      s.q.slice(0, cap).forEach((o, i) => SL.carton(g, 44 + i * 18, y - 8, 15, 15, col(o)));
+    } else { g.fillStyle = 'rgba(239,83,80,.06)'; g.fillRect(40, y - 44, 560, 88); g.strokeStyle = 'rgba(239,83,80,.4)'; g.setLineDash([6, 4]); g.strokeRect(40.5, y - 43.5, 559, 87); g.setLineDash([]); }
     for (let i = 0; i < p.n; i++) {
-      const col = i >> 1, side = i % 2 ? 1 : -1, x = 140 + col * 105, yy = y + side * (hoy ? 95 : 70) - 20;
-      g.fillStyle = s.st[i].o ? '#3ecf8e' : '#2a3646'; g.fillRect(x, yy, 70, 40);
-      if (!hoy) { g.strokeStyle = '#2a3646'; g.lineWidth = 4; g.beginPath(); g.moveTo(x + 35, yy + (side > 0 ? 0 : 40)); g.lineTo(x + 35, y + (side > 0 ? 11 : -11)); g.stroke(); }
-      SL.text(g, 'P' + (i + 1), x + 35, yy + 25, '#fff', '13px system-ui', 'center');
+      const c = i >> 1, side = i % 2 ? 1 : -1, x = 70 + c * 138, yy = y + side * (hoy ? 104 : 86), busy = !!s.st[i].o;
+      if (!hoy) SL.belt(g, [[x + 30, y + side * 13], [x + 30, yy - side * 18]], 10);
+      SL.table(g, x, yy - 6, 62);
+      if (busy) SL.carton(g, x + 16, yy - 22, 22, 16, col(s.st[i].o));
+      SL.person(g, x + 78, yy + 14, { dir: -1, busy });
+      SL.led(g, x + 4, yy - 12, 2.4, busy ? SL.STATE.run : SL.STATE.idle, busy);
+      SL.text(g, 'P' + (i + 1), x + 31, yy + 30, '#8b9bb0', '11px system-ui', 'center');
     }
-    if (hoy) { const nf = s.q.length; for (let i = 0; i < Math.min(nf, 240); i++) { g.fillStyle = s.q[i].ty > 80 ? '#ef5350' : '#c59b6d'; g.fillRect(85 + (i % 40) * 12, y - 14 + Math.floor(i / 40) * 11, 9, 9); } }
-    else if (s.q.length > cap) for (let i = 0; i < Math.min(s.q.length - cap, 120); i++) { g.fillStyle = '#f5b942'; g.fillRect(85 + (i % 40) * 12, y + 115 + Math.floor(i / 40) * 11, 9, 9); }
-    ['Lima', 'Norte', 'Sur'].forEach((n, i) => { g.fillStyle = '#243040'; g.fillRect(650, 60 + i * 110, 120, 80); SL.text(g, n, 710, 90 + i * 110, '#e6edf3', '14px system-ui', 'center'); SL.text(g, s.dest[i], 710, 118 + i * 110, '#3ecf8e', '16px system-ui', 'center'); });
-    SL.text(g, hoy ? 'Cola en el PISO (pasillo)' : 'Cola en la BANDA (naranja = desborde al piso)', 20, 30, hoy ? '#ef5350' : '#3ecf8e', '14px system-ui');
-    SL.text(g, 'Marrón: sobre/caja · Rojo: frágil', 20, H - 12);
+    if (hoy) for (let i = 0; i < Math.min(s.q.length, 200); i++) SL.carton(g, 48 + (i % 40) * 13.6 + ((i * 7) % 3), y - 36 + Math.floor(i / 40) * 14, 11, 10, col(s.q[i]));
+    else if (s.q.length > cap) for (let i = 0; i < Math.min(s.q.length - cap, 80); i++) SL.carton(g, 48 + (i % 40) * 13.6, y + 124 + Math.floor(i / 40) * 12, 11, 10, '#f5b942');
+    ['Lima', 'Norte', 'Sur'].forEach((n, i) => { SL.chute(g, 668, 70 + i * 115, 110, 80, Math.min(1, s.dest[i] / 150), '#3ecf8e', n); SL.tag(g, `${s.dest[i]}`, 723, 164 + i * 115, SL.STATE.run); });
+    if (h < p.cut) SL.van(g, 700, 440, { s: 0.75, dir: 1, open: true, cab: '#c0504d' }); else SL.tag(g, 'Camión del courier partió', 700, 430, SL.STATE.down);
+    SL.text(g, hoy ? 'Cola en el PISO (pasillo)' : 'Cola en la BANDA (amarillo = desborde al piso)', 20, 26, hoy ? '#ef5350' : '#3ecf8e', '600 14px system-ui');
+    SL.text(g, 'Crema: sobre · marrón: caja · rojo: frágil', 20, H - 8);
   },
   kpis(s, p) {
     const hrs = Math.max(s.t, 1) / 3600, floorQ = p.mode === 0 ? s.q.length : Math.max(0, s.q.length - 30);

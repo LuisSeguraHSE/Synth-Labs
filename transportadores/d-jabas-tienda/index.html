@@ -4,6 +4,7 @@
 <body><div id="app"></div>
 <script src="../../shared/controls.js"></script>
 <script src="../../shared/sim.js"></script>
+<script src="../../shared/gfx.js"></script>
 <script>
 // Jabas a tienda: llenas hacia muelle/tienda, vacías de retorno. Unidad: segundos.
 const PATH = [[170, 110], [360, 110], [460, 250], [640, 250]], PL = SL.len(PATH);
@@ -40,23 +41,37 @@ SL.app({
   },
   draw(g, s, p, W, H) {
     const hoy = p.mode === 0;
-    g.fillStyle = '#1c2633'; g.fillRect(20, 70, 150, 160); SL.text(g, 'CD 2º piso', 95, 95, '#e6edf3', '14px system-ui', 'center');
-    g.fillRect(640, 210, 140, 100); SL.text(g, 'Muelle / tienda', 710, 235, '#e6edf3', '14px system-ui', 'center');
-    SL.belt(g, PATH, hoy ? 6 : 22, hoy ? '#2a3646' : '#2a3646');
-    for (let i = 0; i < Math.min(s.q.length, 60); i++) { g.fillStyle = '#3ecf8e'; g.fillRect(28 + (i % 10) * 14, 110 + Math.floor(i / 10) * 14, 11, 11); }
-    SL.text(g, `En espera: ${s.q.length}`, 95, 215, '#3ecf8e', '12px system-ui', 'center');
+    // CD con segundo piso y tienda
+    g.fillStyle = SL.vgrad(g, 50, 210, '#3a4a5e', '#1f2833'); g.fillRect(10, 50, 160, 210);
+    g.fillStyle = '#2a3440'; g.fillRect(10, 128, 160, 6); g.fillRect(10, 254, 160, 6);
+    SL.text(g, 'CD · 2º piso', 90, 68, '#e6edf3', '600 13px system-ui', 'center');
+    SL.store(g, 648, 196, 140, 110, 'Tienda');
+    const nq = Math.min(s.q.length, 48);
+    for (let i = 0; i < nq; i++) SL.crate(g, 18 + Math.floor(i / 6) * 19, 120 - (i % 6) * 9, 17, 8);
+    SL.tag(g, `En espera: ${s.q.length}`, 90, 150, SL.STATE.run);
     if (hoy) {
+      // rampa / escalera
+      g.fillStyle = '#3a4654'; g.beginPath(); g.moveTo(170, 116); g.lineTo(360, 116); g.lineTo(460, 256); g.lineTo(648, 256); g.lineTo(648, 266); g.lineTo(455, 266); g.lineTo(355, 126); g.lineTo(170, 126); g.fill();
+      g.strokeStyle = 'rgba(245,185,66,.5)'; g.lineWidth = 1; for (let i = 0; i < 12; i++) { const t = i / 12; g.beginPath(); g.moveTo(360 + 100 * t, 116 + 140 * t); g.lineTo(368 + 100 * t, 116 + 140 * t); g.stroke(); }
       s.pers.forEach((k, i) => {
-        if (k.rem > 0) { const f = 1 - k.rem / k.tot, d = (f < 0.5 ? f * 2 : 2 - f * 2) * PL, q = SL.along(PATH, d); g.fillStyle = '#4fc3f7'; g.beginPath(); g.arc(q.x, q.y + i * 8 - 8, 8, 0, 7); g.fill(); if (f < 0.5) { g.fillStyle = '#3ecf8e'; g.fillRect(q.x - 6, q.y - 26 + i * 8 - 8, 12, 4 * k.jb.length); } }
+        if (k.rem <= 0) { SL.person(g, 140 + i * 12, 128, { dir: 1, s: 0.9 }); return; }
+        const f = 1 - k.rem / k.tot, d = (f < 0.5 ? f * 2 : 2 - f * 2) * PL, q = SL.along(PATH, d), dir = f < 0.5 ? 1 : -1;
+        SL.person(g, q.x, q.y + 6, { dir, busy: true, walk: s.t * 7 + i, s: 0.95 });
+        const n = f < 0.5 ? k.jb.length : Math.min(p.n, 4);
+        for (let j = 0; j < n; j++) SL.crate(g, q.x + dir * 5 - 7, q.y - 24 - j * 7, 14, 6.5, f < 0.5 ? '#2e8b57' : '#6b7d93');
       });
-      SL.text(g, 'Jabas tocan el piso: ' + s.floor, 560, 345, '#ef5350', '14px system-ui');
+      SL.tag(g, `Jabas que tocan el piso: ${s.floor}`, 560, 350, SL.STATE.down);
+      for (let i = 0; i < Math.min(s.floor % 30, 12); i++) SL.crate(g, 600 + (i % 6) * 18, 312 - Math.floor(i / 6) * 9, 16, 8);
     } else {
-      s.belt.forEach((b) => { const q = SL.along(PATH, Math.min(1, (s.t - b.tin) / 40) * PL); g.fillStyle = '#3ecf8e'; g.fillRect(q.x - 7, q.y - 6, 14, 12); });
-      const back = PATH.map((q) => [q[0], q[1] + 40]); SL.belt(g, back, 10, '#243040');
-      for (let i = 0; i < 8; i++) { const q = SL.along(back, (((s.t / 6 + i / 8) % 1)) * PL); g.fillStyle = '#8b9bb0'; g.fillRect(q.x - 6, q.y - 4, 12, 8); }
-      SL.text(g, 'Sin contacto con el piso · retorno de vacías en banda inferior', 20, 345, '#3ecf8e', '13px system-ui');
+      SL.belt(g, PATH, 22);
+      g.fillStyle = '#26313d'; g.fillRect(348, 60, 26, 70); SL.text(g, 'Elevador', 361, 54, '#8b9bb0', '10px system-ui', 'center');
+      s.belt.forEach((b) => { const q = SL.along(PATH, Math.min(1, (s.t - b.tin) / 40) * PL); SL.crate(g, q.x - 8, q.y - 9, 16, 8); });
+      const back = PATH.map((q) => [q[0], q[1] + 40]); SL.belt(g, back, 12, '#243040');
+      for (let i = 0; i < 8; i++) { const q = SL.along(back, ((s.t / 6 + i / 8) % 1) * PL); SL.crate(g, q.x - 7, q.y - 7, 14, 6.5, '#6b7d93'); }
+      SL.person(g, 640, 300, { dir: -1, busy: true });
+      SL.text(g, 'Sin contacto con el piso · retorno de vacías en banda inferior', 20, 350, '#3ecf8e', '13px system-ui');
     }
-    SL.text(g, hoy ? 'Personas subiendo/bajando con torres' : 'Elevador + banda modular lavable', 20, 30, '#e6edf3', '14px system-ui');
+    SL.text(g, hoy ? 'Personas subiendo y bajando la rampa con torres de jabas' : 'Elevador + banda modular lavable', 20, 26, '#e6edf3', '600 14px system-ui');
   },
   kpis(s, p) {
     const hrs = Math.max(s.t, 1) / 3600;

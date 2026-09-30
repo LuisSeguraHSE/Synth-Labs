@@ -53,7 +53,7 @@ Ver [`cadena-de-frio/`](cadena-de-frio/) · [▶ Abrir cámara frigorífica 3D](
 ## Sistema de controles
 `shared/controls.css` + `shared/controls.js`: teclas con profundidad y LED, segmentados, pestañas con indicador, faders con escala y relleno, interruptores, chips de capa y lecturas LCD. Lo usan las 2D y la cámara 3D.
 
-El motor 2D (`shared/sim.js`) dibuja en alta densidad (nítido en pantallas retina), sobre un fondo de plano técnico con retícula, con sombras suaves y transportadores con bastidor, guías y rodillos (`SL.belt`).
+El kit `shared/gfx.js` dibuja equipos industriales con detalle (máquinas con panel y LED, operarios con casco, cajas, tarimas, jabas, baldes, colchones, camiones mineros y de reparto, montacargas, pala, chancador, tanque, bomba, tuberías con flechas de flujo, paneles solares, batería, grupo electrógeno, naves, estanterías, chutes y tiendas). El motor 2D (`shared/sim.js`) dibuja en alta densidad (nítido en pantallas retina), sobre un fondo de plano técnico con retícula, con sombras suaves y transportadores con bastidor, guías y rodillos (`SL.belt`).
 
 ## Supuestos generales
 - Modelos didácticos, semilla fija (42) ⇒ escenarios comparables al reiniciar.

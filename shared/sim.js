@@ -180,9 +180,7 @@
       }
       c.setTransform(1, 0, 0, 1, 0, 0); c.drawImage(bg, 0, 0);
       c.setTransform(dpr, 0, 0, dpr, 0, 0);
-      c.save(); c.shadowColor = 'rgba(0,0,0,.45)'; c.shadowBlur = 5; c.shadowOffsetY = 2; // profundidad sutil
-      cfg.draw(c, state, p, W, H);
-      c.restore();
+      c.save(); cfg.draw(c, state, p, W, H); c.restore(); // las figuras de gfx.js manejan su propia sombra
       if (cfg.series) drawChart(state);
       clk.textContent = cfg.clock ? cfg.clock(state.t || 0) : `t = ${(state.t || 0).toFixed(1)} ${cfg.unit || 's'}`;
       kp.innerHTML = cfg.kpis(state, p).map((k) => `<tr><td>${k.label}</td><td>${k.value}</td></tr>`).join('');

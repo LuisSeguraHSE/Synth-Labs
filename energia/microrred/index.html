@@ -4,6 +4,7 @@
 <body><div id="app"></div>
 <script src="../../shared/controls.js"></script>
 <script src="../../shared/sim.js"></script>
+<script src="../../shared/gfx.js"></script>
 <script>
 // Despacho: PV → carga; excedente → batería; déficit → batería (hasta 10% SOC) → diésel → no servida.
 // Tiempo: 1 día = 240 s simulados (1 s sim = 6 min). dt en horas = dt/10.
@@ -42,15 +43,24 @@ SL.app({
     s.pvE += Math.min(pv, ld) * dh; s.ldE += ld * dh; s.dgE += dg * dh; s.uns += un * dh;
   },
   draw(g, s, p, W, H) {
-    const node = (x, y, c, t, v) => { g.fillStyle = c; g.fillRect(x - 55, y - 35, 110, 70); g.fillStyle = '#000'; g.font = '14px system-ui'; g.textAlign = 'center'; g.fillText(t, x, y - 6); g.fillText(v, x, y + 16); };
-    g.strokeStyle = '#2a3646'; g.lineWidth = 5;
-    [[150, 100, 400, 225], [150, 350, 400, 225], [400, 225, 650, 225], [650, 100, 400, 225]].forEach((l) => { g.beginPath(); g.moveTo(l[0], l[1]); g.lineTo(l[2], l[3]); g.stroke(); });
-    node(150, 100, '#f5b942', 'Solar PV', s.pv.toFixed(0) + ' kW');
-    node(650, 100, '#ef5350', 'Diésel', s.dg.toFixed(0) + ' kW');
-    node(150, 350, '#4fc3f7', 'Batería', (100 * s.soc / Math.max(p.bat, 1)).toFixed(0) + ' % SOC');
-    node(650, 225, '#3ecf8e', 'Carga', s.ld.toFixed(0) + ' kW');
-    g.fillStyle = '#8b9bb0'; g.fillText('Bus', 400, 222);
-    g.textAlign = 'left';
+    const h = ((s.t || 0) / 10) % 24, day = Math.max(0, Math.sin((Math.PI * (h - 6)) / 12));
+    g.fillStyle = `rgba(56,120,190,${0.1 * day})`; g.fillRect(0, 0, W, H);
+    const bus = [400, 225], bat = s.ld - s.pv - s.dg; // > 0: batería descarga
+    const line = (a, b, kw, col) => { SL.pipe(g, [a, b], 5, '#8fa3b8'); const n = Math.min(6, Math.round(Math.abs(kw) / 60)); if (n) (kw >= 0 ? SL.flow(g, a[0], a[1], b[0], b[1], n, col) : SL.flow(g, b[0], b[1], a[0], a[1], n, col)); };
+    line([240, 120], bus, s.pv, '#ffd666');
+    line([230, 335], bus, bat, bat >= 0 ? '#4fc3f7' : '#3ecf8e');
+    line([580, 115], bus, s.dg, '#f5b942');
+    line(bus, [580, 345], s.ld, '#e6edf3');
+    SL.solar(g, 30, 60, 210, 100, p.pv > 0 ? s.pv / p.pv : 0);
+    SL.tag(g, `Solar ${s.pv.toFixed(0)} kW`, 135, 176, '#ffd666');
+    SL.battery(g, 40, 280, 190, 112, s.soc / Math.max(1, p.bat), { flow: -bat });
+    SL.tag(g, `Batería ${bat > 1 ? 'descarga' : bat < -1 ? 'carga' : 'reposo'} ${Math.abs(bat).toFixed(0)} kW`, 135, 410, '#4fc3f7');
+    SL.genset(g, 580, 80, 170, 70, s.dg > 0.5, (s.t || 0) / 10);
+    SL.tag(g, `Diésel ${s.dg.toFixed(0)} kW`, 665, 168, s.dg > 0.5 ? SL.STATE.warn : SL.STATE.idle);
+    SL.building(g, 580, 310, 190, 86, { load: s.ld / Math.max(1, p.pk * 1.2) });
+    SL.tag(g, `Carga ${s.ld.toFixed(0)} kW`, 675, 412, '#e6edf3');
+    SL.machine(g, bus[0] - 46, bus[1] - 40, 92, 80, { label: 'Tablero', sub: 'bus AC', state: 'run', fs: 12 });
+    SL.text(g, day > 0 ? '☀ día' : '☾ noche', 400, 30, '#8b9bb0', '12px system-ui', 'center');
   },
   kpis(s, p) {
     const fuel = s.dgE * LPKWH;

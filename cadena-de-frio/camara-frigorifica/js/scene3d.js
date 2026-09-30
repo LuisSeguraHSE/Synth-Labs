@@ -47,6 +47,13 @@ const TEX = {
     g.fillStyle = '#f2b90f'; g.fillRect(0, 0, w, h); g.fillStyle = '#16181b';
     for (let x = -h; x < w + h; x += 32) { g.beginPath(); g.moveTo(x, h); g.lineTo(x + 16, h); g.lineTo(x + 16 + h, 0); g.lineTo(x + h, 0); g.fill(); }
   }, [rx, 1]),
+  carton: () => canvasTex(128, 128, (g, w, h) => {
+    g.fillStyle = '#f2f2f2'; g.fillRect(0, 0, w, h);
+    const e = g.createLinearGradient(0, 0, w, 0); e.addColorStop(0, 'rgba(0,0,0,.18)'); e.addColorStop(0.08, 'rgba(0,0,0,0)'); e.addColorStop(0.92, 'rgba(0,0,0,0)'); e.addColorStop(1, 'rgba(0,0,0,.18)'); g.fillStyle = e; g.fillRect(0, 0, w, h);
+    g.fillStyle = 'rgba(255,255,255,.9)'; g.fillRect(56, 0, 16, h);                         // cinta
+    g.fillStyle = '#ffffff'; g.fillRect(80, 76, 38, 30); g.fillStyle = '#333'; for (let i = 0; i < 5; i++) g.fillRect(84, 80 + i * 5, 30 - i * 4, 2); // etiqueta
+    for (let i = 0; i < 9; i++) g.fillRect(84 + i * 3, 100, 1.5, 4);
+  }),
   fins: () => canvasTex(256, 64, (g, w, h) => {
     for (let x = 0; x < w; x += 2) { g.fillStyle = x % 4 ? '#8f9baa' : '#c5ced8'; g.fillRect(x, 0, 2, h); }
     g.fillStyle = 'rgba(40,50,60,.55)'; for (let y = 8; y < h; y += 16) g.fillRect(0, y, w, 3);
@@ -254,7 +261,7 @@ export function createScene(container, handlers) {
     // ---- Pallets: tarimas, cartones (color por temperatura) y film estirable
     const nMax = R.slots.length + 4;
     o.palParts = new THREE.InstancedMesh(UNIT, M.wood, nMax * PARTS.length);
-    o.cartons = new THREE.InstancedMesh(new THREE.BoxGeometry(CART.sx, CART.sy, CART.sz), std(0xffffff, { roughness: 0.85 }), nMax * CPP);
+    o.cartons = new THREE.InstancedMesh(new THREE.BoxGeometry(CART.sx, CART.sy, CART.sz), std(0xffffff, { roughness: 0.85, map: TEX.carton() }), nMax * CPP);
     o.cartons.setColorAt(0, tmpC.set(0xffffff));
     const wg = new THREE.BoxGeometry(1.01, CART.ny * CART.pitchY + 0.03, 1.23); wg.translate(0, PAL_H + (CART.ny * CART.pitchY) / 2, 0);
     o.wraps = new THREE.InstancedMesh(wg, new THREE.MeshStandardMaterial({ color: 0xe6f0fa, transparent: true, opacity: 0.12, roughness: 0.15, depthWrite: false }), nMax);
@@ -281,6 +288,45 @@ export function createScene(container, handlers) {
     for (const z of [-0.26, 0.26]) box(1.1, 0.04, 0.12, M.galv, [1.4, 0.03, z], carriage);
     o.fkBeacon = mesh(new THREE.CylinderGeometry(0.05, 0.05, 0.08, 12), new THREE.MeshBasicMaterial({ color: 0xfab219, toneMapped: false }), [-0.3, 2.17, 0], fk, null, false);
     o.fkLast = null;
+
+    // ---- Detalle de operación: camión refrigerado, HMI con valores reales, señalética, bandejas, conductor
+    const truck = new THREE.Group(); truck.position.set(X(-9.2), 0, 0); group.add(truck); o.truck = truck; truck.visible = false;
+    box(7, 2.6, 2.5, M.white, [0, 1.3 + 0.95, 0], truck);                                         // caja isotérmica
+    for (let i = 1; i < 7; i++) box(0.03, 2.5, 2.52, M.galv, [-3.5 + i, 2.25, 0], truck, null, false);
+    box(1.8, 2.3, 2.4, std(0x1f6f8b, { metalness: 0.4, roughness: 0.4 }), [-4.5, 1.55, 0], truck); // cabina
+    box(0.05, 0.8, 2.0, M.glass, [-5.42, 2.1, 0], truck, null, false);
+    box(0.5, 0.9, 1.4, std(0x5b6b80, { metalness: 0.5 }), [-3.8, 3.1, 0], truck);                  // equipo de frío
+    box(8.5, 0.25, 1.2, M.dark, [-0.8, 0.8, 0], truck);
+    for (const x of [-4.4, 1.5, 2.6]) for (const z of [-1.05, 1.05]) { const w = mesh(new THREE.CylinderGeometry(0.5, 0.5, 0.35, 20), M.rubber, [x, 0.5, z], truck); w.rotation.x = Math.PI / 2; }
+    for (const s of [-1, 1]) { const d = box(0.05, 2.4, 1.2, M.white, [3.55, 2.2, s * 1.85], truck); d.rotation.y = s * 0.2; } // puertas abiertas
+    // HMI de la cámara (canvas actualizado con datos del simulador) junto a la puerta, por fuera
+    const hc = document.createElement('canvas'); hc.width = 256; hc.height = 160; o.hmiCtx = hc.getContext('2d');
+    o.hmiTex = new THREE.CanvasTexture(hc); o.hmiTex.colorSpace = SRGB;
+    const hmi = new THREE.Group(); hmi.position.set(X(0) - 0.12, 1.55, -dw / 2 - 1.0); hmi.rotation.y = -Math.PI / 2; group.add(hmi);
+    box(0.62, 0.46, 0.08, M.dark, [0, 0, 0], hmi, { kind: 'door', id: 0 });
+    const scr = mesh(new THREE.PlaneGeometry(0.52, 0.33), new THREE.MeshBasicMaterial({ map: o.hmiTex, toneMapped: false }), [0, 0.02, 0.045], hmi, null, false); scr.rotation.y = 0;
+    o.hmiLast = -1;
+    // Botonera de puerta y señal de salida (interior)
+    const bot = box(0.12, 0.2, 0.06, std(0xd9dee4), [X(0) + 0.08, 1.3, dw / 2 + 0.4], group); bot.rotation.y = Math.PI / 2;
+    mesh(new THREE.CylinderGeometry(0.025, 0.025, 0.03, 12), new THREE.MeshBasicMaterial({ color: 0x0ca30c, toneMapped: false }), [X(0) + 0.12, 1.35, dw / 2 + 0.4], group, null, false).rotation.z = Math.PI / 2;
+    mesh(new THREE.CylinderGeometry(0.025, 0.025, 0.03, 12), new THREE.MeshBasicMaterial({ color: 0xd03b3b, toneMapped: false }), [X(0) + 0.12, 1.25, dw / 2 + 0.4], group, null, false).rotation.z = Math.PI / 2;
+    const exitTex = canvasTex(128, 48, (g, w, h) => { g.fillStyle = '#0a7a2a'; g.fillRect(0, 0, w, h); g.fillStyle = '#fff'; g.font = 'bold 26px sans-serif'; g.textAlign = 'center'; g.fillText('SALIDA', w / 2, 34); });
+    const exit = mesh(new THREE.PlaneGeometry(0.6, 0.22), new THREE.MeshBasicMaterial({ map: exitTex, toneMapped: false }), [X(0) + 0.06, Math.min(H - 0.3, dh + 0.45), 0], group, null, false); exit.rotation.y = Math.PI / 2;
+    o.walls.ceiling.push(exit);
+    // Bandeja portacables en el techo y rejillas de desagüe
+    const tray = std(0x9aa6b3, { metalness: 0.7, roughness: 0.35 });
+    o.walls.ceiling.push(box(L - 1.6, 0.06, 0.3, tray, [0.2, H - 0.25, -W / 2 + 0.6], group, null, false));
+    for (let x = -L / 2 + 1.2; x < L / 2 - 0.6; x += 1.5) o.walls.ceiling.push(box(0.02, 0.25, 0.02, M.galv, [x, H - 0.12, -W / 2 + 0.6], group, null, false));
+    for (const zz of [-W / 4, W / 4]) mesh(new THREE.PlaneGeometry(0.5, 0.3), std(0x2a3038, { metalness: 0.6 }), [X(L - 1.3), 0.008, zz], group, null, false).rotation.x = -Math.PI / 2;
+    // Mallas (wire deck) bajo el nivel alto de cada rack
+    const meshTex = canvasTex(64, 64, (g, w, h) => { g.clearRect(0, 0, w, h); g.strokeStyle = '#c3ccd6'; g.lineWidth = 2; for (let i = 0; i <= w; i += 8) { g.beginPath(); g.moveTo(i, 0); g.lineTo(i, h); g.stroke(); g.beginPath(); g.moveTo(0, i); g.lineTo(w, i); g.stroke(); } }, [6, 3]);
+    const deckMat = new THREE.MeshStandardMaterial({ map: meshTex, transparent: true, alphaTest: 0.3, side: THREE.DoubleSide, metalness: 0.6, roughness: 0.4 });
+    for (let j = 0; j < R.ny; j++) { const d = mesh(new THREE.PlaneGeometry(nB * pitch - 0.1, depth), deckMat, [X(x0 + (nB * pitch) / 2), yBeam1 + 0.06, Z((j + 0.5) * R.dy)], group, null, false); d.rotation.x = -Math.PI / 2; o.racks[j].push(d); }
+    // Conductor del montacargas
+    const drv = new THREE.Group(); drv.position.set(-0.2, 1.0, 0); fk.add(drv);
+    mesh(new THREE.CylinderGeometry(0.16, 0.18, 0.5, 12), std(0x2f6fb0), [0, 0.3, 0], drv, null);
+    mesh(new THREE.SphereGeometry(0.11, 14, 10), std(0xd9a878), [0, 0.66, 0], drv, null);
+    mesh(new THREE.SphereGeometry(0.125, 14, 8, 0, Math.PI * 2, 0, Math.PI / 2), std(0xf2f4f7), [0, 0.7, 0], drv, null);
 
     // ---- Mapa térmico (caja por zona con arista)
     o.heat = [];
@@ -478,6 +524,20 @@ export function createScene(container, handlers) {
       W3.fkLast = [ps.x, ps.y];
       W3.fkBeacon.material.color.set(blink ? 0xfab219 : 0x4a3a0a);
     } else { W3.fork.visible = false; W3.fkLast = null; }
+    W3.truck.visible = !!st.ingress;
+    if (Math.floor(st.t / 5) !== W3.hmiLast) { // HMI: se redibuja cada 5 s simulados
+      W3.hmiLast = Math.floor(st.t / 5);
+      const g = W3.hmiCtx, al = st.alarms.active.length, T = st.kpi.Tavg;
+      g.fillStyle = '#071018'; g.fillRect(0, 0, 256, 160);
+      g.fillStyle = al ? '#d03b3b' : '#0ca30c'; g.fillRect(0, 0, 256, 22);
+      g.fillStyle = '#fff'; g.font = 'bold 14px sans-serif'; g.fillText(al ? '⚠ ' + st.alarms.active[0].title : 'CÁMARA 01 · NORMAL', 8, 16);
+      g.fillStyle = '#9fe3ff'; g.font = 'bold 48px monospace'; g.fillText(T.toFixed(1) + '°', 10, 80);
+      g.font = '14px sans-serif'; g.fillStyle = '#c3c2b7'; g.fillText(`SP ${p.sp} °C   HR ${st.kpi.rh.toFixed(0)} %`, 10, 104);
+      g.fillText(`Compresor ${st.ctrl.on ? Math.round(st.ctrl.u * 100) + ' %' : 'OFF'}`, 10, 124);
+      g.fillText(`Puerta ${st.door.cmd ? 'ABIERTA' : 'cerrada'}`, 10, 144);
+      g.strokeStyle = '#3987e5'; g.beginPath(); const h = st.hist.slice(-40); h.forEach((r, i) => { const x = 150 + i * 2.5, y = 110 - (r.Ta - p.sp) * 8; i ? g.lineTo(x, y) : g.moveTo(x, y); }); g.stroke();
+      W3.hmiTex.needsUpdate = true;
+    }
     // Flujo de aire y puerta
     if (S.layers.flow) updateFlow(st, p, dtR * simK);
     updateDoorFlow(st, p, dtR * Math.max(simK, playing ? 1 : 0));

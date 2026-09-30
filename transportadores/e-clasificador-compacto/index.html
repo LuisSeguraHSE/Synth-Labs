@@ -4,6 +4,7 @@
 <body><div id="app"></div>
 <script src="../../shared/controls.js"></script>
 <script src="../../shared/sim.js"></script>
+<script src="../../shared/gfx.js"></script>
 <script>
 // Clasificador compacto con recirculación. Unidad: segundos. Lazo de 30 m; desviadores en bordes superior/inferior.
 const DN = ['Lima', 'Norte', 'Sur', 'Aéreo', 'Sierra', 'Selva'], WT = [0.4, 0.22, 0.2, 0.1, 0.05, 0.03], LM = 30, DS = [3, 6, 9, 18, 21, 24], RJ = 27.5;
@@ -58,19 +59,38 @@ SL.app({
   },
   draw(g, s, p, W, H) {
     const hoy = p.mode === 0;
+    const parcel = (x, y, ty, a) => {
+      g.save();
+      if (a.rj || a.lap > 0) { g.strokeStyle = a.rj ? '#ef5350' : '#ba68c8'; g.lineWidth = 2.5; g.beginPath(); g.arc(x, y, 12, 0, 7); g.stroke(); }
+      if (ty === 0) { g.fillStyle = SL.vgrad(g, y - 7, 14, '#8fd0f5', '#3a8fc4'); g.beginPath(); g.ellipse(x, y, 8, 6, 0.2, 0, 7); g.fill(); g.fillStyle = 'rgba(255,255,255,.35)'; g.fillRect(x - 5, y - 5, 4, 2); }
+      else if (ty === 1) SL.carton(g, x - 8, y - 6, 16, 12, '#c59b6d');
+      else { g.fillStyle = SL.vgrad(g, y - 8, 16, '#f5d27a', '#c99a2e'); g.beginPath(); g.moveTo(x - 11, y + 2); g.lineTo(x - 4, y - 8); g.lineTo(x + 10, y - 5); g.lineTo(x + 11, y + 6); g.lineTo(x - 6, y + 8); g.closePath(); g.fill(); }
+      g.restore();
+    };
     if (hoy) {
-      SL.text(g, 'Cola de bultos en el piso: ' + s.q, 40, 50, '#ef5350', '14px system-ui');
-      for (let i = 0; i < Math.min(s.q, 200); i++) { g.fillStyle = '#c59b6d'; g.fillRect(40 + (i % 40) * 17, 70 + Math.floor(i / 40) * 17, 13, 13); }
-      s.man.forEach((k, i) => { g.fillStyle = k.it ? '#3ecf8e' : '#2a3646'; g.beginPath(); g.arc(120 + i * 100, 250, 24, 0, 7); g.fill(); SL.text(g, 'P' + (i + 1), 120 + i * 100, 255, '#fff', '13px system-ui', 'center'); });
-      SL.text(g, '6 personas llevan cada bulto a su destino (error ~3%, sin recirculación)', 40, 320, '#8b9bb0');
-    } else {
-      SL.belt(g, LOOP, 22);
-      for (let k = 0; k < p.nd; k++) { const q = at(DS[k]), top = DS[k] < 15, y0 = top ? 100 : 300, sg = top ? -1 : 1; g.fillStyle = '#243040'; g.fillRect(q.x - 45, y0 + sg * 60 - 20, 90, 40); SL.text(g, DN[k] + ' ' + s.ch[k].n + '/' + p.cap, q.x, y0 + sg * 60 + 5, s.ch[k].n >= p.cap ? '#ef5350' : '#3ecf8e', '12px system-ui', 'center'); g.strokeStyle = '#f5b942'; g.lineWidth = 3; g.beginPath(); g.moveTo(q.x - 8, y0); g.lineTo(q.x + 8, y0 + sg * 40); g.stroke(); }
-      const rq = at(RJ); g.fillStyle = '#4a2424'; g.fillRect(rq.x - 90, rq.y - 25, 70, 50); SL.text(g, 'Rechazo ' + s.rej, rq.x - 55, rq.y + 4, '#ef5350', '12px system-ui', 'center');
-      s.it.forEach((a) => { const q = at(a.s); g.fillStyle = a.rj ? '#ef5350' : a.lap > 0 ? '#ba68c8' : ['#4fc3f7', '#c59b6d', '#f5b942'][a.ty]; if (a.ty === 0) { g.beginPath(); g.arc(q.x, q.y, 6, 0, 7); g.fill(); } else if (a.ty === 1) g.fillRect(q.x - 8, q.y - 6, 16, 12); else { g.beginPath(); g.moveTo(q.x - 11, q.y); g.lineTo(q.x, q.y - 8); g.lineTo(q.x + 11, q.y); g.lineTo(q.x, q.y + 8); g.fill(); } });
-      SL.text(g, 'Inducción ▶ (cola: ' + s.q + ')', 105, 135, '#e6edf3', '12px system-ui');
-      SL.text(g, 'Violeta: recirculando · Rojo: no leído → rechazo · azul bolsa / marrón caja / amarillo irregular', 40, 430, '#8b9bb0', '12px system-ui');
+      SL.text(g, 'Cola de bultos en el piso: ' + s.q, 40, 40, '#ef5350', '600 14px system-ui');
+      for (let i = 0; i < Math.min(s.q, 160); i++) parcel(48 + (i % 40) * 17 + ((i * 7) % 5), 62 + Math.floor(i / 40) * 17 + ((i * 3) % 4), i % 3, {});
+      s.man.forEach((k, i) => { const x = 90 + i * 112; SL.person(g, x, 290, { dir: i % 2 ? -1 : 1, busy: !!k.it, carry: k.it ? '#c59b6d' : null, walk: k.it ? s.t * 8 + i : 0 }); SL.led(g, x, 244, 2.6, k.it ? SL.STATE.run : SL.STATE.idle, !!k.it); SL.text(g, 'P' + (i + 1), x, 308, '#8b9bb0', '11px system-ui', 'center'); });
+      DN.slice(0, p.nd).forEach((n, k) => SL.chute(g, 40 + k * 124, 330, 104, 64, s.ch[k].n / p.cap, '#3ecf8e', `${n} ${s.ch[k].n}`));
+      SL.text(g, '6 personas llevan cada bulto a su destino (error ~3 %, sin recirculación)', 40, 432, '#8b9bb0');
+      return;
     }
+    SL.belt(g, LOOP, 22);
+    const rd = at(1); // arco de lectura
+    g.fillStyle = '#26313d'; g.fillRect(rd.x - 3, rd.y - 28, 6, 56); g.fillRect(rd.x - 3, rd.y - 30, 24, 5); SL.led(g, rd.x + 18, rd.y - 27, 2.4, SL.STATE.info);
+    g.strokeStyle = 'rgba(79,195,247,.45)'; g.beginPath(); g.moveTo(rd.x + 18, rd.y - 24); g.lineTo(rd.x + 6, rd.y + 10); g.lineTo(rd.x + 30, rd.y + 10); g.closePath(); g.stroke();
+    for (let k = 0; k < p.nd; k++) {
+      const q = at(DS[k]), top = DS[k] < 15, y0 = top ? 100 : 300, sg = top ? -1 : 1, full = s.ch[k].n >= p.cap;
+      g.save(); g.translate(q.x, y0); g.rotate(-sg * 0.7); g.fillStyle = full ? '#8b9bb0' : '#f5b942'; g.fillRect(-2.5, 0, 5, sg * 24); g.restore(); // desviador
+      SL.chute(g, q.x - 46, top ? y0 - 94 : y0 + 28, 92, 62, s.ch[k].n / p.cap, full ? '#ef5350' : '#3ecf8e', `${DN[k]} ${s.ch[k].n}/${p.cap}`);
+      if (full) SL.tag(g, 'LLENO → recircula', q.x, top ? y0 - 104 : y0 + 100, SL.STATE.warn);
+    }
+    const rq = at(RJ); SL.chute(g, rq.x - 96, rq.y - 30, 70, 60, s.rej / 40, '#ef5350', `Rechazo ${s.rej}`);
+    s.it.forEach((a) => { const q = at(a.s); parcel(q.x, q.y, a.ty, a); });
+    SL.person(g, 70, 96, { dir: 1, busy: s.q > 0 }); SL.text(g, 'Inducción', 70, 112, '#8b9bb0', '10px system-ui', 'center');
+    SL.person(g, 40, 380, { dir: 1, busy: s.rej > 0 }); SL.text(g, 'Excepciones', 40, 396, '#8b9bb0', '10px system-ui', 'center');
+    SL.tag(g, `Cola de inducción: ${s.q}`, 250, 130, s.q > 20 ? SL.STATE.warn : SL.STATE.info);
+    SL.text(g, 'Aro violeta: recirculando · aro rojo: no leído → rechazo · azul bolsa / cartón caja / amarillo irregular', 30, 436, '#8b9bb0', '11px system-ui');
   },
   kpis(s, p) {
     const hrs = Math.max(s.t, 1) / 3600, need = Math.ceil(p.rate / 250), sav = (need - 2) * p.sal, pay = (p.inv * 1000) / Math.max(sav, 1);

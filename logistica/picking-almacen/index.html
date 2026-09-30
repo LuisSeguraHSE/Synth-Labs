@@ -4,6 +4,7 @@
 <body><div id="app"></div>
 <script src="../../shared/controls.js"></script>
 <script src="../../shared/sim.js"></script>
+<script src="../../shared/gfx.js"></script>
 <script>
 // Cola M/G/c de pedidos atendidos por pickers. Unidad: minutos. Incluye pico de demanda.
 SL.app({
@@ -35,18 +36,21 @@ SL.app({
     }
   },
   draw(g, s, p, W, H) {
-    g.fillStyle = '#8b9bb0'; g.font = '13px system-ui'; g.fillText(`Cola de pedidos: ${s.q.length}`, 20, 30);
-    for (let i = 0; i < Math.min(s.q.length, 120); i++) {
-      const w = (s.t - s.q[i]), late = w > p.sla;
-      g.fillStyle = late ? '#ef5350' : '#4fc3f7'; g.fillRect(20 + (i % 40) * 18, 45 + Math.floor(i / 40) * 18, 14, 14);
-    }
-    g.fillStyle = '#8b9bb0'; g.fillText('Pickers (verde = ocupado)', 20, 170);
+    for (let i = 0; i < 4; i++) SL.shelf(g, 24 + i * 192, 24, 172, 108, 3, 0.75, i + 1);
+    SL.text(g, `Pedidos en cola: ${s.q.length}`, 20, 160, '#e6edf3', '600 13px system-ui');
+    SL.belt(g, [[16, 190], [784, 190]], 20);
+    const nq = Math.min(s.q.length, 44);
+    for (let i = 0; i < nq; i++) SL.carton(g, 20 + i * 17, 183, 14, 14, s.t - s.q[i] > p.sla ? '#c0504d' : '#b98a58');
+    if (s.q.length > nq) SL.tag(g, `+${s.q.length - nq}`, 764, 170, SL.STATE.warn);
     s.pk.forEach((k, i) => {
-      const x = 30 + (i % 10) * 76, y = 190 + Math.floor(i / 10) * 100;
-      g.fillStyle = k.busy ? '#3ecf8e' : '#2a3646'; g.beginPath(); g.arc(x + 25, y + 25, 22, 0, 7); g.fill();
-      g.fillStyle = '#fff'; g.fillText(i + 1, x + 21, y + 30);
+      const x = 26 + (i % 10) * 76, y = 296 + Math.floor(i / 10) * 100;
+      SL.table(g, x, y - 26, 46);
+      if (k.busy) { SL.carton(g, x + 6, y - 40, 16, 14, '#b98a58'); SL.carton(g, x + 24, y - 36, 12, 10, '#c9a06a'); }
+      SL.person(g, x + 58, y + 8, { dir: -1, busy: k.busy });
+      SL.led(g, x + 4, y - 32, 2.6, k.busy ? SL.STATE.run : SL.STATE.idle, k.busy);
+      SL.text(g, `P${i + 1}`, x + 23, y + 24, '#8b9bb0', '11px system-ui', 'center');
     });
-    g.fillStyle = '#ef5350'; g.fillText('Rojo: pedido fuera de SLA', 20, H - 12);
+    SL.text(g, 'Caja roja = pedido fuera de SLA · LED verde = picker ocupado', 20, H - 8);
   },
   kpis(s, p) {
     const d = Math.max(s.done, 1);

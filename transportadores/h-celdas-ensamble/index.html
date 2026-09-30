@@ -4,6 +4,7 @@
 <body><div id="app"></div>
 <script src="../../shared/controls.js"></script>
 <script src="../../shared/sim.js"></script>
+<script src="../../shared/gfx.js"></script>
 <script>
 // Celdas de ensamble: corte → costura/canto → armado → QC. Unidad: minutos.
 const CN = ['Corte', 'Costura/canto', 'Armado', 'QC'];
@@ -58,20 +59,40 @@ SL.app({
     });
   },
   draw(g, s, p, W, H) {
-    const hoy = p.mode === 0;
+    const hoy = p.mode === 0, y = 96, fy = y + 150;
+    g.fillStyle = 'rgba(255,255,255,.05)'; g.fillRect(10, fy, 780, 2);
     CN.forEach((n, i) => {
-      const x = 30 + i * 195, y = 90, c = s.cells[i];
-      g.fillStyle = !c.o ? '#2a3646' : c.setup > 0 ? '#f5b942' : c.rem > 0 ? '#3ecf8e' : '#ef5350'; g.fillRect(x, y, 120, 80);
-      SL.text(g, n, x + 60, y + 30, '#000', '14px system-ui', 'center');
-      SL.text(g, c.o ? (c.o.u ? 'URGENTE #' : 'Orden #') + c.o.id : 'libre', x + 60, y + 52, '#000', '12px system-ui', 'center');
-      SL.text(g, c.setup > 0 ? 'setup' : c.o && c.rem <= 0 ? 'esperando pieza/tope' : '', x + 60, y + 68, '#000', '11px system-ui', 'center');
+      const x = 20 + i * 196, c = s.cells[i];
+      const state = !c.o ? 'idle' : c.setup > 0 ? 'setup' : c.rem > 0 ? 'run' : 'block';
+      SL.machine(g, x, y, 128, 86, { label: n, sub: c.o ? `${c.o.u ? 'URGENTE' : 'Orden'} #${c.o.id}` : 'libre', state, fs: 12, tag: c.setup > 0 ? 'setup' : c.o && c.rem <= 0 ? 'espera pieza/tope' : null });
+      if (c.o && c.o.u) { g.strokeStyle = '#ef5350'; g.lineWidth = 2; g.strokeRect(x - 3, y - 3, 134, 92); }
+      SL.person(g, x + 36, fy, { dir: 1, busy: c.rem > 0 });
       const wait = s.ords.reduce((a, o) => a + (o.av[i] - o.pr[i] - (c.o === o && c.rem > 0 ? 1 : 0)), 0);
-      if (i < 3) for (let j = 0; j < Math.min(wait, 60); j++) { g.fillStyle = hoy ? '#ef5350' : '#4fc3f7'; g.fillRect(x + 125 + (j % 4) * 11, hoy ? y + 10 + Math.floor(j / 4) * 11 + (j % 3) * 4 : y + 10 + Math.floor(j / 4) * 11, 8, 8); }
-      if (i === 0) SL.text(g, 'Entrada: ' + wait + ' pzas', x + 60, y + 100, '#8b9bb0', '12px system-ui', 'center');
+      if (i === 0) SL.tag(g, `Entrada: ${wait} pzas`, x + 64, y - 34, SL.STATE.info);
+      if (i < 3) {
+        if (hoy) {
+          const zx = x + 132, zw = 60;
+          g.fillStyle = 'rgba(239,83,80,.06)'; g.fillRect(zx, y + 98, zw, 50); g.strokeStyle = 'rgba(239,83,80,.45)'; g.setLineDash([4, 3]); g.strokeRect(zx + 0.5, y + 98.5, zw - 1, 49); g.setLineDash([]);
+          for (let j = 0; j < Math.min(wait, 40); j++) SL.carton(g, zx + 4 + (j % 5) * 11 + ((j * 5) % 3), fy - 12 - Math.floor(j / 5) * 8 + ((j * 3) % 2), 10, 8, '#b98a58');
+          if (wait > 40) SL.tag(g, `+${wait - 40}`, zx + zw / 2, y + 92, SL.STATE.down);
+        } else {
+          SL.belt(g, [[x + 128, y + 58], [x + 196, y + 58]], 12);
+          const m = p.buf, step = 64 / Math.max(m, 1);
+          for (let j = 0; j < m; j++) { const bx = x + 132 + j * step; if (j < wait) SL.carton(g, bx, y + 50, Math.min(step - 2, 12), 10, '#b98a58'); else { g.strokeStyle = 'rgba(139,155,176,.35)'; g.strokeRect(bx + 0.5, y + 50.5, Math.min(step - 2, 12) - 1, 9); } }
+          if (wait >= m) SL.led(g, x + 190, y + 40, 2.4, SL.STATE.warn);
+        }
+      }
     });
-    if (!hoy) for (let i = 0; i < 3; i++) SL.belt(g, [[150 + i * 195, 160], [225 + i * 195, 160]], 8);
-    SL.text(g, hoy ? 'WIP en el PISO entre celdas (rojo): lote completo espera al lote completo' : 'Tramo corto FIFO (azul): pieza a pieza, con tope de ' + p.buf, 30, 260, hoy ? '#ef5350' : '#3ecf8e', '13px system-ui');
-    SL.text(g, `Órdenes en sistema: ${s.ords.length} · urgentes: ${s.ords.filter((o) => o.u).length}`, 30, 290, '#e6edf3', '13px system-ui');
+    // Tablero de órdenes en sistema
+    SL.text(g, `Órdenes en sistema: ${s.ords.length} · urgentes: ${s.ords.filter((o) => o.u).length}`, 20, 300, '#e6edf3', '600 13px system-ui');
+    s.ords.slice(0, 16).forEach((o, i) => {
+      const x = 20 + (i % 8) * 96, yy = 312 + Math.floor(i / 8) * 54, done = o.pr[3] / o.q;
+      SL.rr(g, x, yy, 88, 44, 5); g.fillStyle = '#121922'; g.fill(); g.strokeStyle = o.u ? '#ef5350' : '#2e3e52'; g.lineWidth = 1.5; g.stroke();
+      SL.text(g, `${o.u ? '⚠ ' : ''}#${o.id}`, x + 8, yy + 16, o.u ? '#ef5350' : '#e6edf3', '600 11px system-ui');
+      SL.text(g, `${Math.round((s.t - o.t0))} min`, x + 80, yy + 16, '#8b9bb0', '10px system-ui', 'right');
+      SL.gauge(g, x + 6, yy + 26, 76, 9, done, SL.STATE.run);
+    });
+    SL.text(g, hoy ? 'WIP en el PISO: el lote completo espera al lote completo' : `Tramo corto FIFO: pieza a pieza, tope de ${p.buf}`, 20, H - 6, hoy ? '#ef5350' : '#3ecf8e', '12px system-ui');
   },
   kpis(s, p) {
     const inSys = s.ords.reduce((a, o) => a + (o.q - o.pr[3]), 0);

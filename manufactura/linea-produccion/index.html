@@ -4,6 +4,7 @@
 <body><div id="app"></div>
 <script src="../../shared/controls.js"></script>
 <script src="../../shared/sim.js"></script>
+<script src="../../shared/gfx.js"></script>
 <script>
 // Línea serie de 3 estaciones con buffers finitos, fallas y reparaciones. Unidad: segundos.
 const NAMES = ['Corte', 'Ensamble', 'Empaque'];
@@ -43,19 +44,26 @@ SL.app({
     });
   },
   draw(g, s, p, W, H) {
-    const col = { idle: '#8b9bb0', work: '#3ecf8e', done: '#f5b942', down: '#ef5350' };
-    g.font = '14px system-ui'; g.textAlign = 'center';
+    const map = { idle: 'idle', work: 'run', done: 'block', down: 'down' }, y = 140, mw = 132, gap = 110, fy = y + 128;
+    g.fillStyle = 'rgba(255,255,255,.05)'; g.fillRect(10, fy, 780, 2);
+    SL.belt(g, [[16, y + 74], [690, y + 74]], 14);
     s.st.forEach((k, i) => {
-      const x = 70 + i * 260, y = 170;
-      g.fillStyle = col[k.s]; g.fillRect(x, y, 120, 90);
-      g.fillStyle = '#000'; g.fillText(NAMES[i], x + 60, y + 35);
-      g.fillText(k.s === 'idle' ? (i ? 'Inanición' : 'Libre') : k.s === 'work' ? 'Produciendo' : k.s === 'done' ? 'Bloqueada' : 'FALLA', x + 60, y + 60);
+      const x = 30 + i * (mw + gap);
+      const txt = k.s === 'idle' ? (i ? 'Inanición' : 'Libre') : k.s === 'work' ? 'Produciendo' : k.s === 'done' ? 'Bloqueada' : 'FALLA';
+      SL.machine(g, x, y, mw, 100, { label: NAMES[i], sub: txt, state: map[k.s], tag: txt, load: k.s === 'work' ? 0.9 : 0.2 });
+      SL.person(g, x + 26, fy, { dir: 1, busy: k.s === 'work' });
+      if (k.s === 'down') { SL.person(g, x + mw - 18, fy, { dir: -1, busy: true, helmet: '#f5b942', shirt: '#6b4fa0' }); SL.tag(g, 'MANTENIMIENTO', x + mw / 2, fy + 16, SL.STATE.setup); }
       if (i < 2) {
-        g.fillStyle = '#8b9bb0'; g.fillText(`Buffer ${s.buf[i]}/${p.buf}`, x + 190, y + 20);
-        for (let j = 0; j < p.buf; j++) { g.fillStyle = j < s.buf[i] ? '#4fc3f7' : '#1c2633'; g.fillRect(x + 130 + (j % 10) * 11, y + 40 + Math.floor(j / 10) * 12, 9, 9); }
+        const bx = x + mw + 6, n = Math.min(p.buf, 12), step = (gap - 12) / Math.max(n, 1), cw = Math.min(step - 2, 14);
+        for (let j = 0; j < n; j++) { const cx = bx + j * step; if (j < s.buf[i]) SL.carton(g, cx, y + 60, cw, 12, '#b98a58'); else { g.strokeStyle = 'rgba(139,155,176,.35)'; g.strokeRect(cx + 0.5, y + 60.5, cw - 1, 11); } }
+        SL.tag(g, `Buffer ${s.buf[i]}/${p.buf}`, x + mw + gap / 2, y + 38, SL.STATE.info);
       }
     });
-    g.fillStyle = '#e6edf3'; g.fillText(`Salida: ${s.out} piezas`, 680, 215);
+    // Salida: pallet con producto terminado
+    const ox = 700, n = s.out % 30;
+    SL.pallet(g, ox, fy - 7, 80);
+    for (let j = 0; j < n; j++) SL.carton(g, ox + 2 + (j % 5) * 15.2, fy - 7 - 12 - Math.floor(j / 5) * 12, 15, 12, '#c9a06a');
+    SL.tag(g, `Salida: ${s.out} piezas`, ox + 40, y - 20, SL.STATE.run);
   },
   kpis(s, p) {
     const T = Math.max(s.t, 1), u = s.st.map((k) => k.work / T);

@@ -4,6 +4,7 @@
 <body><div id="app"></div>
 <script src="../../shared/controls.js"></script>
 <script src="../../shared/sim.js"></script>
+<script src="../../shared/gfx.js"></script>
 <script>
 // Andén / cross-dock con frío: pallets que esperan expuestos entre camión y cámara. Unidad: minutos.
 SL.app({
@@ -33,17 +34,30 @@ SL.app({
     }
   },
   draw(g, s, p, W, H) {
-    const hoy = p.mode === 0, y = 200;
-    g.fillStyle = hoy ? '#3a3020' : '#1c3a4a'; g.fillRect(130, y - 70, 320, 140); SL.text(g, hoy ? 'ANDÉN AMBIENTE' : 'ANDÉN REFRIGERADO (8 °C)', 290, y - 78, hoy ? '#f5b942' : '#4fc3f7', '12px system-ui', 'center');
-    g.fillStyle = '#243040'; g.fillRect(20, y - 50, 100, 100); SL.text(g, 'Camión', 70, y + 4, '#e6edf3', '13px system-ui', 'center');
-    g.fillStyle = '#143a4a'; g.fillRect(560, y - 70, 210, 140); SL.text(g, 'CÁMARA ' + s.n, 665, y - 78, '#4fc3f7', '12px system-ui', 'center');
-    SL.belt(g, [[450, y], [560, y]], hoy ? 4 : 18, '#2a3646');
-    s.q.slice(0, 60).forEach((o, i) => { g.fillStyle = SL.color(1 - SL.clamp((o.T - 2) / (p.rej - 2), 0, 1)); g.fillRect(140 + (i % 12) * 26, y - 55 + Math.floor(i / 12) * 26, 20, 20); });
-    [0, 1].forEach((i) => { const k = s.srv[i]; if (hoy || i === 0) { g.fillStyle = k && k.o ? '#3ecf8e' : '#2a3646'; g.beginPath(); g.arc(480 + i * 30, y + 45, 10, 0, 7); g.fill(); } });
-    SL.text(g, 'Cola en andén: ' + s.q.length + ' pallets', 140, y + 100, s.q.length > 10 ? '#ef5350' : '#8b9bb0', '14px system-ui');
-    SL.text(g, 'Color = temperatura del pallet (verde frío → rojo caliente)', 140, y + 120);
+    const hoy = p.mode === 0, y = 190, fy = y + 84;
+    SL.van(g, 104, fy, { s: 1.5, dir: -1, open: true, reefer: true, body: '#e8eef5', cab: '#1f6f8b' });
+    g.fillStyle = hoy ? 'rgba(245,185,66,.06)' : 'rgba(79,195,247,.08)'; g.fillRect(132, y - 90, 330, 176);
+    g.strokeStyle = hoy ? 'rgba(245,185,66,.5)' : 'rgba(79,195,247,.6)'; g.setLineDash([6, 4]); g.strokeRect(132.5, y - 89.5, 329, 175); g.setLineDash([]);
+    SL.tag(g, hoy ? `ANDÉN AMBIENTE ${p.tamb - 4} °C` : 'ANDÉN REFRIGERADO 8 °C', 297, y - 102, hoy ? SL.STATE.warn : SL.STATE.info);
+    const col = (T) => SL.color(1 - SL.clamp((T - 2) / (p.rej - 2), 0, 1));
+    const pallet = (x, yy, T, w = 32) => { SL.pallet(g, x, yy + 26, w); for (let r = 0; r < 2; r++) for (let k = 0; k < 2; k++) SL.carton(g, x + 1 + k * (w / 2 - 0.5), yy + 2 + r * 12, w / 2 - 1, 12, col(T)); };
+    s.q.slice(0, 24).forEach((o, i) => pallet(142 + (i % 8) * 39, y - 70 + Math.floor(i / 8) * 50, o.T));
+    if (s.q.length > 24) SL.tag(g, `+${s.q.length - 24} pallets`, 420, y + 78, SL.STATE.down);
+    g.fillStyle = SL.vgrad(g, y - 90, 176, '#1d3a4f', '#122636'); g.fillRect(560, y - 90, 226, 176); g.strokeStyle = '#4fc3f7'; g.lineWidth = 1.5; g.strokeRect(560.5, y - 89.5, 225, 175);
+    SL.tag(g, `CÁMARA · ${s.n} pallets`, 673, y - 102, SL.STATE.info);
+    for (let i = 0; i < Math.min(s.n, 30); i++) pallet(570 + (i % 6) * 36, y + 42 - Math.floor(i / 6) * 32, 2, 30);
+    if (hoy) {
+      [0, 1].forEach((i) => { const k = s.srv[i], busy = !!(k && k.o), f = busy ? SL.clamp(1 - k.rem / 3, 0, 1) : 0; SL.forklift(g, 470 + f * 70, fy - 30 + i * 30, { s: 1.1, load: busy ? col(k.o.T) : null }); });
+    } else {
+      SL.belt(g, [[462, y], [560, y]], 20);
+      const k = s.srv[0]; if (k && k.o) pallet(470 + SL.clamp(1 - k.rem / 1.2, 0, 1) * 60, y - 34, k.o.T, 30);
+      SL.person(g, 476, fy, { dir: 1, busy: !!(k && k.o) });
+    }
+    SL.text(g, `Cola en andén: ${s.q.length} pallets · color de caja = temperatura del pallet`, 140, y + 108, s.q.length > 10 ? '#ef5350' : '#8b9bb0', '12px system-ui');
     const bins = [0, 0, 0, 0, 0, 0]; s.hist.forEach((T) => { bins[SL.clamp(Math.floor(T - 2), 0, 5)]++; });
-    const mx = Math.max(1, ...bins); bins.forEach((v, i) => { g.fillStyle = SL.color(1 - i / 5); g.fillRect(180 + i * 60, 420 - (v / mx) * 60, 44, (v / mx) * 60); SL.text(g, (2 + i) + '°', 202 + i * 60, 436, '#8b9bb0', '11px system-ui', 'center'); });
+    const mx = Math.max(1, ...bins);
+    bins.forEach((v, i) => { const h = (v / mx) * 58; SL.rr(g, 180 + i * 60, 420 - h, 44, Math.max(h, 1), 3); g.fillStyle = SL.color(1 - i / 5); g.fill(); SL.text(g, 2 + i + '°', 202 + i * 60, 436, '#8b9bb0', '11px system-ui', 'center'); });
+    SL.text(g, 'Temperatura de ingreso a cámara', 560, 420, '#8b9bb0', '11px system-ui');
   },
   kpis(s, p) {
     const hrs = Math.max(s.t, 1) / 60;

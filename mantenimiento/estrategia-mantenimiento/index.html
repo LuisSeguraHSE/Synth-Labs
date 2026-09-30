@@ -4,6 +4,7 @@
 <body><div id="app"></div>
 <script src="../../shared/controls.js"></script>
 <script src="../../shared/sim.js"></script>
+<script src="../../shared/gfx.js"></script>
 <script>
 // Flota de máquinas con salud 100→0, riesgo aleatorio creciente, cuadrillas limitadas. Unidad: días (1 s sim = 1 día).
 SL.app({
@@ -46,17 +47,16 @@ SL.app({
     s.cost += down * p.lost * dt; s.up += (s.m.length - down) * dt; s.tot += s.m.length * dt;
   },
   draw(g, s, p, W, H) {
-    const cols = Math.min(10, s.m.length), cw = 72;
+    const cols = Math.min(10, s.m.length), cw = 77;
     s.m.forEach((k, i) => {
-      const x = 25 + (i % cols) * cw, y = 40 + Math.floor(i / cols) * 105;
-      g.fillStyle = k.st === 'run' ? '#1c2633' : k.st === 'fix' ? '#4fc3f7' : '#ef5350';
-      g.fillRect(x, y, 60, 80);
-      const f = SL.clamp(k.h / 100, 0, 1);
-      g.fillStyle = SL.color(f); g.fillRect(x + 6, y + 74 - 60 * f, 48, 60 * f);
-      g.fillStyle = '#e6edf3'; g.font = '11px system-ui'; g.fillText(k.st === 'run' ? Math.max(0, k.h | 0) + '%' : k.st === 'fix' ? (k.type === 'C' ? 'CORR' : 'PREV') : 'espera', x + 8, y + 12);
+      const x = 16 + (i % cols) * cw, y = 30 + Math.floor(i / cols) * 104, f = SL.clamp(k.h / 100, 0, 1);
+      const st = k.st === 'run' ? (f < 0.3 ? 'block' : 'run') : k.st === 'fix' ? 'setup' : 'down';
+      SL.machine(g, x, y, 54, 52, { label: `M${i + 1}`, state: st, fs: 10, load: f });
+      SL.gauge(g, x, y + 62, 54, 9, f, SL.color(f));
+      if (k.st === 'fix') { SL.person(g, x + 64, y + 56, { dir: -1, busy: true, s: 0.8, helmet: '#f5b942', shirt: '#6b4fa0' }); SL.tag(g, k.type === 'C' ? 'CORR' : 'PREV', x + 27, y - 6, SL.STATE.setup, '600 9px system-ui'); }
+      if (k.st === 'wait') SL.tag(g, 'espera', x + 27, y - 6, SL.STATE.down, '600 9px system-ui');
     });
-    g.fillStyle = '#8b9bb0'; g.font = '13px system-ui';
-    g.fillText('Barra = salud · Azul = en mantenimiento · Rojo = parada esperando cuadrilla', 20, H - 12);
+    SL.text(g, 'Barra = salud · franja: verde opera · amarillo salud baja · violeta en mantenimiento · rojo parada esperando cuadrilla', 12, H - 10, '#8b9bb0', '12px system-ui');
   },
   kpis(s) {
     return [

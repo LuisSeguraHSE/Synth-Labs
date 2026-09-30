@@ -4,6 +4,7 @@
 <body><div id="app"></div>
 <script src="../../shared/controls.js"></script>
 <script src="../../shared/sim.js"></script>
+<script src="../../shared/gfx.js"></script>
 <script>
 // Tanque (integrador): dh/dt = (u·Qmax − demanda)/A. PID con anti-windup. Unidad: segundos.
 const A = 2, HMAX = 4, QMAX = 50; // m², m, L/s
@@ -31,14 +32,35 @@ SL.app({
     s.iae += Math.abs(e) * dt; s.maxh = Math.max(s.maxh, s.h);
   },
   draw(g, s, p, W, H) {
-    const x = 300, y = 40, w = 200, h = 330, py = (v) => y + h - (v / HMAX) * h;
-    g.fillStyle = '#4fc3f7'; g.fillRect(x, py(s.h), w, y + h - py(s.h));
-    g.strokeStyle = '#e6edf3'; g.lineWidth = 3; g.strokeRect(x, y, w, h);
-    g.strokeStyle = '#f5b942'; g.setLineDash([8, 5]); g.beginPath(); g.moveTo(x - 25, py(p.sp)); g.lineTo(x + w + 25, py(p.sp)); g.stroke(); g.setLineDash([]);
-    g.fillStyle = '#f5b942'; g.font = '13px system-ui'; g.fillText('SP ' + p.sp.toFixed(1) + ' m', x + w + 30, py(p.sp) + 4);
-    g.fillStyle = '#fff'; g.fillText('PV ' + s.h.toFixed(2) + ' m', x + 70, py(s.h) - 6);
-    g.fillStyle = '#3ecf8e'; g.fillRect(90, 200, 120, 14); g.fillStyle = '#000'; g.fillText(`Bomba ${(100 * s.u).toFixed(0)} %`, 100, 212);
-    g.fillStyle = '#ef5350'; g.fillRect(x + w, y + h - 40, 120, 14); g.fillStyle = '#000'; g.fillText(`Demanda ${s.q.toFixed(0)} L/s`, x + w + 6, y + h - 29);
+    const x = 330, y = 64, w = 160, h = 290, py = (v) => y + h - (v / HMAX) * h, u = s.u || 0, t = s.t || 0;
+    // Reservorio, bomba y línea de impulsión
+    g.fillStyle = SL.vgrad(g, 392, 40, '#1f5f8f', '#123a58'); g.fillRect(30, 392, 180, 38); g.fillStyle = 'rgba(191,230,255,.25)'; g.fillRect(30, 392, 180, 3);
+    SL.text(g, 'Reservorio', 120, 446, '#8b9bb0', '11px system-ui', 'center');
+    SL.pipe(g, [[96, 400], [96, 344]], 8);
+    SL.pipe(g, [[122, 318], [122, 36], [410, 36], [410, y - 8]], 9);
+    SL.flow(g, 122, 300, 122, 50, Math.round(u * 5), '#9fe3ff'); SL.flow(g, 132, 36, 400, 36, Math.round(u * 5), '#9fe3ff');
+    SL.pump(g, 110, 336, 24, u > 0.02, t * u * 10);
+    SL.tag(g, `P-101 · ${(100 * u).toFixed(0)} %`, 150, 292, u > 0.02 ? SL.STATE.run : SL.STATE.idle);
+    // Tanque con nivel, setpoint y PV
+    SL.tank(g, x, y, w, h, s.h / HMAX, { max: HMAX, ticks: 8 });
+    g.strokeStyle = '#f5b942'; g.setLineDash([8, 5]); g.lineWidth = 1.5; g.beginPath(); g.moveTo(x - 16, py(p.sp)); g.lineTo(x + w + 16, py(p.sp)); g.stroke(); g.setLineDash([]);
+    SL.tag(g, `SP ${p.sp.toFixed(1)} m`, x + w + 52, py(p.sp), '#f5b942');
+    SL.tag(g, `PV ${s.h.toFixed(2)} m`, x + w / 2, Math.max(y + 16, py(s.h) - 14), '#9fe3ff');
+    // Descarga con válvula y demanda
+    const oy = y + h - 16;
+    SL.pipe(g, [[x + w, oy], [770, oy]], 9);
+    SL.flow(g, x + w + 12, oy, 760, oy, Math.round(s.q / 8), '#9fe3ff');
+    const vx = 650; g.fillStyle = '#c3ccd6'; g.beginPath(); g.moveTo(vx - 10, oy - 8); g.lineTo(vx + 10, oy + 8); g.lineTo(vx + 10, oy - 8); g.lineTo(vx - 10, oy + 8); g.closePath(); g.fill();
+    g.fillStyle = '#5b6b80'; g.fillRect(vx - 1.5, oy - 22, 3, 14); g.fillRect(vx - 9, oy - 25, 18, 3);
+    SL.tag(g, `Demanda ${s.q.toFixed(0)} L/s`, 700, oy + 26, SL.STATE.down);
+    // Instrumentación ISA: transmisor de nivel y controlador
+    const bubble = (bx, by, a, b) => { g.fillStyle = '#0b1117'; g.beginPath(); g.arc(bx, by, 18, 0, 7); g.fill(); g.strokeStyle = '#9fe3ff'; g.lineWidth = 1.5; g.stroke(); g.beginPath(); g.moveTo(bx - 18, by); g.lineTo(bx + 18, by); g.stroke(); SL.text(g, a, bx, by - 4, '#e6edf3', '600 10px system-ui', 'center'); SL.text(g, b, bx, by + 12, '#e6edf3', '10px system-ui', 'center'); };
+    g.setLineDash([4, 4]); g.strokeStyle = 'rgba(159,227,255,.55)'; g.lineWidth = 1.2;
+    g.beginPath(); g.moveTo(x + w, y + 230); g.lineTo(540, y + 230); g.lineTo(600, 130); g.stroke();
+    g.beginPath(); g.moveTo(600, 112); g.lineTo(600, 16); g.lineTo(180, 16); g.lineTo(180, 318); g.stroke();
+    g.setLineDash([]);
+    bubble(540, y + 230, 'LT', '101'); bubble(600, 130, 'LIC', '101');
+    SL.tag(g, `u = ${(100 * u).toFixed(0)} %`, 660, 130, SL.STATE.info);
   },
   kpis(s, p) {
     return [

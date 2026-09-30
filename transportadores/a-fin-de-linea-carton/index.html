@@ -4,6 +4,7 @@
 <body><div id="app"></div>
 <script src="../../shared/controls.js"></script>
 <script src="../../shared/sim.js"></script>
+<script src="../../shared/gfx.js"></script>
 <script>
 // Fin de línea → pallet. Unidad: segundos. Hoy = mesa corta + 3 personas acarreando; Propuesto = recta + acumulación + 1 palletizador.
 const PX = 50, X0 = 120, SP = 0.5, V = 0.6, RW = 300;
@@ -44,20 +45,25 @@ SL.app({
     while (s.tpl.length && s.tpl[0] < s.t - RW) s.tpl.shift();
   },
   draw(g, s, p, W, H) {
-    const hoy = p.mode === 0, L = hoy ? 1.5 : p.L, acc = hoy ? 1.2 : p.acc, y = 190;
+    const hoy = p.mode === 0, L = hoy ? 1.5 : p.L, acc = hoy ? 1.2 : p.acc, y = 190, fy = y + 60;
     const stopped = s.m.rem <= 0, xe = X0 + L * PX;
-    g.fillStyle = '#243040'; g.fillRect(20, y - 40, 90, 90); SL.text(g, 'Pegadora', 65, y + 4, '#e6edf3', '13px system-ui', 'center');
-    g.fillStyle = stopped ? '#ef5350' : '#3ecf8e'; g.beginPath(); g.arc(65, y - 54, 9, 0, 7); g.fill();
-    SL.text(g, stopped ? 'PARADA: sin desalojo' : 'produciendo', 65, y - 72, stopped ? '#ef5350' : '#3ecf8e', '12px system-ui', 'center');
+    g.fillStyle = 'rgba(255,255,255,.05)'; g.fillRect(10, fy, 780, 2);
+    SL.machine(g, 12, y - 72, 100, 112, { label: 'Pegadora', sub: stopped ? 'PARADA' : 'produce', state: stopped ? 'down' : 'run', tag: stopped ? 'PARADA: sin desalojo' : 'produciendo' });
     SL.belt(g, [[X0, y], [xe, y]], 24);
-    g.fillStyle = 'rgba(245,185,66,.18)'; g.fillRect(xe - acc * PX, y - 12, acc * PX, 24);
-    SL.text(g, 'acumulación', xe - acc * PX / 2, y + 30, '#f5b942', '11px system-ui', 'center');
-    s.items.forEach((a) => { g.fillStyle = '#c59b6d'; g.fillRect(X0 + a.x * PX - 10, y - 8, 20, 16); });
-    g.fillStyle = '#7a5c3a'; const n = s.pal.busy ? 1 : 0; g.fillRect(xe + 15, y - 30, 70, 60); SL.text(g, 'PALLET', xe + 50, y + 4, '#fff', '12px system-ui', 'center');
+    g.fillStyle = 'rgba(245,185,66,.12)'; g.fillRect(xe - acc * PX, y - 15, acc * PX, 30);
+    g.strokeStyle = 'rgba(245,185,66,.6)'; g.setLineDash([4, 3]); g.strokeRect(xe - acc * PX + 0.5, y - 14.5, acc * PX - 1, 29); g.setLineDash([]);
+    SL.text(g, 'zona de acumulación', xe - (acc * PX) / 2, y - 24, '#f5b942', '11px system-ui', 'center');
+    g.fillStyle = '#26313d'; g.fillRect(xe - 2, y - 26, 4, 12); SL.led(g, xe, y - 28, 2.2, SL.STATE.down, stopped); // tope
+    s.items.forEach((a) => { const bx = X0 + a.x * PX - 11; SL.carton(g, bx, y - 18, 22, 14, '#c59b6d'); g.fillStyle = 'rgba(30,30,30,.55)'; g.fillRect(bx + 6, y - 18, 1.5, 14); g.fillRect(bx + 14, y - 18, 1.5, 14); });
+    const px = xe + 36, n = s.pall % 40;
+    SL.pallet(g, px, fy - 7, 64);
+    for (let i = 0; i < n; i++) SL.carton(g, px + 1 + (i % 4) * 15.5, fy - 7 - 12 - Math.floor(i / 4) * 12, 15, 12, '#c59b6d');
+    SL.tag(g, `Pallet ${n}/40`, px + 32, fy + 16, SL.STATE.info);
+    for (let i = 0; i < Math.min(s.fell, 6); i++) { g.save(); g.translate(px + 150 + i * 12, fy - 5); g.rotate(0.5 + i * 0.3); SL.carton(g, -7, -5, 14, 10, '#8a6a48'); g.restore(); }
     const np = hoy ? 3 : 1;
-    for (let i = 0; i < np; i++) { g.fillStyle = s.pal.busy || hoy ? '#4fc3f7' : '#2a3646'; g.beginPath(); g.arc(xe + 40 + i * 26, y + 70, 10, 0, 7); g.fill(); }
-    SL.text(g, hoy ? '3 personas en acarreo' : '1 persona en pallet', xe + 40, y + 98, '#8b9bb0', '12px system-ui', 'center');
-    SL.text(g, `Fardos en acumulación: ${s.items.length}`, 20, H - 14);
+    for (let i = 0; i < np; i++) SL.person(g, hoy ? px + 78 + i * 24 : px - 14, fy, { dir: 1, busy: s.pal.busy, carry: s.pal.busy && i === 0 ? '#c59b6d' : null, walk: hoy && s.pal.busy ? s.t * 6 + i : 0 });
+    SL.text(g, hoy ? '3 personas en acarreo' : '1 persona en pallet', px + 32, fy + 38, '#8b9bb0', '12px system-ui', 'center');
+    SL.text(g, `Fardos en acumulación: ${s.items.length} · cajas caídas: ${s.fell}`, 20, H - 14);
   },
   kpis(s, p) {
     const T = Math.max(s.t, 1);

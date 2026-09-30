@@ -4,6 +4,7 @@
 <body><div id="app"></div>
 <script src="../../shared/controls.js"></script>
 <script src="../../shared/sim.js"></script>
+<script src="../../shared/gfx.js"></script>
 <script>
 // Llenadora → tapa → etiqueta → encajado. Unidad: segundos.
 const NM = ['Llenadora', 'Tapadora', 'Etiquetadora'], PXB = 1;
@@ -54,24 +55,32 @@ SL.app({
     if (!pk.busy && s.buf[2] >= p.case) { s.buf[2] -= p.case; pk.busy = true; pk.rem = 8; }
   },
   draw(g, s, p, W, H) {
-    const hoy = p.mode === 0, cap = hoy ? 1 : Math.max(1, Math.round(p.bufm * 6)), y = 130;
-    const cols = { idle: '#8b9bb0', work: '#3ecf8e', done: '#f5b942' };
-    SL.belt(g, [[30, y + 35], [770, y + 35]], 14);
+    const hoy = p.mode === 0, cap = hoy ? 1 : Math.max(1, Math.round(p.bufm * 6)), my = 96, by = 172, fy = 248, map = { idle: 'idle', work: 'run', done: 'block' };
+    if (!hoy) { g.fillStyle = 'rgba(79,195,247,.08)'; g.fillRect(14, by + 12, 772, 12); g.strokeStyle = 'rgba(79,195,247,.6)'; g.setLineDash([6, 4]); g.strokeRect(14.5, by + 12.5, 771, 11); g.setLineDash([]); SL.text(g, 'bandeja de derrame', 18, by + 38, '#4fc3f7', '11px system-ui'); }
+    SL.belt(g, [[14, by], [786, by]], 14);
     [...NM, 'Encajado'].forEach((n, i) => {
-      const x = 30 + i * 205; g.fillStyle = i < 3 ? cols[s.st[i].s] : s.pk.busy ? '#3ecf8e' : '#8b9bb0'; g.fillRect(x, y, 100, 70);
-      SL.text(g, n, x + 50, y + 28, '#000', '14px system-ui', 'center');
-      SL.text(g, i < 3 ? (s.st[i].s === 'work' ? 'trabaja' : s.st[i].s === 'done' ? 'bloqueada' : i ? 'sin pieza' : (s.setup > 0 ? 'SETUP' : 'espera')) : s.case || p.case + '/caja', x + 50, y + 50, '#000', '12px system-ui', 'center');
+      const x = 20 + i * 205, k = s.st[i];
+      const sub = i < 3 ? (k.s === 'work' ? 'trabaja' : k.s === 'done' ? 'bloqueada' : i ? 'sin pieza' : s.setup > 0 ? 'SETUP' : 'espera') : `${p.case}/caja`;
+      const state = i < 3 ? (i === 0 && s.setup > 0 ? 'setup' : map[k.s]) : s.pk.busy ? 'run' : 'idle';
+      SL.machine(g, x, my, 112, 80, { label: n, sub, state, fs: 12, tag: i === 0 && s.setup > 0 ? 'cambio de lote' : null });
       if (i < 3) {
-        const b = s.buf[i], m = i === 2 ? 12 : cap;
-        for (let j = 0; j < m; j++) { g.fillStyle = j < b ? '#4fc3f7' : '#1c2633'; g.fillRect(x + 105 + (j % 6) * 16 - (m < 6 ? 0 : 0), y + 8 + Math.floor(j / 6) * 14, 12, 12); }
+        const b = s.buf[i], m = i === 2 ? 12 : cap, step = Math.min(15, 88 / Math.max(m, 1));
+        for (let j = 0; j < m; j++) { const bx = x + 118 + j * step; if (j < b) SL.bucket(g, bx + 6, by - 6, 0.78, '#d9dee4', i === 2 ? '#2f6fb0' : null); else { g.strokeStyle = 'rgba(139,155,176,.3)'; g.strokeRect(bx + 1.5, by - 17.5, 9, 11); } }
       }
     });
-    if (!hoy) { g.strokeStyle = '#4fc3f7'; g.setLineDash([6, 4]); g.strokeRect(20, y + 75, 760, 14); g.setLineDash([]); SL.text(g, 'bandeja de derrame', 30, y + 104, '#4fc3f7', '12px system-ui'); }
-    SL.text(g, `Vía de rechazo / retrabajo: ${s.rw.length}`, 440, y + 120, '#ef5350', '13px system-ui');
-    SL.text(g, hoy ? 'PISO (producto a medio etiquetar, derrames):' : 'Piso limpio: la banda se vacía en orden', 30, 300, hoy ? '#ef5350' : '#3ecf8e', '13px system-ui');
-    for (let i = 0; i < Math.min(s.floor, 120); i++) { g.fillStyle = '#c59b6d'; g.beginPath(); g.arc(40 + (i % 40) * 18, 325 + Math.floor(i / 40) * 18, 6, 0, 7); g.fill(); }
-    for (let i = 0; i < Math.min(s.spillFloor, 40); i++) { g.fillStyle = '#4fc3f7'; g.beginPath(); g.arc(500 + (i % 13) * 16, 385 + Math.floor(i / 13) * 14, 5, 0, 7); g.fill(); }
-    SL.text(g, `Cajas: ${s.cases}`, 690, 420, '#e6edf3', '14px system-ui', 'center');
+    const np = hoy ? 4 : 2;
+    for (let i = 0; i < np; i++) SL.person(g, hoy ? 140 + i * 190 : 250 + i * 330, fy, { dir: i % 2 ? -1 : 1, busy: true, carry: hoy ? '#d9dee4' : null });
+    // Vía de rechazo / retrabajo
+    SL.belt(g, [[500, by + 6], [500, 270]], 10); SL.chute(g, 460, 270, 80, 48, s.rw.length / 6, '#ef5350', `Rechazo ${s.rw.length}`);
+    // Encajado: pallet de cajas cerradas
+    const cx = 640, nc = s.cases % 24; SL.pallet(g, cx, 330, 96);
+    for (let j = 0; j < nc; j++) SL.carton(g, cx + 2 + (j % 6) * 15.5, 330 - 13 - Math.floor(j / 6) * 13, 15, 13, '#b98a58');
+    SL.tag(g, `Cajas: ${s.cases}`, cx + 48, 352, SL.STATE.run);
+    if (hoy) {
+      SL.text(g, 'PISO: producto a medio etiquetar y derrames', 20, 300, '#ef5350', '600 12px system-ui');
+      for (let i = 0; i < Math.min(s.floor, 60); i++) { g.save(); g.translate(30 + (i % 20) * 20, 330 + Math.floor(i / 20) * 26); g.rotate(i % 3 ? 1.4 : 0); SL.bucket(g, 0, 0, 0.75, '#c7ccd2'); g.restore(); }
+      for (let i = 0; i < Math.min(s.spillFloor, 16); i++) { g.fillStyle = 'rgba(79,195,247,.45)'; g.beginPath(); g.ellipse(60 + i * 26, 425, 12, 4, 0, 0, 7); g.fill(); }
+    } else SL.text(g, 'Piso limpio: la banda se vacía en orden', 20, 300, '#3ecf8e', '600 12px system-ui');
   },
   kpis(s, p) {
     const T = Math.max(s.t, 1);
