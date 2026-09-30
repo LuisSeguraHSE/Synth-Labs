@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="stylesheet" href="../../shared/style.css"></head>
+<body><div id="app"></div>
+<script src="../../shared/sim.js"></script>
+<script>
+// Cámara frigorífica: aire + producto con inercia, compresor con histéresis, aperturas de puerta y desescarche. Unidad: minutos.
+const tc = (v) => (v >= 0 ? '' : '') + v.toFixed(1) + ' °C';
+SL.app({
+  title: 'Cadena de frío · Cámara frigorífica',
+  desc: 'Control on/off con histéresis, aperturas de puerta, desescarche y producto con inercia térmica. Mide excursiones de temperatura y energía.',
+  pitch: '"La cámara no falla por el compresor: falla por la puerta abierta y el pallet esperando en el andén."',
+  obj: '"Ya tenemos cámara de sobra." → El KPI es minutos de producto fuera de rango, no la capacidad instalada.',
+  unit: 'min', dt: 0.1, sample: 5, speeds: [1, 10, 60, 240],
+  clock: (t) => `Día ${Math.floor(t / 1440) + 1} · ${String(Math.floor((t % 1440) / 60)).padStart(2, '0')}:${String(Math.floor(t % 60)).padStart(2, '0')}`,
+  params: [
+    { id: 'mode', label: 'Escenario', opts: ['Hoy: puerta abierta al cargar', 'Propuesto: cortina de aire + antecámara'], value: 0 },
+    { id: 'sp', label: 'Setpoint', min: -25, max: 8, step: 1, value: 4, unit: '°C' },
+    { id: 'band', label: 'Histéresis', min: 1, max: 4, step: 0.5, value: 2, unit: '°C' },
+    { id: 'lim', label: 'Límite de producto (sobre setpoint)', min: 1, max: 5, step: 0.5, value: 2, unit: '°C' },
+    { id: 'tamb', label: 'Temperatura ambiente', min: 15, max: 40, step: 1, value: 30, unit: '°C' },
+    { id: 'door', label: 'Aperturas de puerta', min: 0, max: 30, step: 1, value: 6, unit: '/h' },
+    { id: 'dur', label: 'Duración de apertura', min: 0.5, max: 5, step: 0.5, value: 2, unit: 'min' },
+    { id: 'cap', label: 'Capacidad frigorífica', min: 4, max: 30, step: 1, value: 14, unit: 'kW' },
+  ],
+  init(p) { return { ta: p.sp, tp: p.sp, on: false, open: 0, nextD: 0, defr: 0, nextDef: 360, runMin: 0, cyc: 0, kwh: 0, bad: 0, peak: p.sp, nOpen: 0, alarm: 0 }; },
+  step(s, dt, p, r) {
+    const hoy = p.mode === 0, amb = p.tamb, kd = 0.02 * (hoy ? 1 : 0.35);
+    if (s.open > 0) s.open -= dt;
+    if (p.door > 0 && s.open <= 0 && r() < (p.door / 60) * dt) { s.open = p.dur * (0.6 + 0.8 * r()); s.nOpen++; }
+    if (s.t >= s.nextDef) { s.defr = 20; s.nextDef += 360; }
+    const defrost = s.defr > 0; if (defrost) s.defr -= dt;
+    if (!defrost) { if (!s.on && s.ta > p.sp + p.band / 2) { s.on = true; s.cyc++; } else if (s.on && s.ta < p.sp - p.band / 2) s.on = false; } else s.on = false;
+    const cool = s.on ? p.cap * 0.012 * (1 - 0.01 * Math.max(0, amb - 25)) : 0;
+    s.ta += dt * ((amb - s.ta) * (0.0015 + (s.open > 0 ? kd : 0)) - cool + (defrost ? 0.03 : 0));
+    s.tp += dt * (s.ta - s.tp) / 90;
+    if (s.on) { s.runMin += dt; s.kwh += (p.cap / (3.2 - 0.04 * Math.max(0, amb - 25))) * (dt / 60); }
+    if (defrost) s.kwh += 4 * (dt / 60);
+    s.peak = Math.max(s.peak, s.tp);
+    if (s.tp > p.sp + p.lim) { s.bad += dt; if (s.tp > p.sp + p.lim + 0.01 && !s.al) { s.al = true; s.alarm++; } } else s.al = false;
+  },
+  draw(g, s, p, W, H) {
+    const x = 200, y = 70, w = 400, h = 260, f = SL.clamp((s.ta - p.sp) / 12, -0.2, 1);
+    g.fillStyle = `rgb(${Math.round(40 + 200 * Math.max(0, f))},${Math.round(90 + 40 * (1 - Math.abs(f)))},${Math.round(200 - 150 * Math.max(0, f))})`; g.fillRect(x, y, w, h);
+    g.strokeStyle = '#e6edf3'; g.lineWidth = 4; g.strokeRect(x, y, w, h);
+    const pt = SL.clamp((s.tp - p.sp) / (p.lim * 2), 0, 1);
+    for (let i = 0; i < 12; i++) { g.fillStyle = SL.color(1 - pt); g.fillRect(x + 25 + (i % 6) * 60, y + 40 + Math.floor(i / 6) * 90, 45, 65); }
+    g.fillStyle = s.open > 0 ? '#ef5350' : '#2a3646'; g.fillRect(x - 6, y + 90, 12, 120);
+    SL.text(g, s.open > 0 ? 'PUERTA ABIERTA' : 'puerta cerrada', x - 10, y + 235, s.open > 0 ? '#ef5350' : '#8b9bb0', '12px system-ui', 'right');
+    if (p.mode === 1) { g.fillStyle = 'rgba(79,195,247,.35)'; g.fillRect(x - 60, y + 80, 54, 140); SL.text(g, 'antecámara', x - 33, y + 235, '#4fc3f7', '11px system-ui', 'center'); }
+    g.fillStyle = s.on ? '#3ecf8e' : s.defr > 0 ? '#f5b942' : '#2a3646'; g.fillRect(650, 120, 110, 70); SL.text(g, s.on ? 'Compresor ON' : s.defr > 0 ? 'Desescarche' : 'Compresor OFF', 705, 160, '#000', '13px system-ui', 'center');
+    SL.text(g, 'Aire: ' + tc(s.ta), x + w / 2, y + 20, '#fff', '15px system-ui', 'center');
+    SL.text(g, 'Producto: ' + tc(s.tp) + ' (límite ' + tc(p.sp + p.lim) + ')', x + w / 2, y + h + 25, s.tp > p.sp + p.lim ? '#ef5350' : '#3ecf8e', '14px system-ui', 'center');
+  },
+  kpis(s, p) {
+    return [
+      { label: 'Temperatura aire', value: tc(s.ta) },
+      { label: 'Temperatura producto', value: tc(s.tp) },
+      { label: 'Pico de producto', value: tc(s.peak) },
+      { label: 'Minutos fuera de rango', value: s.bad.toFixed(0) + ' min' },
+      { label: 'Alarmas de excursión', value: s.alarm },
+      { label: 'Aperturas de puerta', value: s.nOpen },
+      { label: 'Compresor encendido', value: ((100 * s.runMin) / Math.max(s.t, 1)).toFixed(0) + ' %' },
+      { label: 'Energía eléctrica', value: s.kwh.toFixed(0) + ' kWh' },
+      { label: 'Arranques de compresor', value: s.cyc },
+    ];
+  },
+  series: (s, p) => ({ 'Aire °C': s.ta, 'Producto °C': s.tp, 'Setpoint °C': p.sp, 'kWh acum.': s.kwh }),
+});
+</script></body></html>

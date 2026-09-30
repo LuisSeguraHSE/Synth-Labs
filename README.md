@@ -28,6 +28,9 @@ shared/style.css                Estilos comunes
 ## Demos comerciales de transportadores
 Ver `transportadores/README.md` (8 demos A–H, escenario Hoy vs Propuesto).
 
+## Cadena de frío
+Ver `cadena-de-frio/README.md` (cámara, transporte refrigerado, andén/cross-dock).
+
 ## Agregar una simulación
 1. Crear `<industria>/<nombre>/index.html` copiando una existente.
 2. Definir `params`, `init`, `step(s,dt,p,rng)`, `draw`, `kpis`, `series` en `SL.app({...})`.

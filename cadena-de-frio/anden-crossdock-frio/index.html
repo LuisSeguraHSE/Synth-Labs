@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="stylesheet" href="../../shared/style.css"></head>
+<body><div id="app"></div>
+<script src="../../shared/sim.js"></script>
+<script>
+// Andén / cross-dock con frío: pallets que esperan expuestos entre camión y cámara. Unidad: minutos.
+SL.app({
+  title: 'Cadena de frío · Andén y cross-dock refrigerado',
+  desc: 'Cada camión llega con pallets que quedan expuestos al ambiente del andén hasta que un operario los mueve a cámara. La cola en andén es cadena de frío rota.',
+  pitch: '"La cadena de frío se rompe en los 15 metros entre el camión y la cámara."',
+  obj: '"Un andén refrigerado es muy caro." → Compara reclamos y pallets rechazados contra el costo de mercadería dañada.',
+  unit: 'min', dt: 0.1, sample: 5, speeds: [1, 10, 60, 240],
+  params: [
+    { id: 'mode', label: 'Escenario', opts: ['Hoy: andén ambiente + 2 montacargas', 'Propuesto: andén frío + rodillos'], value: 0 },
+    { id: 'np', label: 'Pallets por camión', min: 8, max: 40, step: 2, value: 20 },
+    { id: 'gap', label: 'Un camión cada', min: 15, max: 90, step: 5, value: 35, unit: 'min' },
+    { id: 'tamb', label: 'Ambiente exterior', min: 15, max: 40, step: 1, value: 28, unit: '°C' },
+    { id: 'lim', label: 'Umbral de pallet', min: 3, max: 8, step: 0.5, value: 5, unit: '°C' },
+    { id: 'rej', label: 'Rechazo si supera', min: 6, max: 12, step: 0.5, value: 8, unit: '°C' },
+  ],
+  init() { return { q: [], srv: [], sv: 0, n: 0, bad: 0, rej: 0, sumPk: 0, nextT: 0, expo: 0, hist: [] }; },
+  step(s, dt, p, r) {
+    const hoy = p.mode === 0, nsrv = hoy ? 2 : 1, svc = hoy ? 2.8 : 1.2, tdock = hoy ? p.tamb - 4 : 8, tau = 120;
+    if (s.t >= s.nextT) { for (let i = 0; i < p.np; i++) s.q.push({ T: 2, a: s.t, bad: 0 }); s.nextT += p.gap; }
+    const exp = (o) => { o.T += dt * (tdock - o.T) / tau; if (o.T > p.lim) o.bad += dt; };
+    s.q.forEach(exp);
+    for (let i = 0; i < nsrv; i++) {
+      const k = s.srv[i] || (s.srv[i] = { o: null, rem: 0 });
+      if (k.o) { exp(k.o); if ((k.rem -= dt) <= 0) { const o = k.o; k.o = null; s.n++; s.sumPk += o.T; s.bad += o.bad; if (o.T > p.rej) s.rej++; s.hist.push(o.T); } }
+      if (!k.o && s.q.length) { k.o = s.q.shift(); k.rem = svc * (0.85 + 0.3 * r()); }
+    }
+  },
+  draw(g, s, p, W, H) {
+    const hoy = p.mode === 0, y = 200;
+    g.fillStyle = hoy ? '#3a3020' : '#1c3a4a'; g.fillRect(130, y - 70, 320, 140); SL.text(g, hoy ? 'ANDÉN AMBIENTE' : 'ANDÉN REFRIGERADO (8 °C)', 290, y - 78, hoy ? '#f5b942' : '#4fc3f7', '12px system-ui', 'center');
+    g.fillStyle = '#243040'; g.fillRect(20, y - 50, 100, 100); SL.text(g, 'Camión', 70, y + 4, '#e6edf3', '13px system-ui', 'center');
+    g.fillStyle = '#143a4a'; g.fillRect(560, y - 70, 210, 140); SL.text(g, 'CÁMARA ' + s.n, 665, y - 78, '#4fc3f7', '12px system-ui', 'center');
+    SL.belt(g, [[450, y], [560, y]], hoy ? 4 : 18, '#2a3646');
+    s.q.slice(0, 60).forEach((o, i) => { g.fillStyle = SL.color(1 - SL.clamp((o.T - 2) / (p.rej - 2), 0, 1)); g.fillRect(140 + (i % 12) * 26, y - 55 + Math.floor(i / 12) * 26, 20, 20); });
+    [0, 1].forEach((i) => { const k = s.srv[i]; if (hoy || i === 0) { g.fillStyle = k && k.o ? '#3ecf8e' : '#2a3646'; g.beginPath(); g.arc(480 + i * 30, y + 45, 10, 0, 7); g.fill(); } });
+    SL.text(g, 'Cola en andén: ' + s.q.length + ' pallets', 140, y + 100, s.q.length > 10 ? '#ef5350' : '#8b9bb0', '14px system-ui');
+    SL.text(g, 'Color = temperatura del pallet (verde frío → rojo caliente)', 140, y + 120);
+    const bins = [0, 0, 0, 0, 0, 0]; s.hist.forEach((T) => { bins[SL.clamp(Math.floor(T - 2), 0, 5)]++; });
+    const mx = Math.max(1, ...bins); bins.forEach((v, i) => { g.fillStyle = SL.color(1 - i / 5); g.fillRect(180 + i * 60, 420 - (v / mx) * 60, 44, (v / mx) * 60); SL.text(g, (2 + i) + '°', 202 + i * 60, 436, '#8b9bb0', '11px system-ui', 'center'); });
+  },
+  kpis(s, p) {
+    const hrs = Math.max(s.t, 1) / 60;
+    return [
+      { label: 'Pallets a cámara/h', value: (s.n / hrs).toFixed(0) },
+      { label: 'Temp. media al ingreso', value: (s.sumPk / Math.max(s.n, 1)).toFixed(1) + ' °C' },
+      { label: 'Minutos pallet sobre umbral', value: s.bad.toFixed(0) + ' min' },
+      { label: 'Pallets rechazados', value: s.rej + ' (' + ((100 * s.rej) / Math.max(s.n, 1)).toFixed(0) + ' %)' },
+      { label: 'Cola en andén', value: s.q.length },
+      { label: 'Personas en andén', value: p.mode === 0 ? 2 : 1 },
+    ];
+  },
+  series: (s) => ({ 'Cola andén': s.q.length, 'Rechazados': s.rej, 'Min sobre umbral': s.bad }),
+});
+</script></body></html>

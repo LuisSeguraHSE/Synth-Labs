@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="stylesheet" href="../../shared/style.css"></head>
+<body><div id="app"></div>
+<script src="../../shared/sim.js"></script>
+<script>
+// Camión refrigerado con reparto multi-parada. Unidad: minutos.
+const PTS = (n) => Array.from({ length: n + 2 }, (_, i) => [60 + (i * 680) / (n + 1), 250 - 90 * Math.sin((i / (n + 1)) * Math.PI) - (i % 2) * 18]);
+SL.app({
+  title: 'Cadena de frío · Transporte refrigerado (última milla)',
+  desc: 'Ruta con paradas: en cada parada se abre la puerta y entra aire ambiente. Compara salir sin prefrío ni cortinas contra prefrío + cortina de tiras + monitoreo.',
+  pitch: '"El frío no se rompe en el camino: se rompe en cada parada con la puerta abierta."',
+  obj: '"El termoking ya lo compensa." → Mira el pico de producto y los minutos fuera de rango en cada parada.',
+  unit: 'min', dt: 0.1, sample: 5, speeds: [1, 10, 60, 240],
+  params: [
+    { id: 'mode', label: 'Escenario', opts: ['Hoy: sin prefrío ni cortinas', 'Propuesto: prefrío + cortina + monitoreo'], value: 0 },
+    { id: 'n', label: 'Paradas', min: 2, max: 12, step: 1, value: 6, reset: true },
+    { id: 'drive', label: 'Tramo entre paradas', min: 10, max: 60, step: 5, value: 30, unit: 'min' },
+    { id: 'dwell', label: 'Descarga por parada', min: 5, max: 40, step: 5, value: 20, unit: 'min' },
+    { id: 'sp', label: 'Setpoint', min: -20, max: 8, step: 1, value: 2, unit: '°C' },
+    { id: 'lim', label: 'Umbral de producto', min: -15, max: 10, step: 1, value: 5, unit: '°C' },
+    { id: 'tamb', label: 'Ambiente (máx. del día)', min: 20, max: 42, step: 1, value: 34, unit: '°C' },
+    { id: 'cap', label: 'Equipo de frío', min: 4, max: 14, step: 1, value: 10, unit: 'kW' },
+  ],
+  init(p) { const hoy = p.mode === 0; return { ta: hoy ? p.sp + 6 : p.sp, tp: hoy ? p.sp + 2 : p.sp, on: false, runMin: 0, bad: 0, peak: hoy ? p.sp + 2 : p.sp, tEnd: 0, alarm: 0, al: false, done: false, leg: 0, kwh: 0 }; },
+  step(s, dt, p) {
+    if (s.done) return;
+    const hoy = p.mode === 0, cyc = p.drive + p.dwell, total = (p.n + 1) * p.drive + p.n * p.dwell;
+    if (s.t >= total) { s.done = true; s.tEnd = total; return; }
+    let tt = s.t, open = false, stop = 0;
+    for (let i = 0; i <= p.n; i++) { if (tt < p.drive) break; tt -= p.drive; if (i < p.n) { if (tt < p.dwell) { open = true; stop = i + 1; break; } tt -= p.dwell; } }
+    s.open = open; s.stop = stop;
+    const amb = p.tamb;
+    const kd = 0.006 * (hoy ? 1 : 0.4);
+    if (!s.on && s.ta > p.sp + 1) s.on = true; else if (s.on && s.ta < p.sp - 1) s.on = false;
+    const cool = s.on ? p.cap * 0.02 : 0;
+    s.ta += dt * ((amb - s.ta) * (0.004 + (open ? kd : 0)) - cool);
+    s.tp += dt * (s.ta - s.tp) / 60;
+    if (s.on) { s.runMin += dt; s.kwh += (p.cap / 2.5) * (dt / 60); }
+    s.peak = Math.max(s.peak, s.tp);
+    if (s.tp > p.lim) { s.bad += dt; if (!s.al) { s.al = true; s.alarm++; } } else s.al = false;
+  },
+  draw(g, s, p, W, H) {
+    const pts = PTS(p.n), L = SL.len(pts);
+    SL.belt(g, pts, 6, '#2a3646');
+    pts.forEach((q, i) => { if (i && i <= p.n) { g.fillStyle = s.stop === i ? '#ef5350' : '#4fc3f7'; g.beginPath(); g.arc(q[0], q[1], 8, 0, 7); g.fill(); SL.text(g, 'P' + i, q[0], q[1] - 14, '#8b9bb0', '11px system-ui', 'center'); } });
+    const total = (p.n + 1) * p.drive + p.n * p.dwell, q = SL.along(pts, SL.clamp(s.t / total, 0, 1) * L);
+    g.fillStyle = s.open ? '#ef5350' : '#3ecf8e'; g.fillRect(q.x - 18, q.y - 28, 36, 16);
+    const f = SL.clamp((s.tp - p.sp) / Math.max(p.lim - p.sp, 1), 0, 1.4);
+    g.fillStyle = '#10151c'; g.fillRect(40, 300, 720, 110);
+    SL.text(g, `Aire ${s.ta.toFixed(1)} °C · Producto ${s.tp.toFixed(1)} °C (umbral ${p.lim} °C)`, 60, 330, s.tp > p.lim ? '#ef5350' : '#3ecf8e', '15px system-ui');
+    g.fillStyle = '#243040'; g.fillRect(60, 345, 680, 14); g.fillStyle = SL.color(1 - Math.min(1, f)); g.fillRect(60, 345, 680 * Math.min(1, f / 1.4), 14);
+    SL.text(g, s.done ? 'Ruta completada' : s.open ? `Descargando en P${s.stop}: PUERTA ABIERTA` : 'En ruta: puerta cerrada', 60, 385, s.open ? '#ef5350' : '#8b9bb0', '13px system-ui');
+    if (p.mode === 1) SL.text(g, 'Prefrío + cortina de tiras + alerta por telemetría', 60, 403, '#4fc3f7', '12px system-ui');
+  },
+  kpis(s, p) {
+    return [
+      { label: 'Temperatura producto', value: s.tp.toFixed(1) + ' °C' },
+      { label: 'Pico de producto', value: s.peak.toFixed(1) + ' °C' },
+      { label: 'Minutos sobre umbral', value: s.bad.toFixed(0) + ' min' },
+      { label: 'Alarmas de excursión', value: s.alarm },
+      { label: 'Equipo encendido', value: ((100 * s.runMin) / Math.max(s.done ? s.tEnd : s.t, 1)).toFixed(0) + ' %' },
+      { label: 'Energía del equipo', value: s.kwh.toFixed(1) + ' kWh' },
+      { label: 'Estado', value: s.done ? 'Ruta completada' : s.stop ? 'Parada ' + s.stop : 'En ruta' },
+    ];
+  },
+  series: (s, p) => ({ 'Aire °C': s.ta, 'Producto °C': s.tp, 'Umbral': p.lim }),
+});
+</script></body></html>
