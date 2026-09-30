@@ -30,7 +30,7 @@ blockquote { margin:8px 0 0; padding:6px 12px; border-left:3px solid var(--ac); 
 main { grid-template-columns:minmax(0,1fr) 320px; }
 @media (max-width:980px) { main { grid-template-columns:1fr; } }
 .stage { position:relative; }
-.stage .hint { position:absolute; right:8px; bottom:16px; font-size:11px; color:#5b6b80; pointer-events:none; }
+.stage .hint { text-align:right; margin:-6px 2px 8px; font-size:11px; color:#5b6b80; }
 .sl-tip { position:absolute; z-index:5; min-width:170px; max-width:260px; pointer-events:none; background:rgba(8,12,18,.94); border:1px solid rgba(56,189,248,.55); border-radius:3px 9px 3px 9px; padding:7px 10px; font-size:12px; box-shadow:0 10px 24px -10px rgba(0,0,0,.9); }
 .sl-tip b { display:block; color:#7dd3fc; margin-bottom:3px; }
 .sl-tip div { display:flex; justify-content:space-between; gap:12px; } .sl-tip span { color:var(--mut); } .sl-tip em { font-style:normal; font-family:var(--sl-mono); color:var(--tx); }

@@ -7,76 +7,178 @@
 <script src="../../shared/gfx.js"></script>
 <script>
 // Fin de línea → pallet. Unidad: segundos. Hoy = mesa corta + 3 personas acarreando; Propuesto = recta + acumulación + 1 palletizador.
-const PX = 50, X0 = 120, SP = 0.5, V = 0.6, RW = 300;
+// Física de banda: F = g·[μr·(m_banda + m_mov) + μs·m_acum] ; P_el = F·v/η + P0. OEE = A × P × Q de la pegadora.
+const PX = 50, X0 = 120, SP = 0.5, RW = 300, G = 9.81, MUR = 0.035, MUS = 0.25, MB = 8, ETA = 0.8, P0 = 0.12, NPAL = 40;
 const rate = (a, t) => a.length / Math.min(Math.max(t, 30), RW) * 3600;
+const geo = (p) => { const hoy = p.mode === 0; return { hoy, L: hoy ? 1.5 : p.L, acc: hoy ? 1.2 : p.acc, k: hoy ? 1.25 : 1 }; };
+const oee = (s, p) => {
+  const T = Math.max(s.t || 0, 1), run = Math.max(T - s.mstop - s.tset, 1), A = run / T, P = Math.min(1, (s.made * p.cyc) / run), Q = s.pall ? (s.pall - s.marked - s.fell) / s.pall : 1;
+  return { A, P, Q, O: A * P * Q };
+};
 SL.app({
   title: 'Demo A · Fin de línea a pallet (cartón)',
-  desc: 'La máquina ya produce; el dinero se pierde entre la salida y el pallet. Si el palletizador se atrasa, la acumulación se llena y la máquina se detiene (luz roja).',
+  desc: 'La máquina ya produce; el dinero se pierde entre la salida y el pallet. Si el palletizador se atrasa, la acumulación se llena y la máquina se detiene (luz roja). Clic en la pegadora, banda, tope, pallet u operarios para inspeccionar.',
   pitch: '"No le vamos a automatizar la corrugadora. Le quitamos las 3 personas que hoy son el tapón de una máquina que ya pagó."',
   obj: '"Eso lo hace un montacargas." → El montacargas no saca al ritmo de la pegadora; la banda sí (compara fardos/h pallet).',
   unit: 's', dt: 0.1, sample: 10, speeds: [1, 10, 60, 240],
   params: [
-    { id: 'mode', label: 'Escenario', opts: ['Hoy: mesa corta + 3 personas', 'Propuesto: banda + 1 persona'], value: 0 },
-    { id: 'cyc', label: 'Ciclo de la máquina', min: 4, max: 8, step: 0.5, value: 5, unit: 's' },
-    { id: 'L', label: 'Largo de banda', min: 8, max: 12, step: 1, value: 10, unit: 'm' },
-    { id: 'acc', label: 'Zona de acumulación', min: 2, max: 3, step: 0.5, value: 2.5, unit: 'm' },
-    { id: 'tp', label: 'Paletizado base', min: 3, max: 8, step: 0.2, value: 4.6, unit: 's/fardo' },
+    { sec: 'Escenario', id: 'mode', label: 'Escenario', opts: ['Hoy: mesa corta + 3 personas', 'Propuesto: banda + 1 persona'], value: 0 },
     { id: 'urg', label: 'Pedido', opts: ['Turno normal', 'Urgente: cambio de medida c/20 min'], value: 0 },
+    { sec: 'Máquina', id: 'cyc', label: 'Ciclo de la máquina', min: 4, max: 8, step: 0.5, value: 5, unit: 's' },
+    { id: 'mf', label: 'Masa por fardo', min: 5, max: 25, step: 1, value: 12, unit: 'kg' },
+    { sec: 'Transportador', id: 'L', label: 'Largo de banda', min: 8, max: 12, step: 1, value: 10, unit: 'm' },
+    { id: 'acc', label: 'Zona de acumulación', min: 2, max: 3, step: 0.5, value: 2.5, unit: 'm' },
+    { id: 'v', label: 'Velocidad de banda', min: 0.3, max: 1, step: 0.05, value: 0.6, unit: 'm/s' },
+    { sec: 'Paletizado', id: 'tp', label: 'Paletizado base', min: 3, max: 8, step: 0.2, value: 4.6, unit: 's/fardo' },
   ],
-  init() { return { items: [], m: { rem: 1 }, pal: { busy: false, rem: 0, chg: 0 }, made: 0, pall: 0, marked: 0, fell: 0, tm: [], tpl: [], nextChg: 1200, mstop: 0 }; },
+  init() { return { items: [], m: { rem: 1 }, pal: { busy: false, rem: 0, chg: 0 }, made: 0, pall: 0, marked: 0, fell: 0, tm: [], tpl: [], nextChg: 1200, mstop: 0,
+    jam: false, palOff: false, help: false, mset: 0, tset: 0, pel: 0, kwh: 0, F: 0, walk: 0, kg: 0, blk: 0, blkLog: false, nb: 0 }; },
   step(s, dt, p, r) {
-    const hoy = p.mode === 0, L = hoy ? 1.5 : p.L, acc = hoy ? 1.2 : p.acc, k = hoy ? 1.25 : 1;
-    if (p.urg && s.t >= s.nextChg) { s.nextChg += 1200; s.m.rem += 60; s.pal.chg = hoy ? 90 : 30; }
-    s.items.forEach((a, i) => { a.x = Math.min(a.x + V * dt, i ? s.items[i - 1].x - SP : L); });
+    const { hoy, L, acc, k } = geo(p), v = s.jam ? 0 : p.v;
+    if (p.urg && s.t >= s.nextChg) { s.nextChg += 1200; s.m.rem += 60; s.mset = 60; s.pal.chg = hoy ? 90 : 30; SL.log(s, 'Cambio de medida (pedido urgente)', 'info'); }
+    s.nb = 0;
+    s.items.forEach((a, i) => { const lim = i ? s.items[i - 1].x - SP : L, nx = a.x + v * dt; a.b = nx >= lim; if (a.b) s.nb++; a.x = Math.min(nx, lim); });
+    if (s.mset > 0) { s.mset -= dt; s.tset += dt; }
     if (s.m.rem > 0) s.m.rem -= dt;
     if (s.m.rem <= 0) {
       const last = s.items[s.items.length - 1], inAcc = s.items.filter((a) => a.x > L - acc).length;
-      if ((!last || last.x >= SP) && inAcc < Math.floor(acc / SP)) { s.items.push({ x: 0 }); s.made++; s.tm.push(s.t); s.m.rem = p.cyc * (0.92 + 0.16 * r()); }
-      else s.mstop += dt;
+      if ((!last || last.x >= SP) && inAcc < Math.floor(acc / SP)) { s.items.push({ x: 0 }); s.made++; s.tm.push(s.t); s.m.rem = p.cyc * (0.92 + 0.16 * r()); if (s.blkLog) SL.log(s, `Pegadora reanuda tras ${s.blk.toFixed(0)} s parada`, 'ok'); s.blk = 0; s.blkLog = false; }
+      else { s.mstop += dt; s.blk += dt; if (s.blk > 15 && !s.blkLog) { s.blkLog = true; SL.log(s, `Pegadora PARADA: ${inAcc >= Math.floor(acc / SP) ? 'acumulación llena' : 'salida ocupada'} (sin desalojo)`, 'warn'); } }
     }
     const pl = s.pal;
     if (pl.chg > 0) pl.chg -= dt;
-    else if (pl.busy && (pl.rem -= dt) <= 0) { pl.busy = false; s.pall++; s.tpl.push(s.t); }
-    if (!pl.busy && pl.chg <= 0 && s.items.length && s.items[0].x >= L - 0.3) {
-      s.items.shift(); pl.busy = true; pl.rem = p.tp * k * (0.85 + 0.3 * r());
-      const u = r(); if (u < (hoy ? 0.008 : 0.001)) s.fell++; else if (u < (hoy ? 0.028 : 0.005)) s.marked++;
+    else if (pl.busy && (pl.rem -= dt) <= 0) { pl.busy = false; s.pall++; s.tpl.push(s.t); s.kg += p.mf; s.walk += hoy ? 8 : 2; if (s.pall % NPAL === 0) SL.log(s, `Pallet completo #${s.pall / NPAL} (${(NPAL * p.mf + 25).toFixed(0)} kg)`, 'ok'); }
+    if (!pl.busy && pl.chg <= 0 && !s.palOff && s.items.length && s.items[0].x >= L - 0.3) {
+      s.items.shift(); pl.busy = true; pl.rem = p.tp * k * (s.help ? 0.75 : 1) * (0.85 + 0.3 * r());
+      const u = r(); if (u < (hoy ? 0.008 : 0.001)) { s.fell++; SL.log(s, 'Fardo caído al paletizar', 'warn'); } else if (u < (hoy ? 0.028 : 0.005)) s.marked++;
     }
+    // Potencia del motor de banda según carga (fardos que ruedan vs. acumulados que deslizan)
+    const mMov = (s.items.length - s.nb) * p.mf, mAcc = s.nb * p.mf;
+    s.F = G * (MUR * (MB * L + mMov) + MUS * mAcc);
+    s.pel = s.jam ? 0 : (s.F * v) / 1000 / ETA + P0;
+    s.kwh += (s.pel * dt) / 3600;
     while (s.tm.length && s.tm[0] < s.t - RW) s.tm.shift();
     while (s.tpl.length && s.tpl[0] < s.t - RW) s.tpl.shift();
   },
   draw(g, s, p, W, H) {
-    const hoy = p.mode === 0, L = hoy ? 1.5 : p.L, acc = hoy ? 1.2 : p.acc, y = 190, fy = y + 60;
-    const stopped = s.m.rem <= 0, xe = X0 + L * PX;
+    const { hoy, L, acc } = geo(p), y = 190, fy = y + 60;
+    const stopped = s.m.rem <= 0, xe = X0 + L * PX, cap = Math.floor(acc / SP), inAcc = s.items.filter((a) => a.x > L - acc).length, o = oee(s, p);
     g.fillStyle = 'rgba(255,255,255,.05)'; g.fillRect(10, fy, 780, 2);
-    SL.machine(g, 12, y - 72, 100, 112, { label: 'Pegadora', sub: stopped ? 'PARADA' : 'produce', state: stopped ? 'down' : 'run', tag: stopped ? 'PARADA: sin desalojo' : 'produciendo' });
-    SL.belt(g, [[X0, y], [xe, y]], 24);
+    SL.machine(g, 12, y - 72, 100, 112, { label: 'Pegadora', sub: stopped ? 'PARADA' : s.mset > 0 ? 'cambio medida' : 'produce', state: stopped ? 'down' : s.mset > 0 ? 'setup' : 'run', tag: stopped ? 'PARADA: sin desalojo' : 'produciendo' });
+    SL.hot('mac', 12, y - 72, 100, 112);
+    SL.belt(g, [[X0, y], [xe, y]], 24, s.jam ? '#4a2020' : null); SL.hot('belt', X0, y - 14, xe - X0 - acc * PX, 28);
     g.fillStyle = 'rgba(245,185,66,.12)'; g.fillRect(xe - acc * PX, y - 15, acc * PX, 30);
     g.strokeStyle = 'rgba(245,185,66,.6)'; g.setLineDash([4, 3]); g.strokeRect(xe - acc * PX + 0.5, y - 14.5, acc * PX - 1, 29); g.setLineDash([]);
-    SL.text(g, 'zona de acumulación', xe - (acc * PX) / 2, y - 24, '#f5b942', '11px system-ui', 'center');
+    SL.text(g, hoy ? 'acumulación' : 'zona de acumulación', xe - (acc * PX) / 2, y - 24, '#f5b942', '11px system-ui', 'center');
+    SL.hot('acc', xe - acc * PX, y - 14, acc * PX - 6, 28);
     g.fillStyle = '#26313d'; g.fillRect(xe - 2, y - 26, 4, 12); SL.led(g, xe, y - 28, 2.2, SL.STATE.down, stopped); // tope
+    SL.hot('stop', xe - 6, y - 34, 12, 48);
     s.items.forEach((a) => { const bx = X0 + a.x * PX - 11; SL.carton(g, bx, y - 18, 22, 14, '#c59b6d'); g.fillStyle = 'rgba(30,30,30,.55)'; g.fillRect(bx + 6, y - 18, 1.5, 14); g.fillRect(bx + 14, y - 18, 1.5, 14); });
-    const px = xe + 36, n = s.pall % 40;
+    if (s.jam) SL.tag(g, 'ATASCO · motor en paro', Math.max(200, X0 + (xe - X0) / 2), y + 44, SL.STATE.down);
+    const px = xe + 36, n = s.pall % NPAL;
     SL.pallet(g, px, fy - 7, 64);
     for (let i = 0; i < n; i++) SL.carton(g, px + 1 + (i % 4) * 15.5, fy - 7 - 12 - Math.floor(i / 4) * 12, 15, 12, '#c59b6d');
-    SL.tag(g, `Pallet ${n}/40`, px + 32, fy + 16, SL.STATE.info);
+    SL.tag(g, `Pallet ${n}/${NPAL}`, px + 32, fy + 16, s.palOff ? SL.STATE.down : SL.STATE.info);
+    SL.hot('pal', px, fy - 132, 64, 139);
     for (let i = 0; i < Math.min(s.fell, 6); i++) { g.save(); g.translate(px + 150 + i * 12, fy - 5); g.rotate(0.5 + i * 0.3); SL.carton(g, -7, -5, 14, 10, '#8a6a48'); g.restore(); }
-    const np = hoy ? 3 : 1;
-    for (let i = 0; i < np; i++) SL.person(g, hoy ? px + 78 + i * 24 : px - 14, fy, { dir: 1, busy: s.pal.busy, carry: s.pal.busy && i === 0 ? '#c59b6d' : null, walk: hoy && s.pal.busy ? s.t * 6 + i : 0 });
-    SL.text(g, hoy ? '3 personas en acarreo' : '1 persona en pallet', px + 32, fy + 38, '#8b9bb0', '12px system-ui', 'center');
+    const np = hoy ? 3 : 1 + (s.help ? 1 : 0);
+    for (let i = 0; i < np; i++) {
+      const ox = hoy ? px + 78 + i * 24 : px - 14 - i * 22;
+      SL.person(g, ox, fy, { dir: 1, busy: s.pal.busy && !s.palOff, carry: s.pal.busy && i === 0 ? '#c59b6d' : null, walk: hoy && s.pal.busy ? s.t * 6 + i : 0, shirt: s.palOff ? '#6b7d93' : undefined });
+      SL.hot('op:' + i, ox - 8, fy - 40, 16, 42);
+    }
+    if (s.palOff) SL.tag(g, 'Paletizador FUERA', px + 32, fy - 150, SL.STATE.down);
+    SL.text(g, hoy ? '3 personas en acarreo' : np > 1 ? '2 personas en pallet' : '1 persona en pallet', px + 32, fy + 38, '#8b9bb0', '12px system-ui', 'center');
+    // Tablero de variables de la línea
+    const ty = 340;
+    SL.tag(g, `Banda ${(s.jam ? 0 : p.v).toFixed(2)} m/s · ${s.pel.toFixed(2)} kW`, 110, ty, s.jam ? SL.STATE.down : SL.STATE.info);
+    SL.tag(g, `OEE ${(100 * o.O).toFixed(0)} %  (A ${(100 * o.A).toFixed(0)} · P ${(100 * o.P).toFixed(0)} · Q ${(100 * o.Q).toFixed(0)})`, 360, ty, SL.color(o.O / 0.85));
+    SL.tag(g, `Acumulación ${inAcc}/${cap}`, 600, ty, inAcc >= cap ? SL.STATE.down : SL.STATE.block);
+    SL.gauge(g, 540, ty + 16, 120, 10, inAcc / cap, inAcc >= cap ? SL.STATE.down : SL.STATE.block);
+    SL.gauge(g, 50, ty + 16, 120, 10, s.pel / 1.5, SL.STATE.info);
     SL.text(g, `Fardos en acumulación: ${s.items.length} · cajas caídas: ${s.fell}`, 20, H - 14);
   },
+  vars(s, p) {
+    const { hoy, L, acc } = geo(p), o = oee(s, p), hrs = Math.max(s.t || 0, 1) / 3600, v = s.jam ? 0 : p.v, np = hoy ? 3 : 1 + (s.help ? 1 : 0);
+    const cap = Math.floor(acc / SP), inAcc = s.items.filter((a) => a.x > L - acc).length, rm = rate(s.tm, s.t || 0), rp = rate(s.tpl, s.t || 0);
+    return {
+      fis: [
+        ['Velocidad de banda', v.toFixed(2), 'm/s', v, s.jam ? '#ef5350' : undefined],
+        ['Tiempo de tránsito', v ? (L / v).toFixed(1) : '—', 's'],
+        ['Carga sobre la banda', (s.items.length * p.mf).toFixed(0), 'kg', (s.items.length * p.mf) / (L / SP * p.mf)],
+        ['Fuerza de arrastre', s.F.toFixed(0), 'N'],
+        ['Potencia motor banda', s.pel.toFixed(2), 'kW', s.pel / 1.5, '#c98500'],
+        ['Energía banda', s.kwh.toFixed(3), 'kWh'],
+        ['Wh por fardo', s.pall ? ((1000 * s.kwh) / s.pall).toFixed(2) : '—', 'Wh'],
+        ['Salida máquina (5 min)', rm.toFixed(0), 'fardos/h', rm / (3600 / p.cyc)],
+        ['Entrada a pallet (5 min)', rp.toFixed(0), 'fardos/h', rp / (3600 / p.cyc)],
+        ['Masa paletizada', (s.kg / hrs).toFixed(0), 'kg/h'],
+        ['Carga manual por persona', (s.kg / hrs / np).toFixed(0), 'kg/h·pers', s.kg / hrs / np / 1500, SL.color(1 - s.kg / hrs / np / 1500)],
+        ['Distancia caminada', (s.walk / 1000).toFixed(2), 'km'],
+        ['Altura pallet', (0.15 + Math.ceil((s.pall % NPAL) / 4) * 0.15).toFixed(2), 'm'],
+        ['OEE = A × P × Q', (100 * o.O).toFixed(1), '%', o.O, SL.color(o.O / 0.85)],
+      ],
+      ctl: [
+        ['Pegadora', s.m.rem <= 0 ? 'PARADA (bloqueo)' : s.mset > 0 ? 'CAMBIO DE MEDIDA' : 'MARCHA', '', null, s.m.rem <= 0 ? '#ef5350' : s.mset > 0 ? '#b39ddb' : '#3ecf8e'],
+        ['Ciclo nominal / real', `${p.cyc.toFixed(1)} / ${s.made ? ((s.t - s.mstop - s.tset) / s.made).toFixed(2) : '—'}`, 's'],
+        ['Enclavamiento acumulación', inAcc >= cap ? 'ACTIVO → paro' : 'libre', '', inAcc / cap, inAcc >= cap ? '#ef5350' : '#3ecf8e'],
+        ['Fotoceldas acumulación', `${inAcc} / ${cap}`, 'fardos'],
+        ['Fardos detenidos (presión)', s.nb, ''],
+        ['Sensor en tope', s.items.length && s.items[0].x >= L - 0.3 ? 'OCUPADO' : 'libre', ''],
+        ['Comando motor banda', s.jam ? 'PARO (sobrecorriente)' : 'MARCHA', '', null, s.jam ? '#ef5350' : '#3ecf8e'],
+        ['Paletizador', s.palOff ? 'FUERA' : s.pal.chg > 0 ? 'CAMBIO' : s.pal.busy ? 'OCUPADO' : 'ESPERA', '', null, s.palOff ? '#ef5350' : undefined],
+        ['Cambio de medida restante', Math.max(0, s.mset).toFixed(0) + ' / ' + Math.max(0, s.pal.chg).toFixed(0), 's (máq/pallet)'],
+        ['Próximo cambio', p.urg ? Math.max(0, s.nextChg - (s.t || 0)).toFixed(0) + ' s' : 'no programado', ''],
+        ['Balance pallet − máquina', (rp - rm).toFixed(0), 'fardos/h', null, rp < rm - 20 ? '#f5b942' : undefined],
+        ['Parada actual por desalojo', s.blk.toFixed(0), 's', s.blk / 60, s.blk > 15 ? '#ef5350' : undefined],
+        ['Personas en pallet / acarreo', np, ''],
+      ],
+    };
+  },
+  actions: [
+    { label: 'Atasco en banda', hint: 'Un fardo se atraviesa: el motor para por sobrecorriente', kind: 'crit', on: (s) => s.jam, run: (s) => { s.jam = !s.jam; SL.log(s, s.jam ? 'ATASCO en banda: motor en paro' : 'Atasco despejado, banda en marcha', s.jam ? 'crit' : 'ok'); } },
+    { label: 'Paletizador fuera', hint: 'Pausa / ausencia del operario de pallet', kind: 'warn', on: (s) => s.palOff, run: (s) => { s.palOff = !s.palOff; SL.log(s, s.palOff ? 'Paletizador fuera de puesto' : 'Paletizador de regreso', s.palOff ? 'warn' : 'ok'); } },
+    { label: 'Cambio de medida ahora', hint: '60 s máquina; 90 s (hoy) / 30 s (propuesto) en pallet', run: (s, p) => { s.m.rem += 60; s.mset = 60; s.pal.chg = p.mode === 0 ? 90 : 30; } },
+    { label: 'Ayudante extra', hint: 'Paletizado 25 % más rápido', on: (s) => s.help, run: (s) => { s.help = !s.help; SL.log(s, s.help ? 'Ayudante extra en pallet' : 'Ayudante retirado', 'info'); } },
+    { label: 'Pedido urgente', hint: 'Cambios de medida cada 20 min', kind: 'warn', on: (s, p) => p.urg === 1, run: (s, p, r, api) => { api.set('urg', p.urg ? 0 : 1); if (p.urg) s.nextChg = (s.t || 0) + 1200; SL.log(s, p.urg ? 'Pedido urgente: cambio de medida c/20 min' : 'Turno normal', p.urg ? 'warn' : 'info'); } },
+  ],
+  inspect(s, p, id) {
+    const V = this.vars(s, p), { hoy, L, acc } = geo(p), o = oee(s, p), v = s.jam ? 0 : p.v;
+    if (id === 'mac') return { title: 'Pegadora-plegadora', sub: 'Descarga un fardo por ciclo solo si hay hueco a la salida y la acumulación no está llena.',
+      fis: [['Fardos producidos', s.made, ''], ['Salida (5 min)', rate(s.tm, s.t || 0).toFixed(0), 'fardos/h'], ['Potencial', (3600 / p.cyc).toFixed(0), 'fardos/h'], ['Parada por desalojo', (s.mstop / 60).toFixed(1), 'min'], ['Tiempo en cambios', (s.tset / 60).toFixed(1), 'min']],
+      ctl: [V.ctl[0], V.ctl[1], ['Disponibilidad A', (100 * o.A).toFixed(1), '%', o.A], ['Rendimiento P', (100 * o.P).toFixed(1), '%', o.P], ['Calidad Q', (100 * o.Q).toFixed(1), '%', o.Q], ['OEE', (100 * o.O).toFixed(1), '%', o.O, SL.color(o.O / 0.85)]],
+      actions: [{ label: 'Cambio de medida', run: (s, p) => { s.m.rem += 60; s.mset = 60; s.pal.chg = p.mode === 0 ? 90 : 30; } }, { label: 'Ciclo −0.5 s', run: (s, p, r, api) => api.set('cyc', Math.max(4, p.cyc - 0.5)) }, { label: 'Ciclo +0.5 s', run: (s, p, r, api) => api.set('cyc', Math.min(8, p.cyc + 0.5)) }] };
+    if (id === 'belt') return { title: hoy ? 'Mesa corta de salida' : 'Transportador de banda', sub: `L = ${L} m · banda ${MB} kg/m · μ rodadura ${MUR} · μ deslizamiento ${MUS} · η ${ETA}`,
+      fis: [V.fis[0], V.fis[1], V.fis[2], V.fis[3], V.fis[4], V.fis[5]], ctl: [V.ctl[6], ['Fardos en banda', s.items.length, '']],
+      actions: [{ label: s.jam ? 'Despejar atasco' : 'Forzar atasco', run: (s) => { s.jam = !s.jam; } }, { label: 'Velocidad +0.1 m/s', run: (s, p, r, api) => api.set('v', Math.min(1, +(p.v + 0.1).toFixed(2))) }, { label: 'Velocidad −0.1 m/s', run: (s, p, r, api) => api.set('v', Math.max(0.3, +(p.v - 0.1).toFixed(2))) }] };
+    if (id === 'acc') return { title: 'Zona de acumulación', sub: `${acc} m · capacidad ${Math.floor(acc / SP)} fardos a paso ${SP} m. Llena ⇒ enclavamiento para la pegadora.`,
+      fis: [['Longitud', acc.toFixed(1), 'm'], ['Fardos detenidos', s.nb, ''], ['Masa acumulada', (s.nb * p.mf).toFixed(0), 'kg']], ctl: [V.ctl[2], V.ctl[3], V.ctl[11]],
+      actions: hoy ? [] : [{ label: 'Ampliar +0.5 m', run: (s, p, r, api) => api.set('acc', Math.min(3, p.acc + 0.5)) }, { label: 'Reducir −0.5 m', run: (s, p, r, api) => api.set('acc', Math.max(2, p.acc - 0.5)) }] };
+    if (id === 'stop') return { title: 'Tope + fotocelda de fin de banda', sub: 'Retiene el fardo hasta que el paletizador lo toma. LED rojo = máquina parada.',
+      fis: [['Posición del primer fardo', s.items.length ? s.items[0].x.toFixed(2) : '—', 'm'], ['Fardo en tope', s.items.length && s.items[0].x >= L - 0.3 ? 'sí' : 'no', '']], ctl: [V.ctl[5], V.ctl[7]] };
+    if (id === 'pal') return { title: 'Estación de paletizado', sub: `${NPAL} fardos/pallet, 4 por capa. Tiempo base ${p.tp} s/fardo${hoy ? ' ×1.25 (acarreo)' : ''}${s.help ? ' ×0.75 (ayudante)' : ''}.`,
+      fis: [['Fardos en pallet', s.pall % NPAL, '/' + NPAL, (s.pall % NPAL) / NPAL], ['Peso del pallet', ((s.pall % NPAL) * p.mf + 25).toFixed(0), 'kg'], V.fis[12], ['Pallets completos', Math.floor(s.pall / NPAL), ''], ['Marcadas / caídas', s.marked + ' / ' + s.fell, '']],
+      ctl: [V.ctl[7], ['Tarea restante', s.pal.busy ? Math.max(0, s.pal.rem).toFixed(1) : '—', 's'], V.ctl[10]],
+      actions: [{ label: s.palOff ? 'Reanudar' : 'Poner fuera', run: (s) => { s.palOff = !s.palOff; } }, { label: s.help ? 'Quitar ayudante' : 'Añadir ayudante', run: (s) => { s.help = !s.help; } }] };
+    if (id.startsWith('op:')) { const i = +id.slice(3), np = hoy ? 3 : 1 + (s.help ? 1 : 0), hrs = Math.max(s.t || 0, 1) / 3600;
+      return { title: `Operario ${i + 1} · ${hoy ? 'acarreo' : i ? 'ayudante' : 'paletizador'}`, sub: hoy ? 'Camina ~4 m por fardo entre la mesa y el pallet.' : 'Toma el fardo del tope y lo coloca en el pallet.',
+        fis: [['Carga manipulada', (s.kg / hrs / np).toFixed(0), 'kg/h', s.kg / hrs / np / 1500], ['Distancia caminada', (s.walk / np).toFixed(0), 'm'], ['Masa por fardo', p.mf, 'kg']],
+        ctl: [['Estado', s.palOff ? 'FUERA' : s.pal.busy ? 'trabajando' : 'esperando', ''], V.ctl[7]],
+        actions: [{ label: s.palOff ? 'Volver al puesto' : 'Enviar a pausa', run: (s) => { s.palOff = !s.palOff; } }] }; }
+  },
   kpis(s, p) {
-    const T = Math.max(s.t, 1);
+    const T = Math.max(s.t, 1), o = oee(s, p);
     return [
       { label: 'Fardos/h máquina (últ. 5 min)', value: rate(s.tm, s.t).toFixed(0) },
       { label: 'Fardos/h pallet (últ. 5 min)', value: rate(s.tpl, s.t).toFixed(0) },
       { label: 'Potencial máquina', value: (3600 / p.cyc).toFixed(0) + ' /h' },
       { label: 'Máquina parada por desalojo', value: (s.mstop / 60).toFixed(1) + ' min (' + ((100 * s.mstop) / T).toFixed(0) + ' %)' },
-      { label: 'Personas en acarreo', value: p.mode === 0 ? 3 : 1 },
+      { label: 'OEE pegadora', value: (100 * o.O).toFixed(0) + ' %' },
+      { label: 'Personas en acarreo', value: p.mode === 0 ? 3 : 1 + (s.help ? 1 : 0) },
       { label: 'Cajas marcadas / caídas', value: s.marked + ' / ' + s.fell },
       { label: 'Pallet acumulado', value: s.pall + ' fardos' },
     ];
   },
-  series: (s) => ({ 'Máquina /h': rate(s.tm, s.t), 'Pallet /h': rate(s.tpl, s.t), 'Acumulados': s.items.length }),
+  series: (s, p) => ({ 'Máquina /h': rate(s.tm, s.t), 'Pallet /h': rate(s.tpl, s.t), 'Acumulados': s.items.length, 'Banda kW': s.pel, 'OEE %': 100 * oee(s, p).O }),
 });
 </script></body></html>

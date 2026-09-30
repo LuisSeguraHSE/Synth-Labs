@@ -7,44 +7,63 @@
 <script src="../../shared/gfx.js"></script>
 <script>
 // Llenadora → tapa → etiqueta → encajado. Unidad: segundos.
-const NM = ['Llenadora', 'Tapadora', 'Etiquetadora'], PXB = 1;
+// Física: bomba de llenado P = Q·Δp/η ; banda F = g·μ·(m_banda + m_envases), P = F·v/η + P0 ; energía por equipo.
+const NM = ['Llenadora', 'Tapadora', 'Etiquetadora'], PXB = 1, G = 9.81, DP = 2e5, ETAP = 0.6, LB = 15, MB = 6, MU = 0.04, PW = [0.1, 0.75, 0.4], PPK = 1.1;
+const cap_ = (p) => (p.mode === 0 ? 1 : Math.max(1, Math.round(p.bufm * 6)));
+const fdn = (s, i) => (i === 1 && s.cfail) || (i === 2 && s.lfail);
 SL.app({
   title: 'Demo B · Llenadora → tapa → etiqueta → caja',
-  desc: 'El problema no es el reactor ni la llenadora: es el piso lleno de baldes. Cambia de escenario y de lote (8 min de setup) y observa dónde queda el producto a medio etiquetar.',
+  desc: 'El problema no es el reactor ni la llenadora: es el piso lleno de baldes. Cambia de escenario y de lote (8 min de setup) y observa dónde queda el producto a medio etiquetar. Clic en cada máquina, buffer, rechazo u operario para inspeccionar.',
   pitch: '"Cada vez que la llenadora espera a que alguien cargue un balde, está pagando sueldo de máquina parada."',
   obj: '"Hay solventes." → Banda industrial con bandeja de derrame, guías laterales, motor tapado: no es una banda de courier.',
   unit: 's', dt: 0.1, sample: 10, speeds: [1, 10, 60, 240],
   params: [
-    { id: 'mode', label: 'Escenario', opts: ['Hoy: 4 personas entre máquinas', 'Propuesto: banda + buffer + desvío'], value: 0 },
-    { id: 'tf', label: 'Llenado', min: 3, max: 10, step: 0.5, value: 6, unit: 's' },
+    { sec: 'Escenario', id: 'mode', label: 'Escenario', opts: ['Hoy: 4 personas entre máquinas', 'Propuesto: banda + buffer + desvío'], value: 0 },
+    { sec: 'Tiempos de estación', id: 'tf', label: 'Llenado', min: 3, max: 10, step: 0.5, value: 6, unit: 's' },
     { id: 'tt', label: 'Tapado', min: 2, max: 8, step: 0.5, value: 3, unit: 's' },
     { id: 'tl', label: 'Etiquetado', min: 2, max: 8, step: 0.5, value: 4, unit: 's' },
-    { id: 'bufm', label: 'Buffer entre estaciones (propuesto)', min: 0, max: 2, step: 0.5, value: 1.5, unit: 'm' },
-    { id: 'rej', label: 'Rechazo (tapa/etiqueta mala)', min: 0, max: 10, step: 0.5, value: 3, unit: '%' },
+    { sec: 'Línea', id: 'bufm', label: 'Buffer entre estaciones (propuesto)', min: 0, max: 2, step: 0.5, value: 1.5, unit: 'm' },
+    { id: 'vb', label: 'Velocidad de banda', min: 0.1, max: 0.5, step: 0.05, value: 0.25, unit: 'm/s' },
     { id: 'case', label: 'Envases por caja', min: 4, max: 6, step: 2, value: 4 },
     { id: 'lot', label: 'Cambio de lote cada', min: 10, max: 60, step: 5, value: 20, unit: 'min' },
+    { sec: 'Producto y calidad', id: 'vol', label: 'Volumen por envase', min: 4, max: 20, step: 1, value: 19, unit: 'L' },
+    { id: 'rho', label: 'Densidad del producto', min: 0.8, max: 1.5, step: 0.05, value: 1.2, unit: 'kg/L' },
+    { id: 'tq', label: 'Torque de tapado (SP)', min: 4, max: 20, step: 1, value: 12, unit: 'N·m' },
+    { id: 'rej', label: 'Rechazo (tapa/etiqueta mala)', min: 0, max: 10, step: 0.5, value: 3, unit: '%' },
   ],
-  init() { return { st: [0, 1, 2].map(() => ({ s: 'idle', rem: 0, work: 0, block: 0 })), buf: [0, 0, 0], rw: [], pk: { busy: false, rem: 0 }, cases: 0, packed: 0, rework: 0, spillFloor: 0, spillTray: 0, floor: 0, setup: 0, nextLot: 1200, fdown: 0 }; },
+  init() { return { st: [0, 1, 2].map(() => ({ s: 'idle', rem: 0, work: 0, block: 0, down: 0 })), buf: [0, 0, 0], rw: [], pk: { busy: false, rem: 0 }, cases: 0, packed: 0, rework: 0, spillFloor: 0, spillTray: 0, floor: 0, setup: 0, nextLot: 1200, fdown: 0,
+    rn: SL.rng(4242), cfail: false, lfail: false, noz: false, clean: 0, fill: 0, fillN: 0, give: 0, under: 0, tqm: 0, kw: 0, kwh: 0, pf: 0, pb: 0, filled: 0, rejN: 0, fdl: false, flog: false }; },
   step(s, dt, p, r) {
-    const hoy = p.mode === 0, cap = hoy ? 1 : Math.max(1, Math.round(p.bufm * 6)), T = [p.tf, p.tt, p.tl];
+    const hoy = p.mode === 0, cap = cap_(p), T = [p.tf, p.tt, p.tl];
     if (s.t >= s.nextLot) {
       s.nextLot += p.lot * 60; s.setup = 480;
-      if (hoy) { const n = s.buf[0] + s.buf[1]; s.floor += n; s.rework += n; s.buf[0] = s.buf[1] = 0; }
+      if (hoy) { const n = s.buf[0] + s.buf[1]; s.floor += n; s.rework += n; s.buf[0] = s.buf[1] = 0; SL.log(s, `Cambio de lote: ${n} envases a medio proceso al piso`, n ? 'warn' : 'info'); }
+      else SL.log(s, 'Cambio de lote: la banda se vacía en orden (setup 8 min)', 'info');
     }
     if (s.setup > 0) s.setup -= dt;
+    if (s.clean > 0 && (s.clean -= dt) <= 0) SL.log(s, 'Limpieza de derrame terminada', 'ok');
     for (let i = 0; i < 3; i++) {
       const k = s.st[i];
+      if (fdn(s, i)) { k.down += dt; if (k.s !== 'done') continue; }
       if (k.s === 'idle') {
-        const can = i === 0 ? s.setup <= 0 : s.buf[i - 1] > 0;
-        if (can) { if (i) s.buf[i - 1]--; k.s = 'work'; k.rem = T[i] * (0.9 + 0.2 * r()) + (hoy && i === 0 ? 3 * r() : 0); }
+        const can = i === 0 ? s.setup <= 0 && s.clean <= 0 : s.buf[i - 1] > 0;
+        if (can) { if (i) s.buf[i - 1]--; k.s = 'work'; k.rem = T[i] * (0.9 + 0.2 * r()) + (hoy && i === 0 ? 3 * r() : 0); k.tot = k.rem; }
         else if (i === 0) s.fdown += dt;
       } else if (k.s === 'work') {
-        k.work += dt; if ((k.rem -= dt) <= 0) { k.s = 'done'; if (i === 0 && r() < 0.012) { if (hoy) s.spillFloor++; else s.spillTray++; } }
+        k.work += dt; if ((k.rem -= dt) <= 0) {
+          k.s = 'done';
+          if (i === 0) { // pesaje neto del envase lleno
+            s.fill = p.vol * (1 + (s.rn() - 0.5) * 0.01 * (s.noz ? 8 : 1) - (s.noz ? 0.012 : 0)); s.fillN++; s.filled += s.fill; s.give += s.fill - p.vol;
+            if (s.fill < p.vol * 0.99) s.under++;
+            if (r() < 0.012) { if (hoy) s.spillFloor++; else s.spillTray++; }
+          }
+          if (i === 1) s.tqm = p.tq * (1 + (s.rn() - 0.5) * 0.08);
+        }
       }
       if (k.s === 'done') {
         const lim = i === 2 ? 12 : cap;
         if (s.buf[i] < lim) {
-          if (i === 2 && r() < p.rej / 100) { s.rw.push(hoy ? 45 : 20); s.rework++; } else s.buf[i]++;
+          if (i === 2 && r() < p.rej / 100 + (s.noz ? 0.08 : 0)) { s.rw.push(hoy ? 45 : 20); s.rework++; s.rejN++; } else s.buf[i]++;
           k.s = 'idle';
         } else { k.block += dt; if (i === 0) s.fdown += dt; }
       }
@@ -53,34 +72,126 @@ SL.app({
     const pk = s.pk;
     if (pk.busy && (pk.rem -= dt) <= 0) { pk.busy = false; s.cases++; s.packed += p.case; }
     if (!pk.busy && s.buf[2] >= p.case) { s.buf[2] -= p.case; pk.busy = true; pk.rem = 8; }
+    // Potencias: bomba de llenado (Q·Δp/η), tapadora, etiquetadora, encajadora y banda según carga
+    const Q = p.vol / p.tf / 1000, mOn = (s.buf[0] + s.buf[1] + s.buf[2]) * p.vol * p.rho;
+    s.pf = s.st[0].s === 'work' ? (Q * DP) / ETAP / 1000 : 0;
+    s.pb = (G * MU * (MB * LB + mOn) * p.vb) / 1000 / 0.8 + 0.1;
+    s.kw = s.pf + s.st.slice(1).reduce((a, k, i) => a + (k.s === 'work' ? PW[i + 1] : 0.05), 0) + (pk.busy ? PPK : 0.05) + s.pb;
+    s.kwh += (s.kw * dt) / 3600;
+    // Alarma: llenadora detenida más de 60 s seguidos
+    const fstop = s.st[0].s !== 'work'; s.fdl = fstop ? (s.fdl || 0) + dt : 0;
+    if (s.fdl > 60 && !s.flog && s.setup <= 0) { s.flog = true; SL.log(s, 'Llenadora detenida > 60 s (' + (s.st[0].s === 'done' ? 'bloqueada aguas abajo' : 'sin condiciones') + ')', 'warn'); }
+    if (!fstop && s.flog) { s.flog = false; SL.log(s, 'Llenadora vuelve a llenar', 'ok'); }
   },
   draw(g, s, p, W, H) {
-    const hoy = p.mode === 0, cap = hoy ? 1 : Math.max(1, Math.round(p.bufm * 6)), my = 96, by = 172, fy = 248, map = { idle: 'idle', work: 'run', done: 'block' };
+    const hoy = p.mode === 0, cap = cap_(p), my = 96, by = 172, fy = 248, map = { idle: 'idle', work: 'run', done: 'block' };
     if (!hoy) { g.fillStyle = 'rgba(79,195,247,.08)'; g.fillRect(14, by + 12, 772, 12); g.strokeStyle = 'rgba(79,195,247,.6)'; g.setLineDash([6, 4]); g.strokeRect(14.5, by + 12.5, 771, 11); g.setLineDash([]); SL.text(g, 'bandeja de derrame', 18, by + 38, '#4fc3f7', '11px system-ui'); }
-    SL.belt(g, [[14, by], [786, by]], 14);
+    SL.belt(g, [[14, by], [786, by]], 14); SL.hot('belt', 14, by - 6, 772, 14);
     [...NM, 'Encajado'].forEach((n, i) => {
-      const x = 20 + i * 205, k = s.st[i];
-      const sub = i < 3 ? (k.s === 'work' ? 'trabaja' : k.s === 'done' ? 'bloqueada' : i ? 'sin pieza' : s.setup > 0 ? 'SETUP' : 'espera') : `${p.case}/caja`;
-      const state = i < 3 ? (i === 0 && s.setup > 0 ? 'setup' : map[k.s]) : s.pk.busy ? 'run' : 'idle';
-      SL.machine(g, x, my, 112, 80, { label: n, sub, state, fs: 12, tag: i === 0 && s.setup > 0 ? 'cambio de lote' : null });
+      const x = 20 + i * 205, k = s.st[i], dn = i < 3 && fdn(s, i), cl = i === 0 && s.clean > 0;
+      const sub = dn ? 'FALLA' : cl ? 'LIMPIEZA' : i < 3 ? (k.s === 'work' ? 'trabaja' : k.s === 'done' ? 'bloqueada' : i ? 'sin pieza' : s.setup > 0 ? 'SETUP' : 'espera') : `${p.case}/caja`;
+      const state = dn || cl ? 'down' : i < 3 ? (i === 0 && s.setup > 0 ? 'setup' : map[k.s]) : s.pk.busy ? 'run' : 'idle';
+      SL.machine(g, x, my, 112, 80, { label: n, sub, state, fs: 12, load: i < 3 && k.s === 'work' ? 1 - k.rem / (k.tot || 1) : 0.2, tag: i === 0 && s.setup > 0 ? 'cambio de lote' : dn ? (i === 1 ? 'falla cabezal' : 'sin etiquetas') : cl ? 'derrame' : null });
+      SL.hot(i < 3 ? 'st:' + i : 'pk', x, my, 112, 80);
       if (i < 3) {
         const b = s.buf[i], m = i === 2 ? 12 : cap, step = Math.min(15, 88 / Math.max(m, 1));
         for (let j = 0; j < m; j++) { const bx = x + 118 + j * step; if (j < b) SL.bucket(g, bx + 6, by - 6, 0.78, '#d9dee4', i === 2 ? '#2f6fb0' : null); else { g.strokeStyle = 'rgba(139,155,176,.3)'; g.strokeRect(bx + 1.5, by - 17.5, 9, 11); } }
+        SL.hot('buf:' + i, x + 116, by - 20, Math.max(18, m * step + 4), 22);
       }
     });
+    // Instrumentos sobre cada máquina
+    SL.tag(g, `FQI ${s.fill ? s.fill.toFixed(2) : '—'} L · ${s.pf.toFixed(2)} kW`, 76, 44, s.noz ? SL.STATE.down : SL.STATE.info);
+    SL.tag(g, `Torque ${s.cfail ? '—' : s.tqm.toFixed(1)} / ${p.tq} N·m`, 281, 44, s.cfail ? SL.STATE.down : SL.STATE.info);
+    SL.tag(g, `Rechazo ${(100 * s.rejN / Math.max(1, s.rejN + s.packed + s.buf[2])).toFixed(1)} %`, 486, 44, s.lfail ? SL.STATE.down : SL.STATE.info);
+    SL.tag(g, `Línea ${s.kw.toFixed(2)} kW · ${s.kwh.toFixed(2)} kWh`, 691, 44, SL.STATE.block);
     const np = hoy ? 4 : 2;
-    for (let i = 0; i < np; i++) SL.person(g, hoy ? 140 + i * 190 : 250 + i * 330, fy, { dir: i % 2 ? -1 : 1, busy: true, carry: hoy ? '#d9dee4' : null });
+    for (let i = 0; i < np; i++) { const ox = hoy ? 140 + i * 190 : 250 + i * 330; SL.person(g, ox, fy, { dir: i % 2 ? -1 : 1, busy: true, carry: hoy ? '#d9dee4' : null }); SL.hot('op:' + i, ox - 9, fy - 40, 18, 42); }
     // Vía de rechazo / retrabajo
-    SL.belt(g, [[500, by + 6], [500, 270]], 10); SL.chute(g, 460, 270, 80, 48, s.rw.length / 6, '#ef5350', `Rechazo ${s.rw.length}`);
+    SL.belt(g, [[500, by + 6], [500, 270]], 10); SL.chute(g, 460, 270, 80, 48, s.rw.length / 6, '#ef5350', `Rechazo ${s.rw.length}`); SL.hot('rej', 460, 270, 80, 48);
     // Encajado: pallet de cajas cerradas
     const cx = 640, nc = s.cases % 24; SL.pallet(g, cx, 330, 96);
     for (let j = 0; j < nc; j++) SL.carton(g, cx + 2 + (j % 6) * 15.5, 330 - 13 - Math.floor(j / 6) * 13, 15, 13, '#b98a58');
-    SL.tag(g, `Cajas: ${s.cases}`, cx + 48, 352, SL.STATE.run);
+    SL.tag(g, `Cajas: ${s.cases}`, cx + 48, 352, SL.STATE.run); SL.hot('pal', cx, 270, 96, 67);
     if (hoy) {
       SL.text(g, 'PISO: producto a medio etiquetar y derrames', 20, 300, '#ef5350', '600 12px system-ui');
       for (let i = 0; i < Math.min(s.floor, 60); i++) { g.save(); g.translate(30 + (i % 20) * 20, 330 + Math.floor(i / 20) * 26); g.rotate(i % 3 ? 1.4 : 0); SL.bucket(g, 0, 0, 0.75, '#c7ccd2'); g.restore(); }
       for (let i = 0; i < Math.min(s.spillFloor, 16); i++) { g.fillStyle = 'rgba(79,195,247,.45)'; g.beginPath(); g.ellipse(60 + i * 26, 425, 12, 4, 0, 0, 7); g.fill(); }
+      SL.hot('floor', 14, 306, 430, 128);
     } else SL.text(g, 'Piso limpio: la banda se vacía en orden', 20, 300, '#3ecf8e', '600 12px system-ui');
+  },
+  vars(s, p) {
+    const T = Math.max(s.t || 0, 1), hrs = T / 3600, cap = cap_(p), tb = Math.max(p.tf, p.tt, p.tl), bn = NM[[p.tf, p.tt, p.tl].indexOf(tb)], u = s.st.map((k) => k.work / T);
+    const A = Math.max(0, 1 - s.fdown / T), Pf = Math.min(1, (s.fillN * p.tf) / Math.max(1, T - s.fdown)), Qf = s.fillN ? 1 - s.rework / Math.max(1, s.fillN) : 1, oee = A * Pf * Math.max(0, Qf);
+    const stn = (i) => { const k = s.st[i]; return fdn(s, i) ? 'FALLA' : i === 0 && s.clean > 0 ? 'LIMPIEZA' : k.s === 'work' ? 'TRABAJA' : k.s === 'done' ? 'BLOQUEADA' : i === 0 && s.setup > 0 ? 'SETUP' : 'EN ESPERA'; };
+    const stc = (i) => ({ FALLA: '#ef5350', LIMPIEZA: '#ef5350', SETUP: '#b39ddb', TRABAJA: '#3ecf8e', BLOQUEADA: '#f5b942' })[stn(i)];
+    return {
+      fis: [
+        ['Caudal de llenado', (p.vol / p.tf).toFixed(2), 'L/s'],
+        ['Último envase (neto)', s.fill ? s.fill.toFixed(2) : '—', 'L', null, s.fill && s.fill < p.vol * 0.99 ? '#ef5350' : undefined],
+        ['Sobrellenado acumulado', s.give.toFixed(1), 'L'],
+        ['Producto envasado', (s.filled * p.rho / hrs).toFixed(0), 'kg/h'],
+        ['Envases/min efectivos', ((60 * s.packed) / T).toFixed(2), '/min', (60 * s.packed) / T / (60 / tb)],
+        ['Masa sobre la banda', ((s.buf[0] + s.buf[1] + s.buf[2]) * p.vol * p.rho).toFixed(0), 'kg'],
+        ['Velocidad de banda', p.vb.toFixed(2), 'm/s'],
+        ['Tránsito entre estaciones (2 m)', (2 / p.vb).toFixed(1), 's'],
+        ['Potencia bomba llenado', s.pf.toFixed(2), 'kW', s.pf / 2],
+        ['Potencia banda', s.pb.toFixed(2), 'kW'],
+        ['Potencia total línea', s.kw.toFixed(2), 'kW', s.kw / 4, '#c98500'],
+        ['Energía / kWh por caja', `${s.kwh.toFixed(2)} / ${s.cases ? (s.kwh / s.cases).toFixed(3) : '—'}`, 'kWh'],
+        ['Derrames (piso / bandeja)', `${(2 * s.spillFloor).toFixed(0)} / ${(2 * s.spillTray).toFixed(0)}`, 'L'],
+        ['Utilización llen./tap./etiq.', u.map((x) => (100 * x).toFixed(0)).join(' / '), '%'],
+        ['OEE llenadora = A×P×Q', (100 * oee).toFixed(1), '%', oee, SL.color(oee / 0.85)],
+      ],
+      ctl: [
+        ['Llenadora', stn(0), '', null, stc(0)], ['Tapadora', stn(1), '', null, stc(1)], ['Etiquetadora', stn(2), '', null, stc(2)],
+        ['Buffer 1 / 2 / salida', `${s.buf[0]}/${cap} · ${s.buf[1]}/${cap} · ${s.buf[2]}/12`, 'env'],
+        ['SP volumen / error', `${p.vol} / ${s.fill ? (s.fill - p.vol).toFixed(2) : '—'}`, 'L'],
+        ['Envases bajo peso (< 99 %)', s.under, '', null, s.under ? '#f5b942' : undefined],
+        ['Torque SP / medido', `${p.tq} / ${s.cfail ? '—' : s.tqm.toFixed(1)}`, 'N·m'],
+        ['Desvío de rechazo', s.rw.length ? `${s.rw.length} en retrabajo` : 'cerrado', ''],
+        ['Rechazos acumulados', s.rejN, ''],
+        ['Setup de lote restante', Math.max(0, s.setup).toFixed(0), 's', s.setup / 480, s.setup > 0 ? '#b39ddb' : undefined],
+        ['Próximo cambio de lote', Math.max(0, s.nextLot - (s.t || 0)).toFixed(0), 's'],
+        ['Cuello de botella', bn + ` (${tb} s)`, ''],
+        ['Encajadora', s.pk.busy ? 'CERRANDO CAJA' : `espera ${p.case} env.`, ''],
+        ['Llenadora detenida ahora', (s.fdl || 0).toFixed(0), 's', (s.fdl || 0) / 60, s.fdl > 60 ? '#ef5350' : undefined],
+      ],
+    };
+  },
+  actions: [
+    { label: 'Falla de tapadora', hint: 'Cabezal de tapado trabado', kind: 'crit', on: (s) => s.cfail, run: (s) => { s.cfail = !s.cfail; SL.log(s, s.cfail ? 'Tapadora en FALLA (cabezal trabado)' : 'Tapadora reparada', s.cfail ? 'crit' : 'ok'); } },
+    { label: 'Sin etiquetas', hint: 'Rollo de etiquetas agotado', kind: 'warn', on: (s) => s.lfail, run: (s) => { s.lfail = !s.lfail; SL.log(s, s.lfail ? 'Etiquetadora sin rollo de etiquetas' : 'Rollo de etiquetas repuesto', s.lfail ? 'warn' : 'ok'); } },
+    { label: 'Boquilla descalibrada', hint: 'Llenado disperso y bajo peso: más rechazo', kind: 'warn', on: (s) => s.noz, run: (s) => { s.noz = !s.noz; SL.log(s, s.noz ? 'Boquilla de llenado descalibrada' : 'Boquilla recalibrada', s.noz ? 'warn' : 'ok'); } },
+    { label: 'Derrame en llenadora', hint: 'Para la llenadora para limpiar (90 s hoy / 30 s con bandeja)', kind: 'crit', run: (s, p) => { if (p.mode === 0) s.spillFloor++; else s.spillTray++; s.clean = p.mode === 0 ? 90 : 30; } },
+    { label: 'Cambio de lote ahora', hint: 'Setup de 8 min', run: (s) => { s.nextLot = s.t || 0; } },
+  ],
+  inspect(s, p, id) {
+    const V = this.vars(s, p), T = Math.max(s.t || 0, 1);
+    if (id.startsWith('st:')) { const i = +id.slice(3), k = s.st[i], tt = [p.tf, p.tt, p.tl][i];
+      const extra = [[['Caudal', (p.vol / p.tf).toFixed(2), 'L/s'], ['Último neto', s.fill ? s.fill.toFixed(2) : '—', 'L'], ['Potencia bomba', s.pf.toFixed(2), 'kW']], [['Torque medido', s.cfail ? '—' : s.tqm.toFixed(1), 'N·m'], ['Potencia', (k.s === 'work' ? PW[1] : 0.05).toFixed(2), 'kW']], [['Rechazos', s.rejN, ''], ['Potencia', (k.s === 'work' ? PW[2] : 0.05).toFixed(2), 'kW']]][i];
+      return { title: `${NM[i]}`, sub: `Tiempo de ciclo ${tt} s ±10 %${i === 0 && p.mode === 0 ? ' + hasta 3 s esperando balde' : ''}.`,
+        fis: [['Utilización', (100 * k.work / T).toFixed(1), '%', k.work / T], ['Tiempo bloqueada', (k.block / 60).toFixed(1), 'min'], ['Tiempo en falla', (k.down / 60).toFixed(1), 'min'], ...extra],
+        ctl: [V.ctl[i], ['Tarea restante', k.s === 'work' ? Math.max(0, k.rem).toFixed(1) : '—', 's'], ['Capacidad', (60 / tt).toFixed(1), 'env/min'], ...(i === 0 ? [V.ctl[4], V.ctl[5], V.ctl[9]] : i === 1 ? [V.ctl[6]] : [V.ctl[7]])],
+        actions: i === 0 ? [{ label: s.noz ? 'Recalibrar boquilla' : 'Descalibrar boquilla', run: (s) => { s.noz = !s.noz; } }, { label: 'Provocar derrame', run: (s, p) => { if (p.mode === 0) s.spillFloor++; else s.spillTray++; s.clean = p.mode === 0 ? 90 : 30; } }, { label: 'Llenado −0.5 s', run: (s, p, r, api) => api.set('tf', Math.max(3, p.tf - 0.5)) }]
+          : [{ label: fdn(s, i) ? 'Reparar' : 'Forzar falla', run: (s) => { if (i === 1) s.cfail = !s.cfail; else s.lfail = !s.lfail; } }, { label: 'Ciclo −0.5 s', run: (s, p, r, api) => api.set(i === 1 ? 'tt' : 'tl', Math.max(2, (i === 1 ? p.tt : p.tl) - 0.5)) }] }; }
+    if (id.startsWith('buf:')) { const i = +id.slice(4), m = i === 2 ? 12 : cap_(p);
+      return { title: `Buffer ${i < 2 ? i + 1 : 'de salida'} · ${NM[i]} → ${i < 2 ? NM[i + 1] : 'Encajado'}`, sub: p.mode === 0 && i < 2 ? 'Hoy: un solo envase en mano del operario (sin acumulación).' : `Acumulación en banda: ${m} envases.`,
+        fis: [['Ocupación', `${s.buf[i]} / ${m}`, 'env', s.buf[i] / m], ['Masa', (s.buf[i] * p.vol * p.rho).toFixed(0), 'kg']], ctl: [['Estado', s.buf[i] >= m ? 'LLENO → bloquea' : s.buf[i] ? 'con stock' : 'VACÍO → ayuno', '', null, s.buf[i] >= m ? '#f5b942' : undefined]],
+        actions: p.mode === 1 && i < 2 ? [{ label: 'Buffer +0.5 m', run: (s, p, r, api) => api.set('bufm', Math.min(2, p.bufm + 0.5)) }, { label: 'Buffer −0.5 m', run: (s, p, r, api) => api.set('bufm', Math.max(0, p.bufm - 0.5)) }] : [] }; }
+    if (id === 'pk') return { title: 'Encajado', sub: `Cierra una caja de ${p.case} envases en 8 s.`,
+      fis: [['Cajas cerradas', s.cases, ''], ['Envases empacados', s.packed, ''], ['Potencia', (s.pk.busy ? PPK : 0.05).toFixed(2), 'kW'], ['Peso por caja', (p.case * p.vol * p.rho).toFixed(0), 'kg']], ctl: [V.ctl[12], ['Envases esperando', s.buf[2], '/12']] };
+    if (id === 'belt') return { title: 'Transportador de línea', sub: `${LB} m, banda ${MB} kg/m, μ = ${MU}, motor cerrado (zona con solventes).`,
+      fis: [V.fis[5], V.fis[6], V.fis[7], V.fis[9]], ctl: [V.ctl[3]],
+      actions: [{ label: 'Velocidad +0.05', run: (s, p, r, api) => api.set('vb', Math.min(0.5, +(p.vb + 0.05).toFixed(2))) }, { label: 'Velocidad −0.05', run: (s, p, r, api) => api.set('vb', Math.max(0.1, +(p.vb - 0.05).toFixed(2))) }] };
+    if (id === 'rej') return { title: 'Desvío de rechazo / retrabajo', sub: `Retrabajo ${p.mode === 0 ? 45 : 20} s por envase y regresa a la salida.`,
+      fis: [['En retrabajo', s.rw.length, 'env', s.rw.length / 6], ['Retrabajos totales', s.rework, '']], ctl: [V.ctl[7], V.ctl[8], ['Rechazo nominal', p.rej, '%']],
+      actions: [{ label: 'Rechazo −1 %', run: (s, p, r, api) => api.set('rej', Math.max(0, p.rej - 1)) }] };
+    if (id === 'pal') return { title: 'Pallet de cajas', fis: [['Cajas en pallet', s.cases % 24, '/24', (s.cases % 24) / 24], ['Peso', ((s.cases % 24) * p.case * p.vol * p.rho + 25).toFixed(0), 'kg']], ctl: [['Pallets completos', Math.floor(s.cases / 24), '']] };
+    if (id === 'floor') return { title: 'Piso de planta (hoy)', sub: 'Envases a medio proceso tras cada cambio de lote y derrames sin contención.',
+      fis: [['Envases en el piso', s.floor, ''], ['Derrame al piso', (2 * s.spillFloor).toFixed(0), 'L']], ctl: [['Riesgo', s.spillFloor ? 'SUELO RESBALADIZO' : 'normal', '', null, s.spillFloor ? '#ef5350' : undefined]] };
+    if (id.startsWith('op:')) { const i = +id.slice(3), hoy = p.mode === 0, kgh = (s.packed * p.vol * p.rho) / (T / 3600);
+      return { title: `Operario ${i + 1}`, sub: hoy ? 'Carga baldes entre máquinas a mano.' : i ? 'Encajado y pallet.' : 'Supervisa llenado y alimenta tapas.',
+        fis: [['Carga manual estimada', (hoy ? kgh / 4 : i ? kgh / 2 : 0).toFixed(0), 'kg/h'], ['Masa por envase', (p.vol * p.rho).toFixed(1), 'kg']], ctl: [['Personas en línea', hoy ? 4 : 2, '']] }; }
   },
   kpis(s, p) {
     const T = Math.max(s.t, 1);
@@ -92,8 +203,9 @@ SL.app({
       { label: 'Retrabajos', value: s.rework },
       { label: 'Personas entre máquinas', value: p.mode === 0 ? 4 : 2 },
       { label: 'Cajas cerradas', value: s.cases },
+      { label: 'Energía por caja', value: s.cases ? (s.kwh / s.cases).toFixed(3) + ' kWh' : '—' },
     ];
   },
-  series: (s) => ({ 'Envases empacados': s.packed, 'Buffer 1': s.buf[0], 'Buffer 2': s.buf[1], 'Piso': s.floor }),
+  series: (s) => ({ 'Envases empacados': s.packed, 'Buffer 1': s.buf[0], 'Buffer 2': s.buf[1], 'Piso': s.floor, 'Línea kW': s.kw }),
 });
 </script></body></html>

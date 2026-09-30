@@ -7,60 +7,155 @@
 <script src="../../shared/gfx.js"></script>
 <script>
 // Camión refrigerado con reparto multi-parada. Unidad: minutos.
+// Balance térmico de la caja: C·dTa/dt = Q_conducción + Q_infiltración (puerta) − Q_frío, con C ≈ 50 kW·min/°C (1 kW ≙ 0.02 °C/min).
+// Equipo on/off con histéresis; COP cae con el ambiente y con setpoints bajos. Producto sigue al aire con τ = 60 min.
 const PTS = (n) => Array.from({ length: n + 2 }, (_, i) => [60 + (i * 680) / (n + 1), 250 - 90 * Math.sin((i / (n + 1)) * Math.PI) - (i % 2) * 18]);
+const CAP = 50, KMH = 32, MASS = 3.5, CPP = 3.5, LKWH = 0.35, L100 = 16, DEFR = 20; // kW·min/°C, km/h medio, t producto, kJ/kg·K, L/kWh reefer, L/100 km camión, min deshielo
+const cop = (amb, sp) => SL.clamp(2.5 - 0.04 * (amb - 34) - 0.03 * (2 - sp), 1, 4);
+const sched = (t, p) => { // en ruta / descargando en parada i
+  let tt = t, open = false, stop = 0;
+  for (let i = 0; i <= p.n; i++) { if (tt < p.drive) break; tt -= p.drive; if (i < p.n) { if (tt < p.dwell) { open = true; stop = i + 1; break; } tt -= p.dwell; } }
+  return { open, stop };
+};
 SL.app({
   title: 'Cadena de frío · Transporte refrigerado (última milla)',
-  desc: 'Ruta con paradas: en cada parada se abre la puerta y entra aire ambiente. Compara salir sin prefrío ni cortinas contra prefrío + cortina de tiras + monitoreo.',
+  desc: 'Ruta con paradas: en cada parada se abre la puerta y entra aire ambiente. Compara salir sin prefrío ni cortinas contra prefrío + cortina de tiras + monitoreo. Clic en el camión, las tiendas o el registrador.',
   pitch: '"El frío no se rompe en el camino: se rompe en cada parada con la puerta abierta."',
   obj: '"El termoking ya lo compensa." → Mira el pico de producto y los minutos fuera de rango en cada parada.',
   unit: 'min', dt: 0.1, sample: 5, speeds: [1, 10, 60, 240],
   params: [
-    { id: 'mode', label: 'Escenario', opts: ['Hoy: sin prefrío ni cortinas', 'Propuesto: prefrío + cortina + monitoreo'], value: 0 },
+    { sec: 'Escenario y ruta', id: 'mode', label: 'Escenario', opts: ['Hoy: sin prefrío ni cortinas', 'Propuesto: prefrío + cortina + monitoreo'], value: 0 },
     { id: 'n', label: 'Paradas', min: 2, max: 12, step: 1, value: 6, reset: true },
     { id: 'drive', label: 'Tramo entre paradas', min: 10, max: 60, step: 5, value: 30, unit: 'min' },
     { id: 'dwell', label: 'Descarga por parada', min: 5, max: 40, step: 5, value: 20, unit: 'min' },
-    { id: 'sp', label: 'Setpoint', min: -20, max: 8, step: 1, value: 2, unit: '°C' },
+    { sec: 'Control del equipo de frío', id: 'sp', label: 'Setpoint', min: -20, max: 8, step: 1, value: 2, unit: '°C' },
+    { id: 'hyst', label: 'Diferencial (±)', min: 0.5, max: 3, step: 0.5, value: 1, unit: '°C' },
+    { id: 'def', label: 'Deshielo cada (0 = sin deshielo)', min: 0, max: 360, step: 30, value: 0, unit: 'min' },
     { id: 'lim', label: 'Umbral de producto', min: -15, max: 10, step: 1, value: 5, unit: '°C' },
-    { id: 'tamb', label: 'Ambiente (máx. del día)', min: 20, max: 42, step: 1, value: 34, unit: '°C' },
+    { sec: 'Físicos', id: 'tamb', label: 'Ambiente (máx. del día)', min: 20, max: 42, step: 1, value: 34, unit: '°C' },
     { id: 'cap', label: 'Equipo de frío', min: 4, max: 14, step: 1, value: 10, unit: 'kW' },
   ],
-  init(p) { const hoy = p.mode === 0; return { ta: hoy ? p.sp + 6 : p.sp, tp: hoy ? p.sp + 2 : p.sp, on: false, runMin: 0, bad: 0, peak: hoy ? p.sp + 2 : p.sp, tEnd: 0, alarm: 0, al: false, done: false, leg: 0, kwh: 0 }; },
+  init(p) { const hoy = p.mode === 0; return { ta: hoy ? p.sp + 6 : p.sp, tp: hoy ? p.sp + 2 : p.sp, on: false, runMin: 0, bad: 0, peak: hoy ? p.sp + 2 : p.sp, tEnd: 0, alarm: 0, al: false, done: false, leg: 0, kwh: 0,
+    rt: 0, stop: 0, open: false, qc: 0, qi: 0, qf: 0, pel: 0, v: 0, km: 0, fuel: 0, defr: 0, lastDef: 0, fail: false, doorF: false, jam: false, heat: false, doorMin: 0, doorAl: false, mkt: 0, mktN: 0, qprod: 0 }; },
   step(s, dt, p) {
     if (s.done) return;
-    const hoy = p.mode === 0, cyc = p.drive + p.dwell, total = (p.n + 1) * p.drive + p.n * p.dwell;
-    if (s.t >= total) { s.done = true; s.tEnd = total; return; }
-    let tt = s.t, open = false, stop = 0;
-    for (let i = 0; i <= p.n; i++) { if (tt < p.drive) break; tt -= p.drive; if (i < p.n) { if (tt < p.dwell) { open = true; stop = i + 1; break; } tt -= p.dwell; } }
-    s.open = open; s.stop = stop;
-    const amb = p.tamb;
-    const kd = 0.006 * (hoy ? 1 : 0.4);
-    if (!s.on && s.ta > p.sp + 1) s.on = true; else if (s.on && s.ta < p.sp - 1) s.on = false;
-    const cool = s.on ? p.cap * 0.02 : 0;
-    s.ta += dt * ((amb - s.ta) * (0.004 + (open ? kd : 0)) - cool);
-    s.tp += dt * (s.ta - s.tp) / 60;
-    if (s.on) { s.runMin += dt; s.kwh += (p.cap / 2.5) * (dt / 60); }
+    const hoy = p.mode === 0, total = (p.n + 1) * p.drive + p.n * p.dwell;
+    if (s.rt >= total) { s.done = true; s.tEnd = s.t; s.v = 0; SL.log(s, `Ruta completada en ${s.t.toFixed(0)} min`, 'ok'); return; }
+    if (!s.jam) s.rt += dt; // en tráfico el reloj de ruta se detiene
+    const sc = sched(s.rt, p), st0 = s.stop;
+    s.open = sc.open || s.doorF; s.stop = sc.stop;
+    if (s.stop && s.stop !== st0) SL.log(s, `Llega a P${s.stop}: puerta abierta`, 'info');
+    s.v = !sc.open && !s.jam ? KMH * (1 + 0.25 * Math.sin(s.rt * 0.7)) : 0; // km/h
+    s.km += (s.v * dt) / 60; s.fuel += ((s.v * dt) / 60) * (L100 / 100) + (s.jam ? 2.5 * dt / 60 : 0); // ralentí 2.5 L/h
+    const amb = p.tamb + (s.heat ? 6 : 0), kd = 0.006 * (hoy ? 1 : 0.4);
+    // Deshielo programado: equipo sin frío y resistencia 1.5 kW
+    if (p.def > 0 && s.rt - s.lastDef >= p.def && !s.defr) { s.defr = DEFR; s.lastDef = s.rt; SL.log(s, 'Inicio de deshielo programado', 'info'); }
+    if (s.defr > 0) s.defr = Math.max(0, s.defr - dt);
+    if (!s.on && s.ta > p.sp + p.hyst) s.on = true; else if (s.on && s.ta < p.sp - p.hyst) s.on = false;
+    const run = s.on && !s.fail && !s.defr;
+    s.qc = 0.004 * (amb - s.ta) * CAP; s.qi = s.open ? kd * (amb - s.ta) * CAP : 0; s.qf = run ? p.cap : 0; // kW
+    const qh = s.defr ? 1.5 : 0;
+    s.ta += (dt * (s.qc + s.qi + qh - s.qf)) / CAP;
+    const dtp = (dt * (s.ta - s.tp)) / 60;
+    s.tp += dtp; s.qprod += (dtp * MASS * 1000 * CPP) / 1000; // MJ absorbidos por el producto
+    s.pel = run ? p.cap / cop(amb, p.sp) : s.defr ? 1.5 : 0;
+    if (run) s.runMin += dt;
+    s.kwh += (s.pel * dt) / 60;
     s.peak = Math.max(s.peak, s.tp);
-    if (s.tp > p.lim) { s.bad += dt; if (!s.al) { s.al = true; s.alarm++; } } else s.al = false;
+    s.mkt += Math.exp(-10000 / (s.tp + 273.15)) * dt; s.mktN += dt; // temperatura cinética media
+    if (s.tp > p.lim) { s.bad += dt; if (!s.al) { s.al = true; s.alarm++; SL.log(s, `Excursión: producto ${s.tp.toFixed(1)} °C > ${p.lim} °C`, 'crit'); } } else if (s.al) { s.al = false; SL.log(s, 'Producto vuelve a rango', 'ok'); }
+    s.doorMin = s.open ? s.doorMin + dt : 0;
+    const da = s.doorMin > 15; if (da && !s.doorAl) SL.log(s, `Puerta abierta > 15 min${p.mode ? ' · alerta de telemetría al chofer' : ''}`, 'warn'); s.doorAl = da;
   },
   draw(g, s, p, W, H) {
-    const pts = PTS(p.n), L = SL.len(pts);
+    const pts = PTS(p.n), L = SL.len(pts), t = s.t || 0;
     SL.road(g, pts, 18);
-    SL.building(g, pts[0][0] - 50, pts[0][1] - 66, 76, 52, { load: 0.8 }); SL.text(g, 'CD', pts[0][0] - 12, pts[0][1] - 72, '#8b9bb0', '600 11px system-ui', 'center');
-    pts.forEach((q, i) => { if (i && i <= p.n) { SL.store(g, q[0] - 22, q[1] - 74, 44, 38, 'P' + i); if (s.stop === i) SL.tag(g, 'descargando', q[0], q[1] - 88, SL.STATE.warn); } });
-    const total = (p.n + 1) * p.drive + p.n * p.dwell, d = SL.clamp(s.t / total, 0, 1) * L, q = SL.along(pts, d), q2 = SL.along(pts, Math.min(L, d + 3));
+    SL.building(g, pts[0][0] - 50, pts[0][1] - 66, 76, 52, { load: 0.8 }); SL.text(g, 'CD', pts[0][0] - 12, pts[0][1] - 72, '#8b9bb0', '600 11px system-ui', 'center'); SL.hot('cd', pts[0][0] - 50, pts[0][1] - 80, 76, 66);
+    pts.forEach((q, i) => { if (i && i <= p.n) {
+      SL.store(g, q[0] - 22, q[1] - 74, 44, 38, 'P' + i); SL.hot('stop:' + i, q[0] - 22, q[1] - 80, 44, 44);
+      if (s.stop === i) SL.tag(g, 'descargando', q[0], q[1] - 88, SL.STATE.warn); else if (s.rt >= i * (p.drive + p.dwell)) SL.led(g, q[0] + 18, q[1] - 82, 2.5, SL.STATE.run);
+    } });
+    const total = (p.n + 1) * p.drive + p.n * p.dwell, d = SL.clamp(s.rt / total, 0, 1) * L, q = SL.along(pts, d), q2 = SL.along(pts, Math.min(L, d + 3));
     const dir = q2.x >= q.x ? 1 : -1;
-    SL.van(g, q.x - 14 * dir, q.y + 8, { s: 0.85, dir, reefer: true, open: s.open, body: '#e8eef5', cab: '#1f6f8b' });
+    SL.van(g, q.x - 14 * dir, q.y + 8, { s: 0.85, dir, reefer: true, open: s.open, body: s.fail ? '#f1d5d5' : '#e8eef5', cab: '#1f6f8b' });
+    SL.hot('truck', q.x - 42, q.y - 26, 84, 38);
     if (s.open) SL.led(g, q.x, q.y - 34, 3, SL.STATE.warn);
+    const stt = s.fail ? ['FALLA FRÍO', SL.STATE.down] : s.defr ? ['DESHIELO', SL.STATE.setup] : s.jam ? ['TRÁFICO', SL.STATE.warn] : null;
+    SL.tag(g, stt ? stt[0] : `${s.v.toFixed(0)} km/h · ${s.ta.toFixed(1)} °C`, q.x, q.y + 26, stt ? stt[1] : SL.STATE.info);
     // Registrador de temperatura (data logger)
     const over = s.tp > p.lim, f = SL.clamp((s.tp - p.sp) / Math.max(p.lim - p.sp, 1), 0, 1.4);
-    SL.rr(g, 30, 296, 740, 124, 8); g.fillStyle = '#0b1117'; g.fill(); g.strokeStyle = '#2e3e52'; g.stroke();
+    SL.rr(g, 30, 296, 740, 124, 8); g.fillStyle = '#0b1117'; g.fill(); g.strokeStyle = '#2e3e52'; g.stroke(); SL.hot('logger', 30, 296, 740, 124);
     SL.text(g, 'REGISTRADOR DE TEMPERATURA', 48, 318, '#8b9bb0', '600 11px system-ui');
     SL.text(g, `${s.ta.toFixed(1)} °C`, 48, 356, '#9fe3ff', '600 26px ui-monospace, monospace'); SL.text(g, 'aire', 48, 372, '#8b9bb0', '11px system-ui');
     SL.text(g, `${s.tp.toFixed(1)} °C`, 190, 356, over ? '#ef5350' : '#3ecf8e', '600 26px ui-monospace, monospace'); SL.text(g, `producto (umbral ${p.lim} °C)`, 190, 372, '#8b9bb0', '11px system-ui');
     SL.gauge(g, 380, 336, 360, 14, Math.min(1, f / 1.4), SL.color(1 - Math.min(1, f)), over ? '⚠ SOBRE UMBRAL' : 'dentro de rango');
-    SL.text(g, s.done ? 'Ruta completada' : s.open ? `Descargando en P${s.stop}: PUERTA ABIERTA` : 'En ruta: puerta cerrada', 380, 376, s.open ? '#f5b942' : '#8b9bb0', '12px system-ui');
+    SL.text(g, s.done ? 'Ruta completada' : s.open ? `${s.doorF && !s.stop ? 'PUERTA ABIERTA (olvido)' : `Descargando en P${s.stop}: PUERTA ABIERTA`} · ${s.doorMin.toFixed(0)} min` : s.jam ? 'Detenido en tráfico' : 'En ruta: puerta cerrada', 380, 376, s.open ? '#f5b942' : '#8b9bb0', '12px system-ui');
+    const run = s.on && !s.fail && !s.defr;
+    SL.led(g, 390, 396, 3, run ? SL.STATE.run : s.fail ? SL.STATE.down : SL.STATE.off, true);
+    SL.text(g, `Equipo ${s.fail ? 'FALLA' : s.defr ? 'DESHIELO' : run ? 'ON' : 'OFF'} · ${s.pel.toFixed(1)} kW eléc · frío ${s.qf.toFixed(0)} kW vs carga ${(s.qc + s.qi).toFixed(1)} kW`, 400, 400, '#8b9bb0', '11px system-ui');
     SL.led(g, 740, 318, 3, over ? SL.STATE.down : SL.STATE.run);
     if (p.mode === 1) SL.text(g, 'Prefrío + cortina de tiras + alerta por telemetría', 48, 404, '#4fc3f7', '12px system-ui');
+    if (s.heat) SL.tag(g, `OLA DE CALOR ${p.tamb + 6} °C`, 720, 30, SL.STATE.down);
+  },
+  vars(s, p) {
+    const amb = p.tamb + (s.heat ? 6 : 0), mkt = s.mktN ? 10000 / -Math.log(s.mkt / s.mktN) - 273.15 : s.tp, total = (p.n + 1) * p.drive + p.n * p.dwell;
+    return {
+      fis: [
+        ['T° aire en caja', s.ta.toFixed(1), '°C', null, '#9fe3ff'],
+        ['T° producto', s.tp.toFixed(2), '°C', null, s.tp > p.lim ? '#ef5350' : '#3ecf8e'],
+        ['T° ambiente', amb.toFixed(0), '°C'],
+        ['Calor por paredes', s.qc.toFixed(2), 'kW', s.qc / 14],
+        ['Calor por infiltración (puerta)', s.qi.toFixed(2), 'kW', s.qi / 14, s.qi > 0 ? '#f5b942' : undefined],
+        ['Capacidad de frío entregada', s.qf.toFixed(1), 'kW', s.qf / 14, '#4fc3f7'],
+        ['Potencia eléctrica equipo', s.pel.toFixed(2), 'kW'],
+        ['COP', cop(amb, p.sp).toFixed(2), ''],
+        ['Energía del equipo', s.kwh.toFixed(2), 'kWh'],
+        ['Calor absorbido por producto', s.qprod.toFixed(1), 'MJ'],
+        ['Velocidad del camión', s.v.toFixed(0), 'km/h', s.v / 45],
+        ['Distancia recorrida', s.km.toFixed(1), 'km'],
+        ['Combustible (camión + equipo)', (s.fuel + s.kwh * LKWH).toFixed(1), 'L'],
+        ['Temp. cinética media (MKT)', mkt.toFixed(2), '°C'],
+      ],
+      ctl: [
+        ['Escenario', p.mode ? 'Propuesto' : 'Hoy', ''],
+        ['Setpoint', p.sp, '°C'],
+        ['Banda on/off', `${(p.sp - p.hyst).toFixed(1)} … ${(p.sp + p.hyst).toFixed(1)}`, '°C'],
+        ['Error aire − SP', (s.ta - p.sp).toFixed(2), '°C', Math.abs(s.ta - p.sp) / 10, Math.abs(s.ta - p.sp) > p.hyst ? '#f5b942' : '#3ecf8e'],
+        ['Termostato', s.fail ? 'FALLA' : s.defr ? `DESHIELO ${s.defr.toFixed(0)} min` : s.on ? 'ON' : 'OFF', '', null, s.fail ? '#ef5350' : s.on ? '#3ecf8e' : '#8b9bb0'],
+        ['Ciclo de trabajo', ((100 * s.runMin) / Math.max(s.done ? s.tEnd : s.t, 1)).toFixed(0), '%', s.runMin / Math.max(s.t, 1)],
+        ['Próximo deshielo', p.def > 0 ? Math.max(0, p.def - (s.rt - s.lastDef)).toFixed(0) : 'desactivado', p.def > 0 ? 'min' : ''],
+        ['Puerta', s.open ? `ABIERTA ${s.doorMin.toFixed(0)} min` : 'cerrada', '', null, s.open ? '#f5b942' : undefined],
+        ['Parada actual', s.stop ? `P${s.stop} de ${p.n}` : s.done ? 'fin' : 'en ruta', ''],
+        ['Ruta restante', Math.max(0, total - s.rt).toFixed(0), 'min', s.rt / total],
+        ['Alarma producto > umbral', s.al ? 'ACTIVA' : 'normal', '', null, s.al ? '#ef5350' : undefined],
+        ['Excursiones', s.alarm, ''],
+        ['Minutos sobre umbral', s.bad.toFixed(0), 'min'],
+        ['Alarma puerta > 15 min', s.doorAl ? 'ACTIVA' : 'normal', '', null, s.doorAl ? '#f5b942' : undefined],
+      ],
+    };
+  },
+  actions: [
+    { label: 'Falla del equipo de frío', kind: 'crit', on: (s) => s.fail, run: (s) => { s.fail = !s.fail; SL.log(s, s.fail ? 'Equipo de frío fuera de servicio (compresor)' : 'Equipo de frío reparado', s.fail ? 'crit' : 'ok'); } },
+    { label: 'Puerta olvidada abierta', kind: 'warn', on: (s) => s.doorF, run: (s) => { s.doorF = !s.doorF; SL.log(s, s.doorF ? 'Puerta trasera abierta fuera de parada' : 'Puerta cerrada', s.doorF ? 'warn' : 'ok'); } },
+    { label: 'Tráfico / demora', hint: 'Camión detenido en ralentí; la ruta se alarga', kind: 'warn', on: (s) => s.jam, run: (s) => { s.jam = !s.jam; SL.log(s, s.jam ? 'Camión detenido por tráfico' : 'Tráfico despejado', s.jam ? 'warn' : 'ok'); } },
+    { label: 'Ola de calor +6 °C', kind: 'warn', on: (s) => s.heat, run: (s) => { s.heat = !s.heat; SL.log(s, s.heat ? 'Ambiente sube 6 °C' : 'Ambiente normal', s.heat ? 'warn' : 'ok'); } },
+    { label: 'Deshielo manual', hint: `Equipo ${DEFR} min sin frío + resistencia`, run: (s) => { if (!s.defr) { s.defr = DEFR; s.lastDef = s.rt; } } },
+    { label: 'Setpoint −2 °C', run: (s, p, r, api) => api.set('sp', Math.max(-20, p.sp - 2)) },
+  ],
+  inspect(s, p, id) {
+    const amb = p.tamb + (s.heat ? 6 : 0), total = (p.n + 1) * p.drive + p.n * p.dwell;
+    if (id === 'truck') return { title: 'Camión refrigerado + equipo de frío', sub: `Caja ≈ ${CAP} kW·min/°C · ${MASS} t de producto · equipo ${p.cap} kW frío`,
+      fis: [['T° aire', s.ta.toFixed(1), '°C'], ['T° producto', s.tp.toFixed(2), '°C'], ['Frío entregado', s.qf.toFixed(1), 'kW'], ['Carga térmica', (s.qc + s.qi).toFixed(2), 'kW'], ['P eléctrica', s.pel.toFixed(2), 'kW'], ['COP', cop(amb, p.sp).toFixed(2), ''], ['Velocidad', s.v.toFixed(0), 'km/h'], ['Distancia', s.km.toFixed(1), 'km'], ['Diésel camión', s.fuel.toFixed(1), 'L']],
+      ctl: [['Termostato', s.fail ? 'FALLA' : s.defr ? 'DESHIELO' : s.on ? 'ON' : 'OFF', '', null, s.fail ? '#ef5350' : s.on ? '#3ecf8e' : '#8b9bb0'], ['SP ± dif.', `${p.sp} ± ${p.hyst}`, '°C'], ['Puerta', s.open ? 'ABIERTA' : 'cerrada', ''], ['Tráfico', s.jam ? 'detenido' : 'no', '']],
+      actions: [{ label: s.fail ? 'Reparar equipo' : 'Forzar falla', run: (s) => { s.fail = !s.fail; } }, { label: s.doorF ? 'Cerrar puerta' : 'Abrir puerta', run: (s) => { s.doorF = !s.doorF; } }, { label: 'Deshielo ahora', run: (s) => { if (!s.defr) { s.defr = DEFR; s.lastDef = s.rt; } } }] };
+    if (id === 'logger') return { title: 'Registrador de temperatura', sub: 'Sonda de producto + sonda de aire · MKT con ΔH/R = 10 000 K', fis: this.vars(s, p).fis.slice(0, 3).concat([this.vars(s, p).fis[13]]), ctl: this.vars(s, p).ctl.slice(10) };
+    if (id === 'cd') return { title: 'Centro de distribución (origen)', sub: p.mode ? 'Camión sale prefriado al setpoint' : 'Camión sale sin prefrío (+6 °C aire, +2 °C producto)',
+      fis: [['T° salida aire (inicio)', (p.mode ? p.sp : p.sp + 6).toFixed(0), '°C'], ['T° salida producto', (p.mode ? p.sp : p.sp + 2).toFixed(0), '°C']], ctl: [['Duración de la ruta', total, 'min'], ['Paradas', p.n, '']] };
+    if (id.startsWith('stop:')) { const i = +id.split(':')[1], arr = i * p.drive + (i - 1) * p.dwell, done = s.rt >= arr + p.dwell;
+      return { title: `Tienda P${i}`, sub: `Llegada programada min ${arr} · descarga ${p.dwell} min`,
+        fis: [['T° ambiente', amb.toFixed(0), '°C'], ['Infiltración si abierta', (0.006 * (p.mode ? 0.4 : 1) * (amb - s.ta) * CAP).toFixed(1), 'kW']],
+        ctl: [['Estado', s.stop === i ? 'DESCARGANDO' : done ? 'entregada' : 'pendiente', '', null, s.stop === i ? '#f5b942' : done ? '#3ecf8e' : undefined], ['Falta para llegada', done || s.stop === i ? '—' : Math.max(0, arr - s.rt).toFixed(0), 'min']],
+        actions: [{ label: 'Descarga −5 min', run: (s, p, r, api) => api.set('dwell', Math.max(5, p.dwell - 5)) }] }; }
   },
   kpis(s, p) {
     return [
@@ -73,6 +168,6 @@ SL.app({
       { label: 'Estado', value: s.done ? 'Ruta completada' : s.stop ? 'Parada ' + s.stop : 'En ruta' },
     ];
   },
-  series: (s, p) => ({ 'Aire °C': s.ta, 'Producto °C': s.tp, 'Umbral': p.lim }),
+  series: (s, p) => ({ 'Aire °C': s.ta, 'Producto °C': s.tp, 'Umbral': p.lim, 'Frío kW': s.qf }),
 });
 </script></body></html>

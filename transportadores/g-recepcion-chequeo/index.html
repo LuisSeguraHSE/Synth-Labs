@@ -7,65 +7,162 @@
 <script src="../../shared/gfx.js"></script>
 <script>
 // Recepción y chequeo. Unidad: segundos. Camiones → descarga → conteo/foto/sello → ok / no conforme → slot.
+// Física: banda de 8 m (6 kg/m): F = μ·(m_banda + m_bultos)·g ; P = F·v/η + P0. Manipulación manual en kg levantados.
+const LB = 8, MBK = 6, MU = 0.3, ETA = 0.75, P0 = 0.25, GR = 9.81; // m, kg/m, μ, η, kW (desviador + control)
+const nSrv = (s, p) => (p.mode === 0 ? 3 : 1) + (s.xtra ? 1 : 0);
+const tcOf = (s, p) => (p.mode === 0 ? 14 : 3.6 * (s.scnF ? 2.5 : 1));
+const detOf = (s, p) => (p.mode === 0 ? 0.72 : s.scnF ? 0.72 : 0.96);
+const bStop = (s, p) => p.mode === 1 && s.bstop;
 SL.app({
   title: 'Demo G · Recepción y chequeo',
-  desc: 'El inventario no se pierde en el rack; se pierde en la rampa. "Hoy": el camión espera en muelle hasta que se recuenta en piso. "Propuesto": descarga a banda, puesto de control y desvío ok / no ok.',
+  desc: 'El inventario no se pierde en el rack; se pierde en la rampa. "Hoy": el camión espera en muelle hasta que se recuenta en piso. "Propuesto": descarga a banda, puesto de control y desvío ok / no ok. Clic en camión, patio, banda, puesto y desvío.',
   pitch: '"El inventario no se pierde en el rack; se pierde en la rampa."',
   obj: '"Es un ticket chico." → Sí: decide el jefe de almacén; útil para PRODISA, droguerías, 3PL y mayoristas. Decisión del jefe de almacén: útil para droguerías, 3PL y mayoristas. Módulo de 6–10 m + puesto + desviador binario.',
   unit: 's', dt: 0.5, sample: 30, speeds: [1, 10, 60, 240],
   params: [
-    { id: 'mode', label: 'Escenario', opts: ['Hoy: descarga a piso + 3 recuentan', 'Propuesto: banda + puesto de control'], value: 0 },
+    { sec: 'Escenario y llegadas', id: 'mode', label: 'Escenario', opts: ['Hoy: descarga a piso + 3 recuentan', 'Propuesto: banda + puesto de control'], value: 0 },
     { id: 'gap', label: 'Un camión cada', min: 6, max: 40, step: 1, value: 10, unit: 'min' },
     { id: 'nb', label: 'Bultos por camión', min: 60, max: 240, step: 10, value: 120 },
-    { id: 'tu', label: 'Descarga', min: 2, max: 8, step: 0.5, value: 4, unit: 's/bulto' },
+    { sec: 'Físicos', id: 'tu', label: 'Descarga', min: 2, max: 8, step: 0.5, value: 4, unit: 's/bulto' },
+    { id: 'kg', label: 'Peso medio del bulto', min: 4, max: 25, step: 1, value: 12, unit: 'kg' },
+    { id: 'vb', label: 'Velocidad de banda', min: 0.2, max: 1, step: 0.05, value: 0.5, unit: 'm/s' },
     { id: 'nc', label: 'Bultos no conformes', min: 0, max: 10, step: 0.5, value: 4, unit: '%' },
+    { sec: 'Control', id: 'sla', label: 'Objetivo de tiempo en muelle', min: 15, max: 90, step: 5, value: 45, unit: 'min' },
+    { id: 'pal', label: 'Alarma de patio', min: 1, max: 6, step: 1, value: 2, unit: 'camiones' },
   ],
-  init() { return { trucks: [{ at: 0, n: 0, left: 120, id: 1 }], nextT: 600, id: 1, dock: null, patio: [], buf: [], ctl: [], ok: 0, nc: 0, miss: 0, tdock: 0, nleave: 0, twait: 0, nw: 0, un: 0, checked: 0 }; },
+  init() { return { trucks: [{ at: 0, n: 0, left: 120, id: 1 }], nextT: 600, id: 1, dock: null, patio: [], buf: [], ctl: [], ok: 0, nc: 0, miss: 0, tdock: 0, nleave: 0, twait: 0, nw: 0, un: 0, checked: 0, kw: 0, kwh: 0, kgMan: 0, dockBusy: 0, cBusy: 0, slaOk: 0, lastD: null, lastDt: -99, pAl: false, scnF: false, bstop: false, xtra: false }; },
   step(s, dt, p, r) {
-    const hoy = p.mode === 0, cap = hoy ? 25 : 12, nsrv = hoy ? 3 : 1, tc = hoy ? 14 : 3.6, det = hoy ? 0.72 : 0.96;
+    const hoy = p.mode === 0, cap = hoy ? 25 : 12, nsrv = nSrv(s, p), tc = tcOf(s, p), det = detOf(s, p), stop = bStop(s, p);
     if (s.t >= s.nextT) { s.id++; s.patio.push({ at: s.t, left: p.nb, id: s.id, nb: p.nb, chk: 0 }); s.nextT += p.gap * 60; }
     if (s.trucks.length) { s.patio.push(Object.assign(s.trucks.pop(), { at: 0, left: p.nb, nb: p.nb, chk: 0 })); }
     if (!s.dock && s.patio.length) { s.dock = s.patio.shift(); s.dock.t0 = s.t; s.twait += s.t - s.dock.at; s.nw++; s.dock.un = 0; s.dock.nextU = s.t; }
+    if (!s.pAl && s.patio.length >= p.pal) { s.pAl = true; SL.log(s, `Patio saturado: ${s.patio.length} camiones esperando`, 'warn'); } else if (s.pAl && s.patio.length < p.pal) { s.pAl = false; SL.log(s, 'Patio normalizado', 'ok'); }
     const d = s.dock;
-    if (d && d.left > 0 && s.buf.length < cap && s.t >= d.nextU) { d.left--; d.un++; d.nextU = s.t + p.tu * (0.9 + 0.2 * r()); s.buf.push({ bad: r() < p.nc / 100, tr: d }); s.un++; }
+    if (d) { s.dockBusy += dt; if (!d.slaF && s.t - d.t0 > p.sla * 60) { d.slaF = true; SL.log(s, `Camión #${d.id} supera ${p.sla} min en muelle`, 'warn'); } }
+    if (d && d.left > 0 && s.buf.length < cap && s.t >= d.nextU && !stop) { d.left--; d.un++; d.nextU = s.t + p.tu * (0.9 + 0.2 * r()); s.buf.push({ bad: r() < Math.max(p.nc / 100, d.dmg ? 0.3 : 0), tr: d }); s.un++; s.kgMan += p.kg * (hoy ? 1 : 1); }
     for (let i = 0; i < nsrv; i++) {
-      const c = s.ctl[i] || (s.ctl[i] = { rem: 0, b: null });
+      const c = s.ctl[i] || (s.ctl[i] = { rem: 0, b: null, n: 0, busy: 0 });
+      if (c.b) { c.busy += dt; s.cBusy += dt; }
       if (c.b && (c.rem -= dt) <= 0) {
-        const b = c.b; c.b = null; b.tr.chk++; s.checked++;
-        if (b.bad) { if (r() < det) s.nc++; else s.miss++; } else s.ok++;
+        const b = c.b; c.b = null; b.tr.chk++; s.checked++; c.n++;
+        if (hoy) s.kgMan += p.kg; // recuento en piso = segundo levantamiento
+        if (b.bad) { if (r() < det) { s.nc++; s.lastD = 'nc'; } else { s.miss++; s.lastD = 'ok'; } } else { s.ok++; s.lastD = 'ok'; }
+        s.lastDt = s.t;
       }
-      if (!c.b && s.buf.length) { c.b = s.buf.shift(); c.rem = tc * (0.85 + 0.3 * r()); }
+      if (!c.b && s.buf.length && !stop) { c.b = s.buf.shift(); c.rem = tc * (0.85 + 0.3 * r()); }
     }
+    // Banda: potencia según carga y estado
+    const m = MBK * LB + s.buf.length * p.kg;
+    s.kw = hoy ? 0 : stop ? 0.05 : (MU * m * GR * p.vb) / 1000 / ETA + P0;
+    s.kwh += (s.kw * dt) / 3600;
     if (d) {
       const fin = hoy ? d.chk >= d.nb : d.left <= 0;
-      if (fin) { s.tdock += s.t - d.t0; s.nleave++; s.dock = null; }
+      if (fin) { const td = s.t - d.t0; s.tdock += td; s.nleave++; if (td <= p.sla * 60) s.slaOk++; s.dock = null; }
     }
   },
   draw(g, s, p, W, H) {
-    const hoy = p.mode === 0, y = 190, fy = y + 44;
+    const hoy = p.mode === 0, y = 190, fy = y + 44, stop = bStop(s, p);
     g.fillStyle = '#2a3440'; g.fillRect(10, fy, 150, 8); SL.text(g, 'MUELLE', 84, fy + 22, '#8b9bb0', '11px system-ui', 'center');
-    if (s.dock) { SL.van(g, 100, fy, { s: 1.4, dir: -1, open: true }); SL.tag(g, `Camión #${s.dock.id} · ${s.dock.left} por bajar`, 84, y - 46, SL.STATE.info); }
+    SL.hot('dock', 14, y - 56, 150, 104);
+    if (s.dock) {
+      const late = s.t - s.dock.t0 > p.sla * 60;
+      SL.van(g, 100, fy, { s: 1.4, dir: -1, open: true, body: s.dock.dmg ? '#e0b4a8' : undefined });
+      SL.tag(g, `Camión #${s.dock.id} · ${s.dock.left} por bajar`, 84, y - 46, SL.STATE.info);
+      SL.tag(g, `${((s.t - s.dock.t0) / 60).toFixed(0)}/${p.sla} min`, 84, y - 24, late ? SL.STATE.down : SL.STATE.run);
+    }
     SL.text(g, `Patio: ${s.patio.length} camión(es) esperando`, 14, 330, s.patio.length ? '#ef5350' : '#3ecf8e', '600 12px system-ui');
     for (let i = 0; i < Math.min(s.patio.length, 3); i++) SL.van(g, 70 + i * 90, 400, { s: 0.8, dir: -1, body: '#c9d1d9', cab: '#5b6b80' });
+    SL.hot('patio', 10, 316, 300, 100);
     const box = (x, yy, bad) => SL.carton(g, x, yy, 16, 13, bad ? '#d4a33a' : '#b98a58');
     if (hoy) {
       g.fillStyle = 'rgba(239,83,80,.05)'; g.fillRect(168, y - 70, 250, 120); g.strokeStyle = 'rgba(239,83,80,.35)'; g.setLineDash([6, 4]); g.strokeRect(168.5, y - 69.5, 249, 119); g.setLineDash([]);
-      SL.text(g, 'Bultos en piso (recuento manual)', 172, y - 78, '#ef5350', '600 12px system-ui');
+      SL.text(g, 'Bultos en piso (recuento manual)', 172, y - 78, '#ef5350', '600 12px system-ui'); SL.hot('buf', 168, y - 70, 250, 120);
       s.buf.forEach((b, i) => box(176 + (i % 13) * 18, y - 60 + Math.floor(i / 13) * 16, b.bad));
-      [0, 1, 2].forEach((i) => { const c = s.ctl[i]; SL.person(g, 440 + i * 36, fy, { dir: -1, busy: !!(c && c.b), carry: c && c.b ? '#b98a58' : null }); SL.led(g, 440 + i * 36, y - 10, 2.4, c && c.b ? SL.STATE.run : SL.STATE.idle, !!(c && c.b)); });
+      for (let i = 0; i < nSrv(s, p); i++) { const c = s.ctl[i], x = 440 + i * 36; SL.person(g, x, fy, { dir: -1, busy: !!(c && c.b), carry: c && c.b ? '#b98a58' : null, shirt: i > 2 ? '#2e7d5b' : undefined }); SL.led(g, x, y - 10, 2.4, c && c.b ? SL.STATE.run : SL.STATE.idle, !!(c && c.b)); SL.hot('chk:' + i, x - 16, y - 16, 32, 64); }
     } else {
-      SL.belt(g, [[150, y], [452, y]], 22);
+      SL.belt(g, [[150, y], [452, y]], 22, stop ? '#4a2a2a' : undefined); SL.hot('buf', 160, y - 14, 290, 28);
       s.buf.forEach((b, i) => box(420 - i * 24, y - 7, b.bad));
-      SL.machine(g, 452, y - 58, 84, 74, { label: 'Control', sub: 'conteo·foto', state: s.ctl[0] && s.ctl[0].b ? 'run' : 'idle', fs: 12 });
-      SL.person(g, 494, fy + 14, { dir: -1, busy: !!(s.ctl[0] && s.ctl[0].b) });
+      SL.tag(g, stop ? 'BANDA DETENIDA' : `${p.vb.toFixed(2)} m/s · ${s.kw.toFixed(2)} kW`, 300, y + 26, stop ? SL.STATE.down : SL.STATE.info);
+      const busy = s.ctl.some((c) => c && c.b);
+      SL.machine(g, 452, y - 58, 84, 74, { label: 'Control', sub: s.scnF ? 'FALLA' : 'conteo·foto', state: s.scnF ? 'down' : busy ? 'run' : 'idle', fs: 12 });
+      SL.hot('ctl', 452, y - 58, 84, 74);
+      for (let i = 0; i < nSrv(s, p); i++) SL.person(g, 494 - i * 30, fy + 14, { dir: -1, busy: !!(s.ctl[i] && s.ctl[i].b), shirt: i ? '#2e7d5b' : undefined });
       SL.person(g, 150, fy, { dir: 1, busy: !!s.dock });
     }
     SL.belt(g, [[536, y], [600, y], [600, y - 76]], 16); SL.belt(g, [[600, y], [600, y + 76]], 16);
-    g.fillStyle = '#f5b942'; g.fillRect(596, y - 4, 8, 8); SL.text(g, 'desvío', 612, y + 4, '#8b9bb0', '10px system-ui');
-    SL.shelf(g, 626, y - 150, 160, 70, 3, Math.min(1, s.ok / 300), 3); SL.tag(g, `Slot / picking: ${s.ok}`, 706, y - 162, SL.STATE.run);
+    const fl = s.t - s.lastDt < 3;
+    g.fillStyle = fl ? (s.lastD === 'nc' ? '#ef5350' : '#3ecf8e') : '#f5b942'; g.fillRect(596, y - 4, 8, 8); SL.text(g, 'desvío', 612, y + 4, '#8b9bb0', '10px system-ui');
+    SL.hot('div', 584, y - 20, 50, 40);
+    SL.shelf(g, 626, y - 150, 160, 70, 3, Math.min(1, s.ok / 300), 3); SL.tag(g, `Slot / picking: ${s.ok}`, 706, y - 162, SL.STATE.run); SL.hot('slot', 626, y - 170, 160, 90);
     g.strokeStyle = '#ef5350'; g.lineWidth = 1.5; g.strokeRect(630.5, y + 70.5, 150, 70); g.fillStyle = 'rgba(239,83,80,.06)'; g.fillRect(631, y + 71, 149, 69);
     for (let i = 0; i < Math.min(s.nc, 20); i++) box(638 + (i % 8) * 17, y + 120 - Math.floor(i / 8) * 14, true);
-    SL.tag(g, `No conforme: ${s.nc}`, 706, y + 156, SL.STATE.down);
+    SL.tag(g, `No conforme: ${s.nc}`, 706, y + 156, SL.STATE.down); SL.hot('nc', 630, y + 70, 150, 96);
+  },
+  vars(s, p) {
+    const hoy = p.mode === 0, T = Math.max(s.t, 1), hrs = T / 3600, m = s.buf.length * p.kg, uc = s.cBusy / (T * nSrv(s, p));
+    return {
+      fis: [
+        ['Ritmo de descarga', (s.un / hrs).toFixed(0), 'bultos/h', s.un / hrs / 900],
+        ['Ritmo de chequeo', (s.checked / hrs).toFixed(0), 'bultos/h', s.checked / hrs / 900],
+        ['Masa recibida', ((s.un * p.kg) / 1000).toFixed(2), 't'],
+        ['Masa levantada a mano', ((s.kgMan) / 1000).toFixed(2), 't', null, hoy ? '#f5b942' : undefined],
+        ['Kg levantados por persona·h', ((s.kgMan / (hoy ? 4 : 2)) / hrs).toFixed(0), 'kg/h'],
+        ['Bultos por chequear', s.buf.length, '', s.buf.length / (hoy ? 25 : 12)],
+        ['Masa en ' + (hoy ? 'piso' : 'banda'), m.toFixed(0), 'kg'],
+        ['Ocupación del muelle', ((100 * s.dockBusy) / T).toFixed(0), '%', s.dockBusy / T],
+        ['Utilización de control', (100 * uc).toFixed(0), '%', uc],
+        ['Camiones en patio', s.patio.length, '', s.patio.length / 6, s.pAl ? '#ef5350' : undefined],
+        ['Velocidad de banda', hoy ? '—' : bStop(s, p) ? '0.00' : p.vb.toFixed(2), 'm/s'],
+        ['Potencia banda + puesto', s.kw.toFixed(2), 'kW', s.kw / 1, '#c98500'],
+        ['Energía', s.kwh.toFixed(3), 'kWh'],
+      ],
+      ctl: [
+        ['Política de patio', 'FIFO por llegada', ''],
+        ['Camión en muelle', s.dock ? `#${s.dock.id}` : '—', ''],
+        ['ASN vs descargado', s.dock ? `${s.dock.nb} / ${s.dock.nb - s.dock.left}` : '—', 'bultos'],
+        ['Chequeados del camión', s.dock ? `${s.dock.chk}/${s.dock.nb}` : '—', ''],
+        ['Tiempo en muelle / objetivo', s.dock ? `${((s.t - s.dock.t0) / 60).toFixed(1)} / ${p.sla}` : '—', 'min', s.dock ? (s.t - s.dock.t0) / 60 / p.sla : 0, s.dock && s.t - s.dock.t0 > p.sla * 60 ? '#ef5350' : undefined],
+        ['Cumplimiento objetivo muelle', s.nleave ? ((100 * s.slaOk) / s.nleave).toFixed(0) : '—', '%'],
+        ['Liberación del camión', hoy ? 'al terminar recuento' : 'al terminar descarga', ''],
+        ['Puestos de chequeo', nSrv(s, p), ''],
+        ['Tiempo de chequeo', tcOf(s, p).toFixed(1), 's/bulto'],
+        ['Probabilidad de detección NC', (100 * detOf(s, p)).toFixed(0), '%', detOf(s, p), s.scnF ? '#ef5350' : undefined],
+        ['Última decisión desvío', s.lastD === 'nc' ? 'NO CONFORME' : s.lastD === 'ok' ? 'OK → slot' : '—', '', null, s.lastD === 'nc' ? '#ef5350' : undefined],
+        ['Alarma de patio', s.pAl ? 'ACTIVA' : 'normal', '', null, s.pAl ? '#ef5350' : undefined],
+        ['Enclavamiento banda', bStop(s, p) ? 'PARADA' : hoy ? '—' : 'marcha', ''],
+      ],
+    };
+  },
+  actions: [
+    { label: 'Llegan 3 camiones juntos', kind: 'warn', run: (s, p) => { for (let k = 0; k < 3; k++) { s.id++; s.patio.push({ at: s.t, left: p.nb, id: s.id, nb: p.nb, chk: 0 }); } } },
+    { label: 'Camión con lote dañado', kind: 'warn', hint: 'El camión en muelle trae 30 % no conforme', run: (s) => { if (s.dock) s.dock.dmg = true; } },
+    { label: 'Falla escáner / foto', kind: 'crit', on: (s) => s.scnF, run: (s) => { s.scnF = !s.scnF; SL.log(s, s.scnF ? 'Escáner del puesto en falla: chequeo lento, menor detección' : 'Escáner reparado', s.scnF ? 'crit' : 'ok'); } },
+    { label: 'Paro de banda', kind: 'crit', on: (s) => s.bstop, run: (s) => { s.bstop = !s.bstop; SL.log(s, s.bstop ? 'Banda de recepción detenida' : 'Banda de recepción en marcha', s.bstop ? 'crit' : 'ok'); } },
+    { label: 'Operario extra en chequeo', on: (s) => s.xtra, run: (s) => { s.xtra = !s.xtra; SL.log(s, s.xtra ? 'Operario extra asignado a chequeo' : 'Operario extra retirado', 'info'); } },
+  ],
+  inspect(s, p, id) {
+    const hoy = p.mode === 0, T = Math.max(s.t, 1);
+    if (id === 'dock') { const d = s.dock; return { title: d ? `Muelle 1 · Camión #${d.id}` : 'Muelle 1 · libre', sub: hoy ? 'Sale sólo cuando se recuenta todo' : 'Sale al terminar la descarga a banda',
+      fis: d ? [['Bultos (ASN)', d.nb, ''], ['Por bajar', d.left, '', d.left / d.nb], ['Descargados', d.un, ''], ['Chequeados', d.chk, ''], ['Masa descargada', ((d.un * p.kg) / 1000).toFixed(2), 't'], ['Tiempo en muelle', ((s.t - d.t0) / 60).toFixed(1), 'min']] : [['Ocupación', ((100 * s.dockBusy) / T).toFixed(0), '%']],
+      ctl: d ? [['Objetivo', p.sla, 'min'], ['Estado', s.t - d.t0 > p.sla * 60 ? 'FUERA DE OBJETIVO' : 'en plazo', '', null, s.t - d.t0 > p.sla * 60 ? '#ef5350' : '#3ecf8e'], ['Lote dañado', d.dmg ? 'SÍ (30 % NC)' : 'no', '']] : [],
+      actions: d ? [{ label: d.dmg ? 'Quitar marca de daño' : 'Marcar lote dañado', run: (s) => { if (s.dock) s.dock.dmg = !s.dock.dmg; } }] : [] }; }
+    if (id === 'patio') return { title: 'Patio de camiones', sub: 'Cola FIFO hacia el muelle',
+      fis: [['Camiones esperando', s.patio.length, '', s.patio.length / 6], ['Espera del primero', s.patio.length ? ((s.t - s.patio[0].at) / 60).toFixed(1) : '—', 'min'], ['Espera promedio', s.nw ? (s.twait / s.nw / 60).toFixed(1) : '—', 'min']],
+      ctl: [['Alarma de patio', s.pAl ? 'ACTIVA' : 'normal', '', null, s.pAl ? '#ef5350' : undefined], ['Umbral', p.pal, 'camiones'], ['Próxima llegada', ((s.nextT - s.t) / 60).toFixed(1), 'min']],
+      actions: [{ label: 'Llegan 3 camiones', run: (s, p) => { for (let k = 0; k < 3; k++) { s.id++; s.patio.push({ at: s.t, left: p.nb, id: s.id, nb: p.nb, chk: 0 }); } } }] };
+    if (id === 'buf') return { title: hoy ? 'Zona de piso · recuento' : `Banda de recepción · ${LB} m`, sub: hoy ? 'Tope 25 bultos en piso' : `Banda ${MBK} kg/m · μ = ${MU} · tope 12 bultos`,
+      fis: [['Bultos en ' + (hoy ? 'piso' : 'banda'), s.buf.length, ''], ['Masa', (s.buf.length * p.kg).toFixed(0), 'kg'], ['Velocidad', hoy ? '—' : bStop(s, p) ? '0' : p.vb.toFixed(2), 'm/s'], ['Potencia', s.kw.toFixed(2), 'kW'], ['Energía', s.kwh.toFixed(3), 'kWh']],
+      ctl: [['No conformes en espera', s.buf.filter((b) => b.bad).length, ''], ['Estado', bStop(s, p) ? 'PARADA' : 'marcha', '', null, bStop(s, p) ? '#ef5350' : undefined]],
+      actions: hoy ? [] : [{ label: s.bstop ? 'Arrancar banda' : 'Detener banda', run: (s) => { s.bstop = !s.bstop; } }] };
+    if (id === 'ctl' || id.startsWith('chk:')) { const i = id === 'ctl' ? 0 : +id.split(':')[1], c = s.ctl[i] || { n: 0, busy: 0 }; return { title: id === 'ctl' ? 'Puesto de control · conteo + foto + sello' : `Recontador ${i + 1}`, sub: `Chequeo ${tcOf(s, p).toFixed(1)} s/bulto · detección ${(100 * detOf(s, p)).toFixed(0)} %`,
+      fis: [['Bultos chequeados', c.n, ''], ['Utilización', ((100 * c.busy) / T).toFixed(0), '%', c.busy / T], ['Ritmo', ((3600 * c.n) / T).toFixed(0), 'bultos/h']],
+      ctl: [['Escáner', hoy ? 'n/a (manual)' : s.scnF ? 'FALLA' : 'OK', '', null, s.scnF && !hoy ? '#ef5350' : undefined], ['Puestos activos', nSrv(s, p), '']],
+      actions: [{ label: s.scnF ? 'Reparar escáner' : 'Forzar falla escáner', run: (s) => { s.scnF = !s.scnF; } }, { label: s.xtra ? 'Retirar operario extra' : 'Agregar operario', run: (s) => { s.xtra = !s.xtra; } }] }; }
+    if (id === 'div') return { title: 'Desviador binario OK / no conforme', sub: 'Decide según resultado del chequeo',
+      fis: [['A slot', s.ok + s.miss, 'bultos'], ['A no conforme', s.nc, 'bultos']], ctl: [['Última decisión', s.lastD === 'nc' ? 'NO CONFORME' : s.lastD === 'ok' ? 'OK' : '—', '', null, s.lastD === 'nc' ? '#ef5350' : '#3ecf8e'], ['NC que escaparon', s.miss, '', null, s.miss ? '#f5b942' : undefined]] };
+    if (id === 'slot') return { title: 'Ubicación / picking', fis: [['Bultos ubicados', s.ok + s.miss, ''], ['Masa ubicada', (((s.ok + s.miss) * p.kg) / 1000).toFixed(2), 't']], ctl: [['Diferencias de inventario', s.miss, '', null, s.miss ? '#ef5350' : undefined]] };
+    if (id === 'nc') return { title: 'Jaula de no conformes', fis: [['Bultos', s.nc, '']], ctl: [['Tasa NC detectada', ((100 * s.nc) / Math.max(s.checked, 1)).toFixed(1), '%'], ['Tasa NC real (param.)', p.nc, '%']],
+      actions: [{ label: 'Devolver al proveedor (vaciar)', run: (s) => { s.nc = 0; } }] };
   },
   kpis(s, p) {
     const hrs = Math.max(s.t, 1) / 3600;
@@ -75,7 +172,7 @@ SL.app({
       { label: 'Espera en patio', value: s.nw ? (s.twait / s.nw / 60).toFixed(1) + ' min' : '—' },
       { label: 'No conformes detectados', value: s.nc },
       { label: 'Diferencias de inventario', value: s.miss },
-      { label: 'Personas en recuento', value: p.mode === 0 ? 3 : 1 },
+      { label: 'Personas en recuento', value: nSrv(s, p) },
       { label: 'Camiones despachados', value: s.nleave },
     ];
   },

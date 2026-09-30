@@ -7,37 +7,62 @@
 <script src="../../shared/gfx.js"></script>
 <script>
 // Jabas a tienda: llenas hacia muelle/tienda, vacías de retorno. Unidad: segundos.
-const PATH = [[170, 110], [360, 110], [460, 250], [640, 250]], PL = SL.len(PATH);
+// Física: rampa de desnivel hr; operario 75 kg: trabajo m·g·h por viaje ⇒ gasto metabólico (η muscular 25 %).
+// Propuesto: bajador (elevador) P = P0 + m·g·h/(cadencia·η) ; bandas F = g·μ·(m_banda·L + m_jabas), P = F·v/η.
+const PATH = [[170, 110], [360, 110], [460, 250], [640, 250]], PL = SL.len(PATH), PXM = 20, LM = PL / PXM, G = 9.81, MP = 75, TARE = 1.5, MU = 0.04, MB = 5, TB = 40, NIOSH = 23, QAL = 60;
 SL.app({
   title: 'Demo D · Jabas a tienda',
-  desc: 'Supermercado y CD de frescos viven de jabas. "Hoy": personas suben y bajan la rampa con torres de jabas (y la jaba toca el piso). "Propuesto": banda modular + elevador, sin piso.',
+  desc: 'Supermercado y CD de frescos viven de jabas. "Hoy": personas suben y bajan la rampa con torres de jabas (y la jaba toca el piso). "Propuesto": banda modular + elevador, sin piso. Clic en el CD, operarios, elevador, bandas o tienda para inspeccionar.',
   pitch: '"No es un CD robotizado; es no mandar a alguien con 20 kg por la rampa."',
   obj: '"Es solo para Falabella." → Es el caso grande; el módulo cabe en un CD regional o un mayorista. Piloto: un solo eje (llenas o vacías).',
   unit: 's', dt: 0.5, sample: 30, speeds: [1, 10, 60, 240],
   params: [
-    { id: 'mode', label: 'Escenario', opts: ['Hoy: 3 personas con torres', 'Propuesto: banda + elevador'], value: 0 },
-    { id: 'rate', label: 'Jabas llenas a despachar', min: 200, max: 900, step: 50, value: 500, unit: '/h' },
+    { sec: 'Escenario', id: 'mode', label: 'Escenario', opts: ['Hoy: 3 personas con torres', 'Propuesto: banda + elevador'], value: 0 },
+    { sec: 'Demanda y carga', id: 'rate', label: 'Jabas llenas a despachar', min: 200, max: 900, step: 50, value: 500, unit: '/h' },
     { id: 'n', label: 'Jabas por torre', min: 4, max: 6, step: 1, value: 4 },
     { id: 'w', label: 'Peso por jaba', min: 3, max: 8, step: 0.5, value: 5, unit: 'kg' },
-    { id: 'trip', label: 'Viaje ida y vuelta (rampa)', min: 90, max: 240, step: 10, value: 150, unit: 's' },
-    { id: 'cad', label: 'Cadencia del elevador', min: 3, max: 10, step: 0.5, value: 5, unit: 's/jaba' },
+    { sec: 'Físicos', id: 'trip', label: 'Viaje ida y vuelta (rampa)', min: 90, max: 240, step: 10, value: 150, unit: 's' },
+    { id: 'hr', label: 'Desnivel CD → tienda', min: 2, max: 5, step: 0.5, value: 3.5, unit: 'm' },
+    { sec: 'Control', id: 'cad', label: 'Cadencia del elevador', min: 3, max: 10, step: 0.5, value: 5, unit: 's/jaba' },
+    { id: 'tmax', label: 'Salida con torre incompleta tras', min: 30, max: 300, step: 30, value: 120, unit: 's' },
   ],
-  init() { return { q: [], pers: [0, 1, 2].map(() => ({ rem: 0, tot: 1, jb: [] })), belt: [], nextE: 0, deliv: 0, trips: 0, inc: 0, floor: 0, lsum: 0, emp: 0, tw: 0 }; },
+  init() { return { q: [], pers: [0, 1, 2].map(() => ({ rem: 0, tot: 1, jb: [], n: 0 })), belt: [], nextE: 0, deliv: 0, trips: 0, inc: 0, floor: 0, lsum: 0, emp: 0, tw: 0,
+    surge: false, efail: false, wet: false, abs: false, kw: 0, kwh: 0, pe: 0, pb: 0, pr: 0, kj: 0, pmet: 0, qA: false, bF: false, eOn: false }; },
   step(s, dt, p, r) {
-    const hoy = p.mode === 0;
-    if (r() < (p.rate / 3600) * dt) s.q.push(s.t);
+    const hoy = p.mode === 0, rt = p.rate * (s.surge ? 1.5 : 1);
+    if (r() < (rt / 3600) * dt) s.q.push(s.t);
+    s.eOn = false;
     if (hoy) {
-      for (const k of s.pers) {
+      s.pers.forEach((k, i) => {
         if (k.rem > 0 && (k.rem -= dt) <= 0) { k.jb.forEach((t0) => { s.deliv++; s.lsum += s.t - t0; s.floor++; s.emp++; }); k.jb = []; }
-        if (k.rem <= 0 && s.q.length && (s.q.length >= p.n || s.t - s.q[0] > 120)) {
-          k.jb = s.q.splice(0, p.n); k.tot = k.rem = p.trip * (0.9 + 0.2 * r()); s.trips++;
-          if (r() < 0.006 * ((p.n * p.w) / 20) ** 2) s.inc++;
+        if (k.rem <= 0 && !(s.abs && i === 2) && s.q.length && (s.q.length >= p.n || s.t - s.q[0] > p.tmax)) {
+          k.jb = s.q.splice(0, p.n); k.tot = k.rem = p.trip * (0.9 + 0.2 * r()) * (s.wet ? 1.4 : 1); s.trips++; k.n++;
+          // Trabajo: baja con la torre, sube con vacías (más su propio peso) ⇒ metabólico
+          const up = (MP + k.jb.length * TARE) * G * p.hr, dn = (MP + k.jb.length * p.w) * G * p.hr * 0.3; s.kj += (up + dn) / 0.25 / 1000;
+          if (r() < 0.006 * ((p.n * p.w) / 20) ** 2 * (s.wet ? 3 : 1)) { s.inc++; SL.log(s, `Caída de torre en la rampa (${(k.jb.length * p.w).toFixed(0)} kg)`, 'crit'); }
         }
-      }
+      });
+      const busy = s.pers.filter((k) => k.rem > 0).length;
+      s.pmet = busy ? (busy * 250 + (s.pers.reduce((a, k) => a + (k.rem > 0 ? ((MP + p.n * TARE) * G * p.hr + (MP + p.n * p.w) * G * p.hr * 0.3) / 0.25 / k.tot : 0), 0))) / busy : 90;
+      s.pe = s.pb = s.pr = 0;
     } else {
-      if (s.t >= s.nextE && s.q.length && s.belt.length < 40) { s.belt.push({ t0: s.q.shift(), tin: s.t }); s.nextE = s.t + p.cad; }
-      while (s.belt.length && s.t - s.belt[0].tin >= 40) { const b = s.belt.shift(); s.deliv++; s.emp++; s.lsum += s.t - b.t0; s.tw++; if (r() < 0.0008 * (p.n * p.w) / 20) s.inc++; }
+      if (s.t >= s.nextE && s.q.length && s.belt.length < TB && !s.efail) { s.belt.push({ t0: s.q.shift(), tin: s.t }); s.nextE = s.t + p.cad; }
+      s.eOn = !s.efail && s.q.length > 0 && s.belt.length < TB;
+      while (!s.abs && s.belt.length && s.t - s.belt[0].tin >= 40) { const b = s.belt.shift(); s.deliv++; s.emp++; s.lsum += s.t - b.t0; s.tw++; if (r() < 0.0008 * (p.n * p.w) / 20) s.inc++; }
+      const v = LM / 40, full = s.belt.length >= TB;
+      if (full && !s.bF) SL.log(s, 'Banda llena (40 jabas): enclavamiento detiene el elevador', 'warn');
+      if (!full && s.bF) SL.log(s, 'Banda con espacio: elevador rearmado', 'ok');
+      s.bF = full;
+      s.pe = s.eOn ? 0.25 + (p.w * G * p.hr) / p.cad / 0.7 / 1000 : 0.05;
+      s.pb = (G * MU * (MB * LM + s.belt.length * (p.w + TARE)) * v) / 1000 / 0.8 + 0.1;
+      s.pr = (G * MU * (MB * LM + 8 * TARE) * v) / 1000 / 0.8 + 0.05;
+      s.pmet = 250;
     }
+    s.kw = s.pe + s.pb + s.pr; s.kwh += (s.kw * dt) / 3600;
+    const qa = s.q.length > QAL;
+    if (qa && !s.qA) SL.log(s, `Backlog en despacho > ${QAL} jabas`, 'warn');
+    if (!qa && s.qA) SL.log(s, 'Backlog normalizado', 'ok');
+    s.qA = qa;
   },
   draw(g, s, p, W, H) {
     const hoy = p.mode === 0;
@@ -45,33 +70,112 @@ SL.app({
     g.fillStyle = SL.vgrad(g, 50, 210, '#3a4a5e', '#1f2833'); g.fillRect(10, 50, 160, 210);
     g.fillStyle = '#2a3440'; g.fillRect(10, 128, 160, 6); g.fillRect(10, 254, 160, 6);
     SL.text(g, 'CD · 2º piso', 90, 68, '#e6edf3', '600 13px system-ui', 'center');
-    SL.store(g, 648, 196, 140, 110, 'Tienda');
+    SL.hot('cd', 10, 50, 160, 210);
+    SL.store(g, 648, 196, 140, 110, 'Tienda'); SL.hot('store', 648, 190, 140, 116);
     const nq = Math.min(s.q.length, 48);
     for (let i = 0; i < nq; i++) SL.crate(g, 18 + Math.floor(i / 6) * 19, 120 - (i % 6) * 9, 17, 8);
-    SL.tag(g, `En espera: ${s.q.length}`, 90, 150, SL.STATE.run);
+    SL.tag(g, `En espera: ${s.q.length}`, 90, 150, s.q.length > QAL ? SL.STATE.down : SL.STATE.run);
     if (hoy) {
       // rampa / escalera
-      g.fillStyle = '#3a4654'; g.beginPath(); g.moveTo(170, 116); g.lineTo(360, 116); g.lineTo(460, 256); g.lineTo(648, 256); g.lineTo(648, 266); g.lineTo(455, 266); g.lineTo(355, 126); g.lineTo(170, 126); g.fill();
+      g.fillStyle = s.wet ? '#2f4a66' : '#3a4654'; g.beginPath(); g.moveTo(170, 116); g.lineTo(360, 116); g.lineTo(460, 256); g.lineTo(648, 256); g.lineTo(648, 266); g.lineTo(455, 266); g.lineTo(355, 126); g.lineTo(170, 126); g.fill();
       g.strokeStyle = 'rgba(245,185,66,.5)'; g.lineWidth = 1; for (let i = 0; i < 12; i++) { const t = i / 12; g.beginPath(); g.moveTo(360 + 100 * t, 116 + 140 * t); g.lineTo(368 + 100 * t, 116 + 140 * t); g.stroke(); }
+      SL.hot('ramp', 360, 116, 100, 140);
+      if (s.wet) SL.tag(g, 'RAMPA MOJADA', 270, 150, SL.STATE.down);
       s.pers.forEach((k, i) => {
-        if (k.rem <= 0) { SL.person(g, 140 + i * 12, 128, { dir: 1, s: 0.9 }); return; }
+        const off = s.abs && i === 2 && k.rem <= 0;
+        if (k.rem <= 0) { if (!off) { SL.person(g, 140 + i * 12, 128, { dir: 1, s: 0.9 }); SL.hot('op:' + i, 134 + i * 12, 92, 12, 38); } return; }
         const f = 1 - k.rem / k.tot, d = (f < 0.5 ? f * 2 : 2 - f * 2) * PL, q = SL.along(PATH, d), dir = f < 0.5 ? 1 : -1;
         SL.person(g, q.x, q.y + 6, { dir, busy: true, walk: s.t * 7 + i, s: 0.95 });
         const n = f < 0.5 ? k.jb.length : Math.min(p.n, 4);
         for (let j = 0; j < n; j++) SL.crate(g, q.x + dir * 5 - 7, q.y - 24 - j * 7, 14, 6.5, f < 0.5 ? '#2e8b57' : '#6b7d93');
+        SL.hot('op:' + i, q.x - 10, q.y - 30 - n * 7, 20, 38 + n * 7);
       });
       SL.tag(g, `Jabas que tocan el piso: ${s.floor}`, 560, 350, SL.STATE.down);
       for (let i = 0; i < Math.min(s.floor % 30, 12); i++) SL.crate(g, 600 + (i % 6) * 18, 312 - Math.floor(i / 6) * 9, 16, 8);
+      const L = p.n * p.w, li = L / NIOSH;
+      SL.tag(g, `Carga ${L.toFixed(0)} kg/viaje · LI ${li.toFixed(2)}`, 130, 395, li > 1 ? SL.STATE.down : li > 0.8 ? SL.STATE.block : SL.STATE.run);
+      SL.tag(g, `Gasto metabólico ${s.pmet.toFixed(0)} W/pers`, 340, 395, s.pmet > 400 ? SL.STATE.block : SL.STATE.info);
+      SL.tag(g, `Personas ${s.abs ? 2 : 3}/3 · viajes ${s.trips}`, 540, 395, s.abs ? SL.STATE.down : SL.STATE.info);
     } else {
-      SL.belt(g, PATH, 22);
+      SL.belt(g, PATH, 22, s.bF ? '#4a3a1a' : null); SL.hot('belt', 170, 98, 190, 24); SL.hot('belt', 460, 238, 180, 24);
       g.fillStyle = '#26313d'; g.fillRect(348, 60, 26, 70); SL.text(g, 'Elevador', 361, 54, '#8b9bb0', '10px system-ui', 'center');
+      SL.led(g, 361, 70, 3, s.efail ? SL.STATE.down : s.eOn ? SL.STATE.run : SL.STATE.idle); SL.hot('elev', 344, 44, 34, 90);
       s.belt.forEach((b) => { const q = SL.along(PATH, Math.min(1, (s.t - b.tin) / 40) * PL); SL.crate(g, q.x - 8, q.y - 9, 16, 8); });
-      const back = PATH.map((q) => [q[0], q[1] + 40]); SL.belt(g, back, 12, '#243040');
+      const back = PATH.map((q) => [q[0], q[1] + 40]); SL.belt(g, back, 12, '#243040'); SL.hot('ret', 170, 142, 190, 16); SL.hot('ret', 460, 282, 180, 16);
       for (let i = 0; i < 8; i++) { const q = SL.along(back, ((s.t / 6 + i / 8) % 1) * PL); SL.crate(g, q.x - 7, q.y - 7, 14, 6.5, '#6b7d93'); }
-      SL.person(g, 640, 300, { dir: -1, busy: true });
+      if (!s.abs) { SL.person(g, 640, 300, { dir: -1, busy: true }); SL.hot('op:0', 630, 262, 20, 40); } else SL.tag(g, 'Descarga sin operario', 640, 330, SL.STATE.down);
       SL.text(g, 'Sin contacto con el piso · retorno de vacías en banda inferior', 20, 350, '#3ecf8e', '13px system-ui');
+      SL.tag(g, s.efail ? 'Elevador en FALLA' : `Elevador ${s.pe.toFixed(2)} kW · ${p.cad} s/jaba`, 130, 395, s.efail ? SL.STATE.down : SL.STATE.info);
+      SL.tag(g, `Banda ${(LM / 40).toFixed(2)} m/s · ${(s.pb + s.pr).toFixed(2)} kW`, 340, 395, SL.STATE.info);
+      SL.tag(g, `Ocupación banda ${s.belt.length}/${TB}`, 540, 395, s.bF ? SL.STATE.down : SL.STATE.run);
     }
     SL.text(g, hoy ? 'Personas subiendo y bajando la rampa con torres de jabas' : 'Elevador + banda modular lavable', 20, 26, '#e6edf3', '600 14px system-ui');
+  },
+  vars(s, p) {
+    const hoy = p.mode === 0, T = Math.max(s.t || 0, 1), hrs = T / 3600, L = p.n * p.w, li = L / NIOSH, cap = hoy ? ((s.abs ? 2 : 3) * p.n * 3600) / (p.trip * (s.wet ? 1.4 : 1)) : 3600 / p.cad;
+    const age = s.q.length ? T - s.q[0] : 0, rt = p.rate * (s.surge ? 1.5 : 1);
+    return {
+      fis: [
+        ['Jabas entregadas', (s.deliv / hrs).toFixed(0), '/h', s.deliv / hrs / 900],
+        ['Masa entregada', ((s.deliv * p.w) / hrs).toFixed(0), 'kg/h'],
+        ['Desnivel a vencer', p.hr.toFixed(1), 'm'],
+        ['Recorrido CD → tienda', LM.toFixed(1), 'm'],
+        hoy ? ['Velocidad de marcha', ((2 * LM) / (p.trip * (s.wet ? 1.4 : 1))).toFixed(2), 'm/s'] : ['Velocidad de banda', (LM / 40).toFixed(2), 'm/s'],
+        ['Carga por viaje / torre', L.toFixed(1), 'kg', li, li > 1 ? '#ef5350' : li > 0.8 ? '#f5b942' : '#3ecf8e'],
+        ['Gasto metabólico por persona', s.pmet.toFixed(0), 'W', s.pmet / 600, s.pmet > 400 ? '#f5b942' : undefined],
+        ['Energía humana acumulada', (s.kj / 4.184).toFixed(0), 'kcal'],
+        ['Potencia elevador', s.pe.toFixed(2), 'kW'],
+        ['Potencia banda ida + retorno', (s.pb + s.pr).toFixed(2), 'kW'],
+        ['Energía eléctrica', s.kwh.toFixed(3), 'kWh'],
+        ['Wh por jaba', s.deliv ? ((1000 * s.kwh) / s.deliv).toFixed(2) : '—', 'Wh'],
+        ['Masa sobre la banda', hoy ? '—' : (s.belt.length * (p.w + TARE)).toFixed(0), 'kg'],
+        ['Jabas que tocan el piso', hoy ? s.floor : 0, '', null, hoy && s.floor ? '#ef5350' : undefined],
+      ],
+      ctl: [
+        ['Cola en despacho', s.q.length, 'jabas', s.q.length / 100, s.q.length > QAL ? '#ef5350' : undefined],
+        ['Alarma backlog (> ' + QAL + ')', s.qA ? 'ACTIVA' : 'normal', '', null, s.qA ? '#ef5350' : '#3ecf8e'],
+        ['Jaba más antigua', (age / 60).toFixed(1), 'min'],
+        ['Demanda / capacidad', `${rt.toFixed(0)} / ${cap.toFixed(0)}`, '/h', rt / Math.max(cap, 1), rt > cap ? '#ef5350' : '#3ecf8e'],
+        ['Regla de salida (hoy)', `torre de ${p.n} o espera > ${p.tmax} s`, ''],
+        ['Índice de levantamiento LI', li.toFixed(2), '', li / 1.5, li > 1 ? '#ef5350' : li > 0.8 ? '#f5b942' : '#3ecf8e'],
+        ['Personas disponibles', hoy ? (s.abs ? 2 : 3) : s.abs ? 0 : 1, ''],
+        ['Personas en ruta', hoy ? s.pers.filter((k) => k.rem > 0).length : 0, ''],
+        ['Elevador', hoy ? '—' : s.efail ? 'FALLA' : s.eOn ? 'OPERANDO' : 'ESPERA', '', null, s.efail ? '#ef5350' : undefined],
+        ['Cadencia elevador', p.cad, 's/jaba'],
+        ['Enclavamiento banda llena', hoy ? '—' : s.bF ? 'ACTIVO' : 'libre', '', hoy ? null : s.belt.length / TB, s.bF ? '#ef5350' : undefined],
+        ['Tiempo de surtido prom.', (s.lsum / Math.max(s.deliv, 1) / 60).toFixed(1), 'min'],
+        ['Perturbaciones', [s.surge && 'pico', s.wet && 'rampa mojada', s.efail && 'elevador', s.abs && 'ausencia'].filter(Boolean).join(', ') || 'ninguna', ''],
+      ],
+    };
+  },
+  actions: [
+    { label: 'Pico de pedidos (+50 %)', hint: 'La tasa de jabas a despachar sube 50 %', kind: 'warn', on: (s) => s.surge, run: (s) => { s.surge = !s.surge; SL.log(s, s.surge ? 'Pico de pedidos: +50 % de jabas' : 'Demanda normal', s.surge ? 'warn' : 'ok'); } },
+    { label: 'Llega camión (+100 jabas)', hint: 'Lote de 100 jabas listas para subir a tienda', run: (s) => { for (let i = 0; i < 100; i++) s.q.push(s.t || 0); } },
+    { label: 'Rampa mojada', hint: 'Hoy: viajes ×1.4 y caídas ×3', kind: 'warn', on: (s) => s.wet, run: (s) => { s.wet = !s.wet; SL.log(s, s.wet ? 'Rampa mojada: tránsito lento y riesgo de caída' : 'Rampa seca', s.wet ? 'warn' : 'ok'); } },
+    { label: 'Falla del elevador', hint: 'Propuesto: no ingresan jabas a la banda', kind: 'crit', on: (s) => s.efail, run: (s) => { s.efail = !s.efail; SL.log(s, s.efail ? 'Elevador en FALLA' : 'Elevador reparado', s.efail ? 'crit' : 'ok'); } },
+    { label: 'Operario ausente', hint: 'Hoy: queda 2 de 3 · Propuesto: nadie descarga en tienda', kind: 'warn', on: (s) => s.abs, run: (s) => { s.abs = !s.abs; SL.log(s, s.abs ? 'Operario ausente' : 'Operario de regreso', s.abs ? 'warn' : 'ok'); } },
+  ],
+  inspect(s, p, id) {
+    const V = this.vars(s, p), hoy = p.mode === 0;
+    if (id === 'cd') return { title: 'CD · zona de despacho (2º piso)', sub: `Llegan ~${(p.rate * (s.surge ? 1.5 : 1)).toFixed(0)} jabas/h (Poisson).`,
+      fis: [['Jabas en espera', s.q.length, '', s.q.length / 100], ['Masa en espera', (s.q.length * p.w).toFixed(0), 'kg']], ctl: [V.ctl[1], V.ctl[2], V.ctl[3], V.ctl[4]],
+      actions: [{ label: 'Tasa +50 /h', run: (s, p, r, api) => api.set('rate', Math.min(900, p.rate + 50)) }, { label: 'Tasa −50 /h', run: (s, p, r, api) => api.set('rate', Math.max(200, p.rate - 50)) }] };
+    if (id === 'store') return { title: 'Tienda · recepción', fis: [V.fis[0], V.fis[1], ['Vacías devueltas', s.emp, ''], V.fis[13]], ctl: [V.ctl[11], ['Incidentes (caídas)', s.inc, '']] };
+    if (id === 'ramp') return { title: 'Rampa / escalera', sub: `Desnivel ${p.hr} m en ${LM.toFixed(0)} m de recorrido.`, fis: [V.fis[2], V.fis[3], V.fis[4]], ctl: [['Estado', s.wet ? 'MOJADA' : 'seca', '', null, s.wet ? '#ef5350' : '#3ecf8e']],
+      actions: [{ label: s.wet ? 'Secar rampa' : 'Mojar rampa', run: (s) => { s.wet = !s.wet; } }] };
+    if (id === 'elev') return { title: 'Elevador (bajador de jabas)', sub: 'P = P0 + m·g·h/(cadencia·η), η = 0.7. Se detiene si la banda está llena.',
+      fis: [V.fis[8], ['Energía por jaba', ((p.w * G * p.hr) / 0.7 / 1000).toFixed(3), 'kJ']], ctl: [V.ctl[8], V.ctl[9], V.ctl[10]],
+      actions: [{ label: s.efail ? 'Reparar' : 'Forzar falla', run: (s) => { s.efail = !s.efail; } }, { label: 'Cadencia −0.5 s', run: (s, p, r, api) => api.set('cad', Math.max(3, p.cad - 0.5)) }, { label: 'Cadencia +0.5 s', run: (s, p, r, api) => api.set('cad', Math.min(10, p.cad + 0.5)) }] };
+    if (id === 'belt') return { title: 'Banda modular de llenas', sub: `${LM.toFixed(0)} m, ${MB} kg/m, μ = ${MU}, tránsito 40 s.`, fis: [V.fis[4], V.fis[12], ['Potencia', s.pb.toFixed(2), 'kW']], ctl: [V.ctl[10], ['Jabas en banda', s.belt.length, '/' + TB, s.belt.length / TB]] };
+    if (id === 'ret') return { title: 'Banda de retorno de vacías', fis: [['Potencia', s.pr.toFixed(2), 'kW'], ['Vacías devueltas', s.emp, '']], ctl: [] };
+    if (id.startsWith('op:')) { const i = +id.slice(3), k = s.pers[i];
+      if (!hoy) return { title: 'Operario de descarga en tienda', sub: 'Retira jabas del final de banda; sin él la banda se llena.', fis: [['Jabas descargadas', s.tw, ''], ['Carga manual', ((s.tw * p.w) / (Math.max(s.t || 0, 1) / 3600)).toFixed(0), 'kg/h']], ctl: [['Estado', s.abs ? 'AUSENTE' : 'descargando', ''], V.ctl[10]],
+        actions: [{ label: s.abs ? 'Volver al puesto' : 'Retirar operario', run: (s) => { s.abs = !s.abs; } }] };
+      const f = k.rem > 0 ? 1 - k.rem / k.tot : 0;
+      return { title: `Operario ${i + 1} · acarreo en rampa`, sub: 'Baja con la torre llena y sube con las vacías.',
+        fis: [['Torre actual', k.jb.length ? `${k.jb.length} jabas · ${(k.jb.length * p.w).toFixed(0)} kg` : f ? 'vacías de retorno' : '—', ''], ['Avance del viaje', (100 * f).toFixed(0), '%', f], ['Viajes', k.n, ''], ['Trabajo vertical por viaje', (((MP + p.n * TARE) * G * p.hr) / 1000).toFixed(1), 'kJ'], V.fis[6]],
+        ctl: [['Estado', k.rem > 0 ? (f < 0.5 ? 'BAJANDO CARGADO' : 'SUBIENDO') : s.abs && i === 2 ? 'AUSENTE' : 'ESPERA TORRE', ''], V.ctl[5], V.ctl[4]],
+        actions: [{ label: 'Torre −1 jaba', run: (s, p, r, api) => api.set('n', Math.max(4, p.n - 1)) }, ...(i === 2 ? [{ label: s.abs ? 'Reincorporar' : 'Retirar', run: (s) => { s.abs = !s.abs; } }] : [])] }; }
   },
   kpis(s, p) {
     const hrs = Math.max(s.t, 1) / 3600;
@@ -84,8 +188,9 @@ SL.app({
       { label: 'Incidentes (caídas)', value: s.inc },
       { label: 'Jabas que tocan el piso', value: p.mode === 0 ? s.floor : 0 },
       { label: 'Vacías devueltas', value: s.emp },
+      { label: 'Energía eléctrica', value: s.kwh.toFixed(2) + ' kWh' },
     ];
   },
-  series: (s) => ({ 'En espera': s.q.length, 'Entregadas': s.deliv, 'Incidentes': s.inc }),
+  series: (s) => ({ 'En espera': s.q.length, 'Entregadas': s.deliv, 'Incidentes': s.inc, 'Potencia kW': s.kw, 'Metabólico W': s.pmet }),
 });
 </script></body></html>

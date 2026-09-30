@@ -7,63 +7,166 @@
 <script src="../../shared/gfx.js"></script>
 <script>
 // Línea serie de 3 estaciones con buffers finitos, fallas y reparaciones. Unidad: segundos.
-const NAMES = ['Corte', 'Ensamble', 'Empaque'];
+// Física: potencia de motor ∝ velocidad de línea; temperatura de motor de 1er orden (τ = 120 s) con disparo térmico a 85 °C.
+// OEE = Disponibilidad × Rendimiento × Calidad (sobre la estación cuello de botella).
+const NAMES = ['Corte', 'Ensamble', 'Empaque'], PW = [11, 7.5, 4], TAMB = 25, TAU = 120, KTH = 4.5, TTRIP = 85, TOK = 60, PBELT = 1.5; // kW, °C, s, °C/kW
+const wipOf = (s) => s.buf[0] + s.buf[1] + s.st.filter((k) => k.s !== 'idle').length;
+function oee(s, p) {
+  const T = Math.max(s.t || 0, 1), cyc = [p.c0, p.c1, p.c2], bn = cyc.indexOf(Math.max(...cyc)), k = s.st[bn], tot = s.out + s.scrap;
+  const A = 1 - k.down / T, P = Math.min(1, ((tot * cyc[bn]) / (p.sf / 100)) / Math.max(1, T - k.down)), Q = tot ? s.out / tot : 1;
+  return { A, P, Q, O: A * P * Q, bn };
+}
 SL.app({
   title: 'Manufactura · Línea de producción',
-  desc: 'Serie de 3 estaciones con buffers finitos. Observa bloqueos/inanición, el cuello de botella y el efecto del buffer y las fallas.',
+  desc: 'Serie de 3 estaciones con buffers finitos. Observa bloqueos/inanición, el cuello de botella, el OEE, la temperatura de motores y el efecto del buffer, las fallas y el control CONWIP. Clic en estaciones y buffers para inspeccionar.',
   unit: 's', dt: 0.1, sample: 10,
   params: [
-    { id: 'c0', label: 'Ciclo Corte', min: 4, max: 30, step: 1, value: 10, unit: 's' },
+    { sec: 'Proceso', id: 'c0', label: 'Ciclo Corte', min: 4, max: 30, step: 1, value: 10, unit: 's' },
     { id: 'c1', label: 'Ciclo Ensamble', min: 4, max: 30, step: 1, value: 13, unit: 's' },
     { id: 'c2', label: 'Ciclo Empaque', min: 4, max: 30, step: 1, value: 9, unit: 's' },
     { id: 'buf', label: 'Capacidad de buffer', min: 1, max: 20, step: 1, value: 4, unit: 'pzas' },
-    { id: 'mtbf', label: 'MTBF (tiempo entre fallas)', min: 30, max: 600, step: 10, value: 200, unit: 's' },
+    { id: 'scr', label: 'Tasa de rechazo (Ensamble)', min: 0, max: 20, step: 0.5, value: 1, unit: '%' },
+    { sec: 'Confiabilidad', id: 'mtbf', label: 'MTBF (tiempo entre fallas)', min: 30, max: 600, step: 10, value: 200, unit: 's' },
     { id: 'mttr', label: 'MTTR (reparación)', min: 5, max: 120, step: 5, value: 25, unit: 's' },
+    { sec: 'Control', id: 'sf', label: 'Velocidad de línea', min: 60, max: 130, step: 5, value: 100, unit: '%' },
+    { id: 'rel', label: 'Liberación de órdenes', opts: ['Push (libre)', 'CONWIP'], value: 0, reset: false },
+    { id: 'wip', label: 'Tope WIP (CONWIP)', min: 2, max: 30, step: 1, value: 6, unit: 'pzas' },
+    { id: 'dem', label: 'Demanda (takt)', min: 100, max: 600, step: 10, value: 250, unit: 'pzas/h' },
   ],
   init() {
-    return { out: 0, buf: [0, 0], st: [0, 1, 2].map(() => ({ s: 'idle', rem: 0, work: 0, down: 0, block: 0, starve: 0 })) };
+    return { out: 0, scrap: 0, kwh: 0, kw: 0, jam: false, absent: false, bad: 0, buf: [0, 0], st: [0, 1, 2].map(() => ({ s: 'idle', rem: 0, work: 0, down: 0, block: 0, starve: 0, temp: TAMB, kw: 0, kwh: 0, n: 0, fails: 0, cause: '', hold: false, cool: true })) };
   },
   step(s, dt, p, r) {
-    const cyc = [p.c0, p.c1, p.c2];
+    const sp = p.sf / 100, cyc = [p.c0, p.c1, p.c2 * (s.absent ? 1.6 : 1)].map((c) => c / sp);
+    if (s.bad > 0) s.bad -= dt;
+    s.kw = PBELT * sp;
     s.st.forEach((k, i) => {
-      if (k.s === 'down') { k.down += dt; if ((k.rem -= dt) <= 0) k.s = 'work'; return; }
+      // Potencia y temperatura del motor (se calcula con el estado previo)
+      k.kw = k.s === 'work' ? PW[i] * sp : k.s === 'down' ? 0 : 0.15 * PW[i];
+      k.temp += (TAMB + KTH * (k.cool ? 1 : 2) * k.kw - k.temp) * Math.min(1, dt / TAU);
+      k.kwh += (k.kw * dt) / 3600; s.kw += k.kw;
+      if (k.s === 'down') {
+        k.down += dt;
+        if (k.cause === 'temp' ? k.temp < TOK : (k.rem -= dt) <= 0) { if (k.cause === 'temp') SL.log(s, `${NAMES[i]}: motor enfriado, rearme`, 'ok'); k.s = 'work'; k.cause = ''; k.rem = Math.max(k.rem, 0.1); }
+        return;
+      }
       if (k.s === 'idle') {
-        if (i === 0 || s.buf[i - 1] > 0) { if (i) s.buf[i - 1]--; k.s = 'work'; k.rem = cyc[i] * (0.8 + 0.4 * r()); }
+        const rel = i > 0 || p.rel === 0 || wipOf(s) < p.wip;
+        if (!k.hold && rel && (i === 0 || s.buf[i - 1] > 0)) { if (i) s.buf[i - 1]--; k.s = 'work'; k.rem = cyc[i] * (0.8 + 0.4 * r()); }
         else { k.starve += dt; return; }
       }
       if (k.s === 'work') {
         k.work += dt;
-        if (r() < dt / p.mtbf) { k.s = 'down'; k.rem = SL.exp(r, p.mttr); return; }
-        if ((k.rem -= dt) <= 0) k.s = 'done';
+        if (k.temp > TTRIP) { k.s = 'down'; k.cause = 'temp'; SL.log(s, `${NAMES[i]}: disparo térmico (${k.temp.toFixed(0)} °C)`, 'crit'); return; }
+        if (r() < dt / p.mtbf) { k.s = 'down'; k.cause = 'falla'; k.rem = SL.exp(r, p.mttr); k.fails++; if (k.rem > 2 * p.mttr) SL.log(s, `${NAMES[i]}: falla larga (${k.rem.toFixed(0)} s)`, 'warn'); return; }
+        if ((k.rem -= dt) <= 0) { k.s = 'done'; k.n++; if (i === 1 && r() < (p.scr + (s.bad > 0 ? 25 : 0)) / 100) { s.scrap++; k.s = 'idle'; return; } }
       }
       if (k.s === 'done') {
         if (i === 2) { s.out++; k.s = 'idle'; }
-        else if (s.buf[i] < p.buf) { s.buf[i]++; k.s = 'idle'; }
+        else if (s.buf[i] < p.buf && !(i === 0 && s.jam)) { s.buf[i]++; k.s = 'idle'; }
         else k.block += dt;
       }
     });
+    s.kwh += (s.kw * dt) / 3600;
   },
   draw(g, s, p, W, H) {
-    const map = { idle: 'idle', work: 'run', done: 'block', down: 'down' }, y = 140, mw = 132, gap = 110, fy = y + 128;
+    const map = { idle: 'idle', work: 'run', done: 'block', down: 'down' }, y = 140, mw = 132, gap = 110, fy = y + 128, o = oee(s, p);
     g.fillStyle = 'rgba(255,255,255,.05)'; g.fillRect(10, fy, 780, 2);
-    SL.belt(g, [[16, y + 74], [690, y + 74]], 14);
+    SL.belt(g, [[16, y + 74], [690, y + 74]], 14, s.jam ? '#4a2a2a' : undefined);
+    if (s.jam) SL.tag(g, 'ATASCO', 30 + mw + gap / 2, y + 96, SL.STATE.down);
     s.st.forEach((k, i) => {
       const x = 30 + i * (mw + gap);
-      const txt = k.s === 'idle' ? (i ? 'Inanición' : 'Libre') : k.s === 'work' ? 'Produciendo' : k.s === 'done' ? 'Bloqueada' : 'FALLA';
-      SL.machine(g, x, y, mw, 100, { label: NAMES[i], sub: txt, state: map[k.s], tag: txt, load: k.s === 'work' ? 0.9 : 0.2 });
-      SL.person(g, x + 26, fy, { dir: 1, busy: k.s === 'work' });
-      if (k.s === 'down') { SL.person(g, x + mw - 18, fy, { dir: -1, busy: true, helmet: '#f5b942', shirt: '#6b4fa0' }); SL.tag(g, 'MANTENIMIENTO', x + mw / 2, fy + 16, SL.STATE.setup); }
+      const txt = k.s === 'idle' ? (k.hold ? 'Detenida' : i ? 'Inanición' : 'Libre') : k.s === 'work' ? 'Produciendo' : k.s === 'done' ? 'Bloqueada' : k.cause === 'temp' ? 'SOBRETEMP.' : 'FALLA';
+      SL.machine(g, x, y, mw, 100, { label: NAMES[i], sub: txt, state: k.hold && k.s === 'idle' ? 'off' : map[k.s], tag: txt, load: k.s === 'work' ? 0.9 : 0.2 });
+      SL.hot('st:' + i, x, y - 20, mw, 120);
+      SL.person(g, x + 26, fy, { dir: 1, busy: k.s === 'work', shirt: i === 2 && s.absent ? '#4a5a6e' : undefined });
+      if (i === 2 && s.absent) SL.tag(g, 'OPERARIO AUSENTE', x + 40, fy + 16, SL.STATE.warn);
+      if (k.s === 'down' && k.cause === 'falla') { SL.person(g, x + mw - 18, fy, { dir: -1, busy: true, helmet: '#f5b942', shirt: '#6b4fa0' }); SL.tag(g, 'MANTENIMIENTO', x + mw / 2, fy + 16, SL.STATE.setup); }
+      const tc = k.temp > 80 ? '#ef5350' : k.temp > 65 ? '#f5b942' : '#3ecf8e';
+      SL.gauge(g, x, fy + 34, mw, 13, (k.temp - TAMB) / (TTRIP - TAMB + 10), tc, `${k.temp.toFixed(0)} °C · ${k.kw.toFixed(1)} kW`);
+      if (!k.cool) SL.tag(g, 'SIN REFRIGERACIÓN', x + mw / 2, fy + 62, SL.STATE.down);
       if (i < 2) {
         const bx = x + mw + 6, n = Math.min(p.buf, 12), step = (gap - 12) / Math.max(n, 1), cw = Math.min(step - 2, 14);
         for (let j = 0; j < n; j++) { const cx = bx + j * step; if (j < s.buf[i]) SL.carton(g, cx, y + 60, cw, 12, '#b98a58'); else { g.strokeStyle = 'rgba(139,155,176,.35)'; g.strokeRect(cx + 0.5, y + 60.5, cw - 1, 11); } }
-        SL.tag(g, `Buffer ${s.buf[i]}/${p.buf}`, x + mw + gap / 2, y + 38, SL.STATE.info);
+        SL.tag(g, `Buffer ${s.buf[i]}/${p.buf}`, x + mw + gap / 2, y + 38, s.buf[i] >= p.buf ? SL.STATE.warn : SL.STATE.info);
+        SL.hot('buf:' + i, x + mw + 2, y + 26, gap - 4, 52);
       }
     });
     // Salida: pallet con producto terminado
     const ox = 700, n = s.out % 30;
     SL.pallet(g, ox, fy - 7, 80);
     for (let j = 0; j < n; j++) SL.carton(g, ox + 2 + (j % 5) * 15.2, fy - 7 - 12 - Math.floor(j / 5) * 12, 15, 12, '#c9a06a');
-    SL.tag(g, `Salida: ${s.out} piezas`, ox + 40, y - 20, SL.STATE.run);
+    SL.tag(g, `Salida: ${s.out} piezas`, ox + 40, y - 20, SL.STATE.run); SL.hot('out', ox, y - 30, 84, fy - y + 30);
+    if (s.scrap) SL.tag(g, `Rechazo: ${s.scrap}`, ox + 40, fy + 20, s.bad > 0 ? SL.STATE.down : SL.STATE.idle);
+    // Panel OEE / control
+    SL.rr(g, 10, 10, 366, 76, 6); g.fillStyle = 'rgba(8,12,18,.85)'; g.fill(); g.strokeStyle = '#2e3e52'; g.lineWidth = 1; g.stroke();
+    SL.text(g, `OEE ${(100 * o.O).toFixed(0)} %`, 20, 32, SL.color(o.O / 0.85 - 0.15), '600 16px system-ui');
+    SL.text(g, `= A ${(100 * o.A).toFixed(0)} × R ${(100 * o.P).toFixed(0)} × C ${(100 * o.Q).toFixed(0)} %  (${NAMES[o.bn]})`, 110, 31, '#8b9bb0', '12px system-ui');
+    const takt = 3600 / p.dem, bc = Math.max(p.c0, p.c1, p.c2) / (p.sf / 100);
+    SL.text(g, `Takt ${takt.toFixed(1)} s · ciclo cuello ${bc.toFixed(1)} s`, 20, 54, bc > takt ? '#ef5350' : '#3ecf8e', '12px system-ui');
+    SL.text(g, `${p.rel ? `CONWIP ${wipOf(s)}/${p.wip}` : `Push · WIP ${wipOf(s)}`} · ${s.kw.toFixed(1)} kW`, 20, 74, p.rel ? '#4fc3f7' : '#8b9bb0', '12px system-ui');
+    SL.hot('line', 10, 10, 366, 76);
+  },
+  vars(s, p) {
+    const T = Math.max(s.t || 0, 1), o = oee(s, p), tot = s.out + s.scrap, th = (3600 * s.out) / T, takt = 3600 / p.dem, bc = Math.max(p.c0, p.c1, p.c2) / (p.sf / 100);
+    return {
+      fis: [
+        ...s.st.map((k, i) => [`Temp. motor ${NAMES[i]}`, k.temp.toFixed(1), '°C', (k.temp - TAMB) / (TTRIP - TAMB), k.temp > 80 ? '#ef5350' : k.temp > 65 ? '#f5b942' : undefined]),
+        ...s.st.map((k, i) => [`Potencia ${NAMES[i]}`, k.kw.toFixed(1), 'kW', k.kw / (PW[i] * 1.3)]),
+        ['Potencia total línea', s.kw.toFixed(1), 'kW', s.kw / 32, '#c98500'],
+        ['Energía', s.kwh.toFixed(2), 'kWh'],
+        ['Energía por pieza buena', s.out ? ((1000 * s.kwh) / s.out).toFixed(0) : '—', 'Wh/pza'],
+        ['Throughput', th.toFixed(0), 'pzas/h', th / p.dem],
+        ['Piezas buenas / rechazo', `${s.out} / ${s.scrap}`, ''],
+        ['WIP en línea', wipOf(s), 'pzas'],
+        ['Tiempo de flujo (Little)', th > 0 ? ((wipOf(s) / th) * 3600).toFixed(0) : '—', 's'],
+      ],
+      ctl: [
+        ['OEE', (100 * o.O).toFixed(1), '%', o.O, SL.color(o.O / 0.85 - 0.15)],
+        ['Disponibilidad A', (100 * o.A).toFixed(1), '%', o.A], ['Rendimiento R', (100 * o.P).toFixed(1), '%', o.P], ['Calidad C', (100 * o.Q).toFixed(1), '%', o.Q],
+        ['Takt (demanda)', takt.toFixed(1), 's'], ['Ciclo cuello de botella', bc.toFixed(1), 's', null, bc > takt ? '#ef5350' : '#3ecf8e'],
+        ['Plan acumulado vs real', `${Math.floor((p.dem * T) / 3600)} / ${s.out}`, 'pzas'],
+        ['Velocidad de línea', p.sf, '%'],
+        ['Liberación', p.rel ? `CONWIP (tope ${p.wip})` : 'Push', '', null, p.rel ? '#4fc3f7' : undefined],
+        ['Liberación bloqueada', p.rel && wipOf(s) >= p.wip ? 'SÍ (tope WIP)' : 'no', ''],
+        ['Estaciones en falla', s.st.filter((k) => k.s === 'down').length, '', null, s.st.some((k) => k.s === 'down') ? '#ef5350' : undefined],
+        ['Disparo térmico a', TTRIP, '°C'],
+        ['Transportador', s.jam ? 'ATASCADO' : 'OK', '', null, s.jam ? '#ef5350' : undefined],
+        ['Lote defectuoso', s.bad > 0 ? `${s.bad.toFixed(0)} s restantes` : 'no', '', null, s.bad > 0 ? '#f5b942' : undefined],
+      ],
+    };
+  },
+  actions: [
+    { label: 'Falla en Ensamble', kind: 'crit', hint: 'Avería de ~3×MTTR en la estación 2', run: (s, p, r) => { const k = s.st[1]; k.s = 'down'; k.cause = 'falla'; k.rem = 3 * p.mttr * (0.5 + r()); k.fails++; } },
+    { label: 'Atasco transportador', kind: 'warn', on: (s) => s.jam, run: (s) => { s.jam = !s.jam; SL.log(s, s.jam ? 'Atasco en transportador Corte → Buffer 1' : 'Transportador liberado', s.jam ? 'warn' : 'ok'); } },
+    { label: 'Falla refrigeración Corte', kind: 'crit', on: (s) => !s.st[0].cool, run: (s) => { const k = s.st[0]; k.cool = !k.cool; SL.log(s, k.cool ? 'Refrigeración de Corte restablecida' : 'Corte sin refrigeración: la temperatura sube', k.cool ? 'ok' : 'crit'); } },
+    { label: 'Operario ausente (Empaque)', kind: 'warn', hint: 'Ciclo de Empaque ×1.6', on: (s) => s.absent, run: (s) => { s.absent = !s.absent; SL.log(s, s.absent ? 'Empaque sin operario titular (ciclo ×1.6)' : 'Operario de Empaque de vuelta', s.absent ? 'warn' : 'ok'); } },
+    { label: 'Lote de material defectuoso', kind: 'warn', hint: 'Rechazo +25 % durante 5 min', run: (s) => { s.bad = 300; } },
+    { label: 'Reparar todo', run: (s) => { s.jam = s.absent = false; s.bad = 0; s.st.forEach((k) => { k.cool = true; k.hold = false; if (k.s === 'down' && k.cause === 'falla') k.rem = 0; }); } },
+  ],
+  inspect(s, p, id) {
+    const T = Math.max(s.t || 0, 1);
+    if (id.startsWith('st:')) {
+      const i = +id.split(':')[1], k = s.st[i], c = [p.c0, p.c1, p.c2][i] / (p.sf / 100) * (i === 2 && s.absent ? 1.6 : 1);
+      const e = k.s === 'down' ? (k.cause === 'temp' ? 'DISPARO TÉRMICO' : 'FALLA') : k.s === 'work' ? 'PRODUCIENDO' : k.s === 'done' ? 'BLOQUEADA' : k.hold ? 'DETENIDA' : 'INANICIÓN';
+      return { title: `E${i + 1} · ${NAMES[i]}`, sub: `Motor ${PW[i]} kW nominal · disparo a ${TTRIP} °C, rearme bajo ${TOK} °C`,
+        fis: [['Temperatura motor', k.temp.toFixed(1), '°C', (k.temp - TAMB) / (TTRIP - TAMB), k.temp > 80 ? '#ef5350' : undefined], ['Potencia', k.kw.toFixed(2), 'kW', k.kw / (PW[i] * 1.3)], ['Energía', k.kwh.toFixed(3), 'kWh'], ['Piezas procesadas', k.n, ''], ['Ciclo efectivo', c.toFixed(1), 's'], ['Utilización', ((100 * k.work) / T).toFixed(0), '%', k.work / T], ['Bloqueo', ((100 * k.block) / T).toFixed(0), '%'], ['Inanición', ((100 * k.starve) / T).toFixed(0), '%'], ['En falla', ((100 * k.down) / T).toFixed(0), '%']],
+        ctl: [['Estado', e, '', null, k.s === 'down' ? '#ef5350' : k.s === 'work' ? '#3ecf8e' : '#f5b942'], ['Tiempo restante', k.s === 'work' || (k.s === 'down' && k.cause === 'falla') ? k.rem.toFixed(1) : '—', 's'], ['Fallas', k.fails, ''], ['Refrigeración', k.cool ? 'OK' : 'FALLA', '', null, k.cool ? undefined : '#ef5350'], ['Parada de operador', k.hold ? 'SÍ' : 'no', '']],
+        actions: [
+          k.s === 'down' ? { label: 'Reparar', run: () => { if (k.cause === 'falla') k.rem = 0; else { k.temp = TOK - 1; } } } : { label: 'Forzar falla', run: (s, p, r) => { k.s = 'down'; k.cause = 'falla'; k.rem = SL.exp(r, p.mttr); k.fails++; } },
+          { label: k.hold ? 'Reanudar' : 'Detener (tras pieza)', run: () => { k.hold = !k.hold; } },
+          { label: k.cool ? 'Cortar refrigeración' : 'Restablecer refrigeración', run: () => { k.cool = !k.cool; } },
+        ] };
+    }
+    if (id.startsWith('buf:')) {
+      const i = +id.split(':')[1];
+      return { title: `Buffer ${i + 1} · ${NAMES[i]} → ${NAMES[i + 1]}`, sub: 'Desacopla estaciones: absorbe fallas y variabilidad.',
+        fis: [['Piezas', s.buf[i], 'pzas', s.buf[i] / p.buf], ['Capacidad', p.buf, 'pzas']], ctl: [['Estado', s.buf[i] >= p.buf ? 'LLENO (bloquea aguas arriba)' : s.buf[i] === 0 ? 'VACÍO (hambrea aguas abajo)' : 'normal', '', null, s.buf[i] >= p.buf || s.buf[i] === 0 ? '#f5b942' : '#3ecf8e'], ...(i === 0 ? [['Transportador', s.jam ? 'ATASCADO' : 'OK', '', null, s.jam ? '#ef5350' : undefined]] : [])],
+        actions: [{ label: 'Capacidad +1', run: (s, p, r, api) => api.set('buf', Math.min(20, p.buf + 1)) }, { label: 'Capacidad −1', run: (s, p, r, api) => api.set('buf', Math.max(1, p.buf - 1)) }, ...(i === 0 ? [{ label: s.jam ? 'Liberar atasco' : 'Provocar atasco', run: (s) => { s.jam = !s.jam; } }] : [])] };
+    }
+    if (id === 'out') return { title: 'Salida · producto terminado', fis: [['Piezas buenas', s.out, ''], ['Rechazos', s.scrap, ''], ['Throughput', ((3600 * s.out) / T).toFixed(0), 'pzas/h']], ctl: [['Tasa de rechazo', (p.scr + (s.bad > 0 ? 25 : 0)).toFixed(1), '%'], ['Demanda', p.dem, 'pzas/h']] };
+    if (id === 'line') return { title: 'Control de línea · OEE', sub: 'OEE sobre el cuello de botella: A = 1 − falla/T, R = piezas·ciclo ideal / tiempo operativo, C = buenas/total.', fis: [], ctl: this.vars(s, p).ctl,
+      actions: [{ label: p.rel ? 'Pasar a Push' : 'Pasar a CONWIP', run: (s, p, r, api) => api.set('rel', p.rel ? 0 : 1) }, { label: 'Velocidad +5 %', run: (s, p, r, api) => api.set('sf', Math.min(130, p.sf + 5)) }, { label: 'Velocidad −5 %', run: (s, p, r, api) => api.set('sf', Math.max(60, p.sf - 5)) }] };
   },
   kpis(s, p) {
     const T = Math.max(s.t, 1), u = s.st.map((k) => k.work / T);
@@ -76,8 +179,9 @@ SL.app({
       { label: 'Eficiencia vs teórico', value: ((100 * ((3600 * s.out) / T)) / theo).toFixed(0) + ' %' },
       ...s.st.map((k, i) => ({ label: `Util. ${NAMES[i]}`, value: (100 * u[i]).toFixed(0) + ' %' })),
       { label: 'Cuello de botella', value: NAMES[bn] },
+      { label: 'OEE', value: (100 * oee(s, p).O).toFixed(0) + ' %' },
     ];
   },
-  series: (s) => ({ 'Salida acum.': s.out, 'Buffer 1': s.buf[0], 'Buffer 2': s.buf[1], 'WIP total': s.buf[0] + s.buf[1] }),
+  series: (s, p) => ({ 'Salida acum.': s.out, 'Buffer 1': s.buf[0], 'Buffer 2': s.buf[1], 'WIP total': s.buf[0] + s.buf[1], 'OEE %': 100 * oee(s, p).O }),
 });
 </script></body></html>
