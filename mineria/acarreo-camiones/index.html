@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="stylesheet" href="../../shared/style.css"></head>
+<body><div id="app"></div>
+<script src="../../shared/sim.js"></script>
+<script>
+// Ciclo: cola pala → carga → acarreo → cola chancador → descarga → retorno. Unidad de tiempo: minutos.
+const S = { x: 110, y: 330 }, C = { x: 690, y: 120 };
+const pt = (a, b, f, off) => ({ x: SL.lerp(a.x, b.x, f) + off, y: SL.lerp(a.y, b.y, f) + off });
+SL.app({
+  title: 'Minería · Ciclo de acarreo',
+  desc: 'Camiones compiten por 1 pala y 1 chancador. Sube la flota hasta que la productividad se sature y crezcan las colas.',
+  unit: 'min', dt: 0.1, sample: 5,
+  clock: (t) => `Turno: ${Math.floor(t / 60)} h ${Math.floor(t % 60)} min`,
+  params: [
+    { id: 'n', label: 'Camiones', min: 1, max: 20, step: 1, value: 8, reset: true },
+    { id: 'payload', label: 'Carga útil', min: 100, max: 360, step: 10, value: 220, unit: 't' },
+    { id: 'load', label: 'Tiempo de carga', min: 1, max: 8, step: 0.5, value: 3.5, unit: 'min' },
+    { id: 'dump', label: 'Tiempo de descarga', min: 0.5, max: 5, step: 0.5, value: 1.5, unit: 'min' },
+    { id: 'dist', label: 'Distancia de acarreo', min: 1, max: 10, step: 0.5, value: 4, unit: 'km' },
+    { id: 'vl', label: 'Vel. cargado', min: 10, max: 40, step: 1, value: 22, unit: 'km/h' },
+    { id: 've', label: 'Vel. vacío', min: 15, max: 50, step: 1, value: 32, unit: 'km/h' },
+  ],
+  init(p) {
+    const trucks = [], s = { qS: [], qC: [], shov: null, crus: null, tons: 0, bS: 0, bC: 0, wq: 0, trucks };
+    for (let i = 0; i < p.n; i++) { const t = { ph: 'qS', rem: 0, tot: 1, id: i }; trucks.push(t); s.qS.push(t); }
+    return s;
+  },
+  step(s, dt, p, r) {
+    if (!s.shov && s.qS.length) { s.shov = s.qS.shift(); s.shov.ph = 'load'; s.shov.rem = p.load * (0.7 + 0.6 * r()); }
+    if (s.shov) { s.bS += dt; if ((s.shov.rem -= dt) <= 0) { const t = s.shov; t.ph = 'haul'; t.tot = t.rem = (p.dist / p.vl) * 60; s.shov = null; } }
+    if (!s.crus && s.qC.length) { s.crus = s.qC.shift(); s.crus.ph = 'dump'; s.crus.rem = p.dump * (0.7 + 0.6 * r()); }
+    if (s.crus) { s.bC += dt; if ((s.crus.rem -= dt) <= 0) { const t = s.crus; s.tons += p.payload; t.ph = 'ret'; t.tot = t.rem = (p.dist / p.ve) * 60; s.crus = null; } }
+    for (const t of s.trucks) {
+      if (t.ph === 'haul' && (t.rem -= dt) <= 0) { t.ph = 'qC'; s.qC.push(t); }
+      else if (t.ph === 'ret' && (t.rem -= dt) <= 0) { t.ph = 'qS'; s.qS.push(t); }
+    }
+    s.wq += (s.qS.length + s.qC.length) * dt;
+  },
+  draw(g, s, p, W, H) {
+    g.lineWidth = 6; g.strokeStyle = '#2a3646'; g.lineCap = 'round';
+    for (const o of [-14, 14]) { g.beginPath(); g.moveTo(S.x + o, S.y + o); g.lineTo(C.x + o, C.y + o); g.stroke(); }
+    g.font = '13px system-ui'; g.textAlign = 'center';
+    g.fillStyle = '#f5b942'; g.fillRect(S.x - 40, S.y - 25, 60, 50); g.fillStyle = '#000'; g.fillText('PALA', S.x - 10, S.y + 4);
+    g.fillStyle = '#ef5350'; g.fillRect(C.x - 20, C.y - 25, 60, 50); g.fillStyle = '#000'; g.fillText('CHANCADOR', C.x + 10, C.y + 4);
+    s.trucks.forEach((t) => {
+      let q;
+      if (t.ph === 'haul') q = pt(S, C, 1 - t.rem / t.tot, -14);
+      else if (t.ph === 'ret') q = pt(C, S, 1 - t.rem / t.tot, 14 - 0);
+      else if (t.ph === 'qS') q = { x: S.x + 30 + 20 * (s.qS.indexOf(t) + 1), y: S.y + 40 };
+      else if (t.ph === 'qC') q = { x: C.x - 30 - 20 * (s.qC.indexOf(t) + 1), y: C.y - 40 };
+      else q = t.ph === 'load' ? { x: S.x + 30, y: S.y } : { x: C.x - 30, y: C.y };
+      g.fillStyle = t.ph === 'haul' ? '#f5b942' : t.ph === 'ret' ? '#4fc3f7' : t.ph.startsWith('q') ? '#ef5350' : '#3ecf8e';
+      g.fillRect(q.x - 7, q.y - 5, 14, 10);
+    });
+    g.textAlign = 'left'; g.fillStyle = '#8b9bb0';
+    g.fillText('Amarillo: cargado · Azul: vacío · Rojo: en cola · Verde: operando', 12, H - 12);
+  },
+  kpis(s, p) {
+    const h = Math.max(s.t || 0, 1) / 60;
+    return [
+      { label: 'Producción', value: Math.round(s.tons).toLocaleString() + ' t' },
+      { label: 'Productividad', value: Math.round(s.tons / h).toLocaleString() + ' t/h' },
+      { label: 'Utilización pala', value: ((100 * s.bS) / Math.max(s.t, 1)).toFixed(0) + ' %' },
+      { label: 'Utilización chancador', value: ((100 * s.bC) / Math.max(s.t, 1)).toFixed(0) + ' %' },
+      { label: 'Cola pala / chancador', value: `${s.qS.length} / ${s.qC.length}` },
+      { label: 'Camiones en cola (prom.)', value: (s.wq / Math.max(s.t, 1)).toFixed(1) },
+    ];
+  },
+  series: (s) => ({ 'Cola pala': s.qS.length, 'Cola chancador': s.qC.length, 'Toneladas acum.': s.tons }),
+});
+</script></body></html>

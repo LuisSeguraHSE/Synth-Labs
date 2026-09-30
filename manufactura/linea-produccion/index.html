@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="stylesheet" href="../../shared/style.css"></head>
+<body><div id="app"></div>
+<script src="../../shared/sim.js"></script>
+<script>
+// Línea serie de 3 estaciones con buffers finitos, fallas y reparaciones. Unidad: segundos.
+const NAMES = ['Corte', 'Ensamble', 'Empaque'];
+SL.app({
+  title: 'Manufactura · Línea de producción',
+  desc: 'Serie de 3 estaciones con buffers finitos. Observa bloqueos/inanición, el cuello de botella y el efecto del buffer y las fallas.',
+  unit: 's', dt: 0.1, sample: 10,
+  params: [
+    { id: 'c0', label: 'Ciclo Corte', min: 4, max: 30, step: 1, value: 10, unit: 's' },
+    { id: 'c1', label: 'Ciclo Ensamble', min: 4, max: 30, step: 1, value: 13, unit: 's' },
+    { id: 'c2', label: 'Ciclo Empaque', min: 4, max: 30, step: 1, value: 9, unit: 's' },
+    { id: 'buf', label: 'Capacidad de buffer', min: 1, max: 20, step: 1, value: 4, unit: 'pzas' },
+    { id: 'mtbf', label: 'MTBF (tiempo entre fallas)', min: 30, max: 600, step: 10, value: 200, unit: 's' },
+    { id: 'mttr', label: 'MTTR (reparación)', min: 5, max: 120, step: 5, value: 25, unit: 's' },
+  ],
+  init() {
+    return { out: 0, buf: [0, 0], st: [0, 1, 2].map(() => ({ s: 'idle', rem: 0, work: 0, down: 0, block: 0, starve: 0 })) };
+  },
+  step(s, dt, p, r) {
+    const cyc = [p.c0, p.c1, p.c2];
+    s.st.forEach((k, i) => {
+      if (k.s === 'down') { k.down += dt; if ((k.rem -= dt) <= 0) k.s = 'work'; return; }
+      if (k.s === 'idle') {
+        if (i === 0 || s.buf[i - 1] > 0) { if (i) s.buf[i - 1]--; k.s = 'work'; k.rem = cyc[i] * (0.8 + 0.4 * r()); }
+        else { k.starve += dt; return; }
+      }
+      if (k.s === 'work') {
+        k.work += dt;
+        if (r() < dt / p.mtbf) { k.s = 'down'; k.rem = SL.exp(r, p.mttr); return; }
+        if ((k.rem -= dt) <= 0) k.s = 'done';
+      }
+      if (k.s === 'done') {
+        if (i === 2) { s.out++; k.s = 'idle'; }
+        else if (s.buf[i] < p.buf) { s.buf[i]++; k.s = 'idle'; }
+        else k.block += dt;
+      }
+    });
+  },
+  draw(g, s, p, W, H) {
+    const col = { idle: '#8b9bb0', work: '#3ecf8e', done: '#f5b942', down: '#ef5350' };
+    g.font = '14px system-ui'; g.textAlign = 'center';
+    s.st.forEach((k, i) => {
+      const x = 70 + i * 260, y = 170;
+      g.fillStyle = col[k.s]; g.fillRect(x, y, 120, 90);
+      g.fillStyle = '#000'; g.fillText(NAMES[i], x + 60, y + 35);
+      g.fillText(k.s === 'idle' ? (i ? 'Inanición' : 'Libre') : k.s === 'work' ? 'Produciendo' : k.s === 'done' ? 'Bloqueada' : 'FALLA', x + 60, y + 60);
+      if (i < 2) {
+        g.fillStyle = '#8b9bb0'; g.fillText(`Buffer ${s.buf[i]}/${p.buf}`, x + 190, y + 20);
+        for (let j = 0; j < p.buf; j++) { g.fillStyle = j < s.buf[i] ? '#4fc3f7' : '#1c2633'; g.fillRect(x + 130 + (j % 10) * 11, y + 40 + Math.floor(j / 10) * 12, 9, 9); }
+      }
+    });
+    g.fillStyle = '#e6edf3'; g.fillText(`Salida: ${s.out} piezas`, 680, 215);
+  },
+  kpis(s, p) {
+    const T = Math.max(s.t, 1), u = s.st.map((k) => k.work / T);
+    const bn = u.indexOf(Math.max(...u));
+    const theo = 3600 / Math.max(p.c0, p.c1, p.c2);
+    return [
+      { label: 'Piezas', value: s.out },
+      { label: 'Throughput', value: ((3600 * s.out) / T).toFixed(0) + ' pzas/h' },
+      { label: 'Teórico (sin fallas)', value: theo.toFixed(0) + ' pzas/h' },
+      { label: 'Eficiencia vs teórico', value: ((100 * ((3600 * s.out) / T)) / theo).toFixed(0) + ' %' },
+      ...s.st.map((k, i) => ({ label: `Util. ${NAMES[i]}`, value: (100 * u[i]).toFixed(0) + ' %' })),
+      { label: 'Cuello de botella', value: NAMES[bn] },
+    ];
+  },
+  series: (s) => ({ 'Salida acum.': s.out, 'Buffer 1': s.buf[0], 'Buffer 2': s.buf[1], 'WIP total': s.buf[0] + s.buf[1] }),
+});
+</script></body></html>

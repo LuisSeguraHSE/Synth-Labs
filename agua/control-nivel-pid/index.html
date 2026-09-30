@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="stylesheet" href="../../shared/style.css"></head>
+<body><div id="app"></div>
+<script src="../../shared/sim.js"></script>
+<script>
+// Tanque (integrador): dh/dt = (u·Qmax − demanda)/A. PID con anti-windup. Unidad: segundos.
+const A = 2, HMAX = 4, QMAX = 50; // m², m, L/s
+SL.app({
+  title: 'Agua · Control de nivel PID',
+  desc: 'Sintoniza Kp/Ki/Kd. La demanda cambia en escalón cada 120 s: observa sobreimpulso, error y esfuerzo de la bomba.',
+  unit: 's', dt: 0.1, sample: 1,
+  params: [
+    { id: 'sp', label: 'Setpoint de nivel', min: 0.5, max: 3.5, step: 0.1, value: 2, unit: 'm' },
+    { id: 'kp', label: 'Kp', min: 0, max: 6, step: 0.1, value: 1.5 },
+    { id: 'ki', label: 'Ki', min: 0, max: 0.5, step: 0.01, value: 0.05 },
+    { id: 'kd', label: 'Kd', min: 0, max: 10, step: 0.5, value: 0 },
+    { id: 'dem', label: 'Demanda base', min: 0, max: 40, step: 1, value: 20, unit: 'L/s' },
+    { id: 'step', label: 'Escalón de demanda', min: 0, max: 20, step: 1, value: 10, unit: 'L/s' },
+  ],
+  init(p) { return { h: 1, i: 0, e0: p.sp - 1, u: 0, iae: 0, maxh: 1, q: p.dem }; },
+  step(s, dt, p, r) {
+    s.q = p.dem + (Math.floor((s.t || 0) / 120) % 2 ? p.step : 0);
+    const e = p.sp - s.h, d = (e - s.e0) / dt;
+    const raw = p.kp * e + p.ki * s.i + p.kd * d;
+    s.u = SL.clamp(raw, 0, 1);
+    if (raw === s.u) s.i += e * dt; // anti-windup por condicionamiento
+    s.e0 = e;
+    s.h = SL.clamp(s.h + ((s.u * QMAX - s.q) / 1000 / A) * dt, 0, HMAX);
+    s.iae += Math.abs(e) * dt; s.maxh = Math.max(s.maxh, s.h);
+  },
+  draw(g, s, p, W, H) {
+    const x = 300, y = 40, w = 200, h = 330, py = (v) => y + h - (v / HMAX) * h;
+    g.fillStyle = '#4fc3f7'; g.fillRect(x, py(s.h), w, y + h - py(s.h));
+    g.strokeStyle = '#e6edf3'; g.lineWidth = 3; g.strokeRect(x, y, w, h);
+    g.strokeStyle = '#f5b942'; g.setLineDash([8, 5]); g.beginPath(); g.moveTo(x - 25, py(p.sp)); g.lineTo(x + w + 25, py(p.sp)); g.stroke(); g.setLineDash([]);
+    g.fillStyle = '#f5b942'; g.font = '13px system-ui'; g.fillText('SP ' + p.sp.toFixed(1) + ' m', x + w + 30, py(p.sp) + 4);
+    g.fillStyle = '#fff'; g.fillText('PV ' + s.h.toFixed(2) + ' m', x + 70, py(s.h) - 6);
+    g.fillStyle = '#3ecf8e'; g.fillRect(90, 200, 120, 14); g.fillStyle = '#000'; g.fillText(`Bomba ${(100 * s.u).toFixed(0)} %`, 100, 212);
+    g.fillStyle = '#ef5350'; g.fillRect(x + w, y + h - 40, 120, 14); g.fillStyle = '#000'; g.fillText(`Demanda ${s.q.toFixed(0)} L/s`, x + w + 6, y + h - 29);
+  },
+  kpis(s, p) {
+    return [
+      { label: 'Nivel (PV)', value: s.h.toFixed(2) + ' m' },
+      { label: 'Error actual', value: (p.sp - s.h).toFixed(3) + ' m' },
+      { label: 'Salida bomba', value: (100 * s.u).toFixed(0) + ' %' },
+      { label: 'IAE acumulado', value: s.iae.toFixed(1) },
+      { label: 'Nivel máximo', value: s.maxh.toFixed(2) + ' m' },
+      { label: 'Demanda', value: s.q.toFixed(0) + ' L/s' },
+    ];
+  },
+  series: (s, p) => ({ Nivel: s.h, Setpoint: p.sp, 'Bomba %': 100 * s.u, 'Demanda L/s': s.q }),
+});
+</script></body></html>

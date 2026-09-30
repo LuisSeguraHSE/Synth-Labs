@@ -1,0 +1,26 @@
+:root { --bg:#0b0f14; --panel:#141b24; --line:#243040; --tx:#e6edf3; --mut:#8b9bb0; --ac:#4fc3f7; }
+* { box-sizing: border-box; }
+body { margin:0; background:var(--bg); color:var(--tx); font:14px/1.45 system-ui,Segoe UI,Roboto,sans-serif; }
+a { color:var(--ac); text-decoration:none; }
+header { padding:14px 20px; border-bottom:1px solid var(--line); }
+header h1 { margin:4px 0; font-size:20px; }
+header p { margin:0; color:var(--mut); max-width:900px; }
+main { display:grid; grid-template-columns:minmax(0,1fr) 300px; gap:16px; padding:16px 20px; }
+@media (max-width:980px) { main { grid-template-columns:1fr; } }
+canvas { width:100%; height:auto; display:block; background:#10151c; border:1px solid var(--line); border-radius:6px; margin-bottom:10px; }
+aside { background:var(--panel); border:1px solid var(--line); border-radius:6px; padding:12px; align-self:start; }
+aside h3 { margin:14px 0 6px; font-size:12px; text-transform:uppercase; letter-spacing:.06em; color:var(--mut); }
+.ctl { display:flex; flex-wrap:wrap; gap:6px; }
+button { background:#1c2633; color:var(--tx); border:1px solid var(--line); border-radius:4px; padding:5px 9px; cursor:pointer; }
+button:hover { border-color:var(--ac); } button.on { background:var(--ac); color:#04202e; }
+.clock { margin-top:10px; font:600 16px ui-monospace,monospace; color:var(--ac); }
+label { display:grid; grid-template-columns:1fr auto; margin-bottom:8px; }
+label input { grid-column:1 / 3; width:100%; }
+label output { color:var(--mut); font-variant-numeric:tabular-nums; }
+table { width:100%; border-collapse:collapse; }
+td { padding:3px 0; border-bottom:1px solid var(--line); } td:last-child { text-align:right; font-variant-numeric:tabular-nums; font-weight:600; }
+/* portal */
+.grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(260px,1fr)); gap:14px; padding:16px 20px; }
+.card { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:14px; display:block; color:var(--tx); }
+.card:hover { border-color:var(--ac); } .card small { color:var(--ac); text-transform:uppercase; letter-spacing:.06em; }
+.card h2 { margin:4px 0; font-size:16px; } .card p { margin:0; color:var(--mut); }

@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="stylesheet" href="../../shared/style.css"></head>
+<body><div id="app"></div>
+<script src="../../shared/sim.js"></script>
+<script>
+// Despacho: PV → carga; excedente → batería; déficit → batería (hasta 10% SOC) → diésel → no servida.
+// Tiempo: 1 día = 240 s simulados (1 s sim = 6 min). dt en horas = dt/10.
+const EFF = 0.95, SOCMIN = 0.1, LPKWH = 0.28;
+const load = (h, pk) => pk * (0.35 + 0.3 * Math.exp(-((h - 8) ** 2) / 8) + 0.6 * Math.exp(-((h - 19) ** 2) / 6) + 0.15 * Math.exp(-((h - 13) ** 2) / 20));
+SL.app({
+  title: 'Energía · Microrred PV + batería + diésel',
+  desc: 'Sitio aislado (campamento/mina/planta). Dimensiona PV y batería para bajar el consumo de diésel sin perder servicio.',
+  unit: 's', dt: 0.1, sample: 2,
+  clock: (t) => { const h = (t / 10) % 24; return `Día ${Math.floor(t / 240) + 1} · ${String(Math.floor(h)).padStart(2, '0')}:${String(Math.floor((h % 1) * 60)).padStart(2, '0')}`; },
+  params: [
+    { id: 'pv', label: 'PV instalado', min: 0, max: 1500, step: 50, value: 500, unit: 'kWp', reset: true },
+    { id: 'bat', label: 'Batería', min: 0, max: 4000, step: 100, value: 1200, unit: 'kWh', reset: true },
+    { id: 'pk', label: 'Demanda pico', min: 100, max: 1000, step: 50, value: 400, unit: 'kW' },
+    { id: 'dg', label: 'Diésel instalado', min: 100, max: 1200, step: 50, value: 450, unit: 'kW' },
+    { id: 'cloud', label: 'Nubosidad', min: 0, max: 0.8, step: 0.05, value: 0.2 },
+    { id: 'price', label: 'Precio diésel', min: 0.5, max: 2.5, step: 0.1, value: 1.1, unit: 'USD/L' },
+  ],
+  init(p) { return { soc: 0.5 * p.bat, pvE: 0, ldE: 0, dgE: 0, uns: 0, curt: 0, cl: 1, pv: 0, ld: 0, dg: 0 }; },
+  step(s, dt, p, r) {
+    const dh = dt / 10, h = ((s.t || 0) / 10) % 24;
+    s.cl = SL.clamp(s.cl + (r() - 0.5) * 0.08 - 0.02 * (s.cl - (1 - p.cloud)), 0.2, 1);
+    const pv = Math.max(0, Math.sin((Math.PI * (h - 6)) / 12)) * p.pv * s.cl, ld = load(h, p.pk);
+    const pmax = p.bat / 2; // C/2
+    let net = pv - ld, dg = 0, un = 0;
+    if (net >= 0) {
+      const ch = Math.min(net, pmax, ((p.bat - s.soc) / EFF) / dh);
+      s.soc += ch * EFF * dh; s.curt += (net - ch) * dh;
+    } else {
+      let need = -net;
+      const dis = Math.min(need, pmax, Math.max(0, s.soc - SOCMIN * p.bat) / dh);
+      s.soc -= dis * dh; need -= dis * EFF;
+      dg = Math.min(need, p.dg); un = need - dg;
+    }
+    s.pv = pv; s.ld = ld; s.dg = dg;
+    s.pvE += Math.min(pv, ld) * dh; s.ldE += ld * dh; s.dgE += dg * dh; s.uns += un * dh;
+  },
+  draw(g, s, p, W, H) {
+    const node = (x, y, c, t, v) => { g.fillStyle = c; g.fillRect(x - 55, y - 35, 110, 70); g.fillStyle = '#000'; g.font = '14px system-ui'; g.textAlign = 'center'; g.fillText(t, x, y - 6); g.fillText(v, x, y + 16); };
+    g.strokeStyle = '#2a3646'; g.lineWidth = 5;
+    [[150, 100, 400, 225], [150, 350, 400, 225], [400, 225, 650, 225], [650, 100, 400, 225]].forEach((l) => { g.beginPath(); g.moveTo(l[0], l[1]); g.lineTo(l[2], l[3]); g.stroke(); });
+    node(150, 100, '#f5b942', 'Solar PV', s.pv.toFixed(0) + ' kW');
+    node(650, 100, '#ef5350', 'Diésel', s.dg.toFixed(0) + ' kW');
+    node(150, 350, '#4fc3f7', 'Batería', (100 * s.soc / Math.max(p.bat, 1)).toFixed(0) + ' % SOC');
+    node(650, 225, '#3ecf8e', 'Carga', s.ld.toFixed(0) + ' kW');
+    g.fillStyle = '#8b9bb0'; g.fillText('Bus', 400, 222);
+    g.textAlign = 'left';
+  },
+  kpis(s, p) {
+    const fuel = s.dgE * LPKWH;
+    return [
+      { label: 'Energía demandada', value: s.ldE.toFixed(0) + ' kWh' },
+      { label: 'Fracción renovable', value: (100 * (1 - s.dgE / Math.max(s.ldE - s.uns, 1))).toFixed(0) + ' %' },
+      { label: 'Diésel', value: s.dgE.toFixed(0) + ' kWh' },
+      { label: 'Combustible', value: fuel.toFixed(0) + ' L' },
+      { label: 'Costo combustible', value: '$' + (fuel * p.price).toFixed(0) },
+      { label: 'Energía no servida', value: s.uns.toFixed(0) + ' kWh' },
+      { label: 'PV recortado', value: s.curt.toFixed(0) + ' kWh' },
+    ];
+  },
+  series: (s, p) => ({ PV: s.pv, Carga: s.ld, Diésel: s.dg, 'SOC %': (100 * s.soc) / Math.max(p.bat, 1) }),
+});
+</script></body></html>

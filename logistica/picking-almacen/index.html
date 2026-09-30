@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="stylesheet" href="../../shared/style.css"></head>
+<body><div id="app"></div>
+<script src="../../shared/sim.js"></script>
+<script>
+// Cola M/G/c de pedidos atendidos por pickers. Unidad: minutos. Incluye pico de demanda.
+SL.app({
+  title: 'Logística · Picking de almacén',
+  desc: 'Pedidos llegan (Poisson) y son preparados por N pickers. Busca el mínimo de personal que cumple el SLA, incluso en hora punta.',
+  unit: 'min', dt: 0.1, sample: 5,
+  clock: (t) => `Hora: ${String(8 + Math.floor(t / 60) % 16).padStart(2, '0')}:${String(Math.floor(t % 60)).padStart(2, '0')}`,
+  params: [
+    { id: 'n', label: 'Pickers', min: 1, max: 20, step: 1, value: 6 },
+    { id: 'lam', label: 'Llegada base', min: 0.2, max: 5, step: 0.1, value: 1.2, unit: 'ped/min' },
+    { id: 'peak', label: 'Factor hora punta', min: 1, max: 3, step: 0.1, value: 1.8, unit: '×' },
+    { id: 'svc', label: 'Tiempo de picking', min: 1, max: 15, step: 0.5, value: 4.5, unit: 'min' },
+    { id: 'sla', label: 'SLA (espera máx.)', min: 1, max: 30, step: 1, value: 10, unit: 'min' },
+  ],
+  init() { return { q: [], w: [], done: 0, arr: 0, ok: 0, wait: 0, busy: 0, pk: [] }; },
+  step(s, dt, p, r) {
+    const hr = (s.t || 0) / 60 % 16, lam = p.lam * (hr > 4 && hr < 7 ? p.peak : 1); // punta 12:00-15:00
+    if (r() < lam * dt) { s.q.push(s.t || 0); s.arr++; }
+    while (s.pk.length < p.n) s.pk.push({ rem: 0, busy: false });
+    s.pk.length = p.n;
+    for (const k of s.pk) {
+      if (k.busy && (k.rem -= dt) <= 0) k.busy = false;
+      if (!k.busy && s.q.length) {
+        const w = (s.t || 0) - s.q.shift();
+        s.done++; s.wait += w; if (w <= p.sla) s.ok++;
+        k.busy = true; k.rem = p.svc * (0.5 + r());
+      }
+      if (k.busy) s.busy += dt;
+    }
+  },
+  draw(g, s, p, W, H) {
+    g.fillStyle = '#8b9bb0'; g.font = '13px system-ui'; g.fillText(`Cola de pedidos: ${s.q.length}`, 20, 30);
+    for (let i = 0; i < Math.min(s.q.length, 120); i++) {
+      const w = (s.t - s.q[i]), late = w > p.sla;
+      g.fillStyle = late ? '#ef5350' : '#4fc3f7'; g.fillRect(20 + (i % 40) * 18, 45 + Math.floor(i / 40) * 18, 14, 14);
+    }
+    g.fillStyle = '#8b9bb0'; g.fillText('Pickers (verde = ocupado)', 20, 170);
+    s.pk.forEach((k, i) => {
+      const x = 30 + (i % 10) * 76, y = 190 + Math.floor(i / 10) * 100;
+      g.fillStyle = k.busy ? '#3ecf8e' : '#2a3646'; g.beginPath(); g.arc(x + 25, y + 25, 22, 0, 7); g.fill();
+      g.fillStyle = '#fff'; g.fillText(i + 1, x + 21, y + 30);
+    });
+    g.fillStyle = '#ef5350'; g.fillText('Rojo: pedido fuera de SLA', 20, H - 12);
+  },
+  kpis(s, p) {
+    const d = Math.max(s.done, 1);
+    return [
+      { label: 'Pedidos recibidos', value: s.arr },
+      { label: 'Despachados', value: s.done },
+      { label: 'Cumplimiento SLA', value: ((100 * s.ok) / d).toFixed(0) + ' %' },
+      { label: 'Espera promedio', value: (s.wait / d).toFixed(1) + ' min' },
+      { label: 'Utilización pickers', value: ((100 * s.busy) / (Math.max(s.t, 1) * p.n)).toFixed(0) + ' %' },
+      { label: 'Cola actual', value: s.q.length },
+    ];
+  },
+  series: (s, p) => ({ Cola: s.q.length, 'Pickers ocupados': s.pk.filter((k) => k.busy).length, 'Cumpl. SLA %': (100 * s.ok) / Math.max(s.done, 1) }),
+});
+</script></body></html>
