@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="stylesheet" href="../../shared/style.css"></head>
+<body><div id="app"></div>
+<script src="../../shared/sim.js"></script>
+<script>
+// Packing e-commerce. Unidad: segundos desde las 15:00. Olas de pedidos; pico 17:00–20:00.
+const hh = (t) => { const h = 15 + t / 3600; return String(Math.floor(h)).padStart(2, '0') + ':' + String(Math.floor((h % 1) * 60)).padStart(2, '0'); };
+SL.app({
+  title: 'Demo C · Packing e-commerce / courier',
+  desc: 'Los pedidos no se atrasan en la calle: se atrasan en la mesa. Olas de pedidos hacia 4–8 puestos; en "hoy" la cola vive en el piso, en "propuesto" vive en la banda.',
+  pitch: '"El camión no espera. Si el packing no rinde a las 7 pm, el pedido viaja mañana y el cliente se queja."',
+  obj: '"Con más gente se resuelve." → Sube puestos en "hoy": se estorban (el límite es el layout, no el headcount).',
+  unit: 's', dt: 1, sample: 120, speeds: [1, 20, 120, 480],
+  clock: (t) => 'Hora ' + hh(t),
+  params: [
+    { id: 'mode', label: 'Escenario', opts: ['Hoy: mesas + pedidos en piso', 'Propuesto: banda central + espina'], value: 0 },
+    { id: 'n', label: 'Puestos de packing', min: 4, max: 8, step: 1, value: 6 },
+    { id: 'wave', label: 'Tamaño de ola', min: 40, max: 80, step: 5, value: 60, unit: 'pedidos' },
+    { id: 'frag', label: 'Mix frágil (90 s)', min: 0, max: 60, step: 5, value: 25, unit: '%' },
+    { id: 'cut', label: 'Cutoff del courier', min: 18, max: 21, step: 0.5, value: 20, unit: 'h' },
+  ],
+  init() { return { q: [], st: Array.from({ length: 8 }, () => ({ rem: 0, o: null, work: 0 })), nextWave: 0, done: 0, late: 0, err: 0, dest: [0, 0, 0], lsum: 0, back: null, arr: 0 }; },
+  step(s, dt, p, r) {
+    const hoy = p.mode === 0, h = 15 + s.t / 3600;
+    if (s.t >= s.nextWave) {
+      const gap = h >= 17 && h < 20 ? 900 : 2400, n = Math.round(p.wave * (0.9 + 0.2 * r()));
+      for (let i = 0; i < n; i++) { const u = r(), f = p.frag / 100, ty = u < f ? 90 : u < f + (1 - f) * 0.3 ? 45 : 65, d = r(); s.q.push({ t0: s.t, ty, d: d < 0.55 ? 0 : d < 0.8 ? 1 : 2 }); s.arr++; }
+      s.nextWave += gap;
+    }
+    const crowd = hoy ? 1 + 0.07 * Math.max(0, p.n - 4) : 1;
+    for (let i = 0; i < p.n; i++) {
+      const k = s.st[i];
+      if (k.o) {
+        k.work += dt;
+        if ((k.rem -= dt) <= 0) {
+          s.done++; s.dest[k.o.d]++; s.lsum += s.t - k.o.t0; if (r() < (hoy ? 0.012 : 0.004)) s.err++;
+          if (h >= p.cut) s.late++; k.o = null;
+        }
+      }
+      if (!k.o && s.q.length) { const o = s.q.shift(); k.o = o; k.rem = (o.ty + (hoy ? 14 : 3)) * crowd * (0.9 + 0.2 * r()); }
+    }
+    if (h >= p.cut && s.back === null) s.back = s.q.length + s.st.slice(0, p.n).filter((k) => k.o).length;
+  },
+  draw(g, s, p, W, H) {
+    const hoy = p.mode === 0, y = 225, cap = 30;
+    if (!hoy) { SL.belt(g, [[70, y], [560, y]], 22); s.q.slice(0, cap).forEach((o, i) => { g.fillStyle = o.ty > 80 ? '#ef5350' : '#c59b6d'; g.fillRect(75 + i * 16, y - 7, 12, 14); }); }
+    for (let i = 0; i < p.n; i++) {
+      const col = i >> 1, side = i % 2 ? 1 : -1, x = 140 + col * 105, yy = y + side * (hoy ? 95 : 70) - 20;
+      g.fillStyle = s.st[i].o ? '#3ecf8e' : '#2a3646'; g.fillRect(x, yy, 70, 40);
+      if (!hoy) { g.strokeStyle = '#2a3646'; g.lineWidth = 4; g.beginPath(); g.moveTo(x + 35, yy + (side > 0 ? 0 : 40)); g.lineTo(x + 35, y + (side > 0 ? 11 : -11)); g.stroke(); }
+      SL.text(g, 'P' + (i + 1), x + 35, yy + 25, '#fff', '13px system-ui', 'center');
+    }
+    if (hoy) { const nf = s.q.length; for (let i = 0; i < Math.min(nf, 240); i++) { g.fillStyle = s.q[i].ty > 80 ? '#ef5350' : '#c59b6d'; g.fillRect(85 + (i % 40) * 12, y - 14 + Math.floor(i / 40) * 11, 9, 9); } }
+    else if (s.q.length > cap) for (let i = 0; i < Math.min(s.q.length - cap, 120); i++) { g.fillStyle = '#f5b942'; g.fillRect(85 + (i % 40) * 12, y + 115 + Math.floor(i / 40) * 11, 9, 9); }
+    ['Lima', 'Norte', 'Sur'].forEach((n, i) => { g.fillStyle = '#243040'; g.fillRect(650, 60 + i * 110, 120, 80); SL.text(g, n, 710, 90 + i * 110, '#e6edf3', '14px system-ui', 'center'); SL.text(g, s.dest[i], 710, 118 + i * 110, '#3ecf8e', '16px system-ui', 'center'); });
+    SL.text(g, hoy ? 'Cola en el PISO (pasillo)' : 'Cola en la BANDA (naranja = desborde al piso)', 20, 30, hoy ? '#ef5350' : '#3ecf8e', '14px system-ui');
+    SL.text(g, 'Marrón: sobre/caja · Rojo: frágil', 20, H - 12);
+  },
+  kpis(s, p) {
+    const hrs = Math.max(s.t, 1) / 3600, floorQ = p.mode === 0 ? s.q.length : Math.max(0, s.q.length - 30);
+    return [
+      { label: 'Pedidos despachados', value: s.done + ' / ' + s.arr },
+      { label: 'Pedidos/h por persona', value: (s.done / hrs / p.n).toFixed(1) },
+      { label: 'Salen después del cutoff', value: s.late },
+      { label: 'Pendientes al cutoff', value: s.back === null ? '—' : s.back },
+      { label: 'm² de pasillo con WIP', value: (floorQ * 0.3).toFixed(1) },
+      { label: 'Error de ítem', value: s.err },
+      { label: 'Espera prom. en cola', value: (s.lsum / Math.max(s.done, 1) / 60).toFixed(1) + ' min' },
+    ];
+  },
+  series: (s, p) => ({ 'Cola': s.q.length, 'Despachados': s.done, 'Puestos activos': s.st.slice(0, p.n).filter((k) => k.o).length }),
+});
+</script></body></html>

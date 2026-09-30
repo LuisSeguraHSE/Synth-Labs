@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="stylesheet" href="../../shared/style.css"></head>
+<body><div id="app"></div>
+<script src="../../shared/sim.js"></script>
+<script>
+// Recepción y chequeo. Unidad: segundos. Camiones → descarga → conteo/foto/sello → ok / no conforme → slot.
+SL.app({
+  title: 'Demo G · Recepción y chequeo',
+  desc: 'El inventario no se pierde en el rack; se pierde en la rampa. "Hoy": el camión espera en muelle hasta que se recuenta en piso. "Propuesto": descarga a banda, puesto de control y desvío ok / no ok.',
+  pitch: '"El inventario no se pierde en el rack; se pierde en la rampa."',
+  obj: '"Es un ticket chico." → Sí: decide el jefe de almacén; útil para PRODISA, droguerías, 3PL y mayoristas. Decisión del jefe de almacén: útil para droguerías, 3PL y mayoristas. Módulo de 6–10 m + puesto + desviador binario.',
+  unit: 's', dt: 0.5, sample: 30, speeds: [1, 10, 60, 240],
+  params: [
+    { id: 'mode', label: 'Escenario', opts: ['Hoy: descarga a piso + 3 recuentan', 'Propuesto: banda + puesto de control'], value: 0 },
+    { id: 'gap', label: 'Un camión cada', min: 6, max: 40, step: 1, value: 10, unit: 'min' },
+    { id: 'nb', label: 'Bultos por camión', min: 60, max: 240, step: 10, value: 120 },
+    { id: 'tu', label: 'Descarga', min: 2, max: 8, step: 0.5, value: 4, unit: 's/bulto' },
+    { id: 'nc', label: 'Bultos no conformes', min: 0, max: 10, step: 0.5, value: 4, unit: '%' },
+  ],
+  init() { return { trucks: [{ at: 0, n: 0, left: 120, id: 1 }], nextT: 600, id: 1, dock: null, patio: [], buf: [], ctl: [], ok: 0, nc: 0, miss: 0, tdock: 0, nleave: 0, twait: 0, nw: 0, un: 0, checked: 0 }; },
+  step(s, dt, p, r) {
+    const hoy = p.mode === 0, cap = hoy ? 25 : 12, nsrv = hoy ? 3 : 1, tc = hoy ? 14 : 3.6, det = hoy ? 0.72 : 0.96;
+    if (s.t >= s.nextT) { s.id++; s.patio.push({ at: s.t, left: p.nb, id: s.id, nb: p.nb, chk: 0 }); s.nextT += p.gap * 60; }
+    if (s.trucks.length) { s.patio.push(Object.assign(s.trucks.pop(), { at: 0, left: p.nb, nb: p.nb, chk: 0 })); }
+    if (!s.dock && s.patio.length) { s.dock = s.patio.shift(); s.dock.t0 = s.t; s.twait += s.t - s.dock.at; s.nw++; s.dock.un = 0; s.dock.nextU = s.t; }
+    const d = s.dock;
+    if (d && d.left > 0 && s.buf.length < cap && s.t >= d.nextU) { d.left--; d.un++; d.nextU = s.t + p.tu * (0.9 + 0.2 * r()); s.buf.push({ bad: r() < p.nc / 100, tr: d }); s.un++; }
+    for (let i = 0; i < nsrv; i++) {
+      const c = s.ctl[i] || (s.ctl[i] = { rem: 0, b: null });
+      if (c.b && (c.rem -= dt) <= 0) {
+        const b = c.b; c.b = null; b.tr.chk++; s.checked++;
+        if (b.bad) { if (r() < det) s.nc++; else s.miss++; } else s.ok++;
+      }
+      if (!c.b && s.buf.length) { c.b = s.buf.shift(); c.rem = tc * (0.85 + 0.3 * r()); }
+    }
+    if (d) {
+      const fin = hoy ? d.chk >= d.nb : d.left <= 0;
+      if (fin) { s.tdock += s.t - d.t0; s.nleave++; s.dock = null; }
+    }
+  },
+  draw(g, s, p, W, H) {
+    const hoy = p.mode === 0, y = 200;
+    g.fillStyle = '#243040'; g.fillRect(20, y - 45, 110, 90); SL.text(g, 'MUELLE', 75, y - 50, '#8b9bb0', '11px system-ui', 'center');
+    if (s.dock) { g.fillStyle = '#4fc3f7'; g.fillRect(25, y - 30, 100, 60); SL.text(g, 'Camión #' + s.dock.id, 75, y - 6, '#000', '12px system-ui', 'center'); SL.text(g, s.dock.left + ' por bajar', 75, y + 14, '#000', '12px system-ui', 'center'); }
+    SL.text(g, 'Patio: ' + s.patio.length + ' camión(es) esperando', 20, y + 75, s.patio.length ? '#ef5350' : '#3ecf8e', '13px system-ui');
+    for (let i = 0; i < s.patio.length; i++) { g.fillStyle = '#ef5350'; g.fillRect(20 + i * 50, y + 85, 42, 22); }
+    if (hoy) {
+      SL.text(g, 'Bultos en piso (recuento manual)', 170, y - 60, '#ef5350', '13px system-ui');
+      for (let i = 0; i < s.buf.length; i++) { g.fillStyle = s.buf[i].bad ? '#f5b942' : '#c59b6d'; g.fillRect(170 + (i % 13) * 18, y - 45 + Math.floor(i / 13) * 18, 14, 14); }
+      [0, 1, 2].forEach((i) => { const c = s.ctl[i]; g.fillStyle = c && c.b ? '#3ecf8e' : '#2a3646'; g.beginPath(); g.arc(440 + i * 45, y + 10, 16, 0, 7); g.fill(); });
+    } else {
+      SL.belt(g, [[135, y], [450, y]], 22);
+      for (let i = 0; i < s.buf.length; i++) { g.fillStyle = s.buf[i].bad ? '#f5b942' : '#c59b6d'; g.fillRect(400 - i * 26, y - 7, 18, 14); }
+      g.fillStyle = s.ctl[0] && s.ctl[0].b ? '#3ecf8e' : '#2a3646'; g.fillRect(455, y - 28, 60, 56); SL.text(g, 'Control', 485, y - 2, '#fff', '11px system-ui', 'center'); SL.text(g, 'foto·sello', 485, y + 14, '#fff', '10px system-ui', 'center');
+    }
+    g.strokeStyle = '#2a3646'; g.lineWidth = 6; g.beginPath(); g.moveTo(520, y); g.lineTo(600, y); g.lineTo(600, y - 80); g.moveTo(600, y); g.lineTo(600, y + 80); g.stroke();
+    g.fillStyle = '#143a2a'; g.fillRect(630, y - 120, 140, 70); SL.text(g, 'Slot / picking: ' + s.ok, 700, y - 80, '#3ecf8e', '14px system-ui', 'center');
+    g.fillStyle = '#4a2424'; g.fillRect(630, y + 50, 140, 70); SL.text(g, 'No conforme: ' + s.nc, 700, y + 90, '#ef5350', '14px system-ui', 'center');
+  },
+  kpis(s, p) {
+    const hrs = Math.max(s.t, 1) / 3600;
+    return [
+      { label: 'Bultos chequeados/h', value: (s.checked / hrs).toFixed(0) },
+      { label: 'Tiempo de camión en muelle', value: s.nleave ? (s.tdock / s.nleave / 60).toFixed(1) + ' min' : '—' },
+      { label: 'Espera en patio', value: s.nw ? (s.twait / s.nw / 60).toFixed(1) + ' min' : '—' },
+      { label: 'No conformes detectados', value: s.nc },
+      { label: 'Diferencias de inventario', value: s.miss },
+      { label: 'Personas en recuento', value: p.mode === 0 ? 3 : 1 },
+      { label: 'Camiones despachados', value: s.nleave },
+    ];
+  },
+  series: (s) => ({ 'Camiones en patio': s.patio.length, 'Bultos por chequear': s.buf.length, 'Diferencias': s.miss }),
+});
+</script></body></html>

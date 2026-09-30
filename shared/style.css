@@ -24,3 +24,5 @@ td { padding:3px 0; border-bottom:1px solid var(--line); } td:last-child { text-
 .card { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:14px; display:block; color:var(--tx); }
 .card:hover { border-color:var(--ac); } .card small { color:var(--ac); text-transform:uppercase; letter-spacing:.06em; }
 .card h2 { margin:4px 0; font-size:16px; } .card p { margin:0; color:var(--mut); }
+blockquote { margin:8px 0 0; padding:6px 12px; border-left:3px solid var(--ac); color:var(--tx); font-style:italic; max-width:900px; }
+.obj { margin-top:6px; } select { grid-column:1 / 3; width:100%; background:#1c2633; color:var(--tx); border:1px solid var(--line); border-radius:4px; padding:4px; }

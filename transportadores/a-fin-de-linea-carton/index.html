@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="stylesheet" href="../../shared/style.css"></head>
+<body><div id="app"></div>
+<script src="../../shared/sim.js"></script>
+<script>
+// Fin de línea → pallet. Unidad: segundos. Hoy = mesa corta + 3 personas acarreando; Propuesto = recta + acumulación + 1 palletizador.
+const PX = 50, X0 = 120, SP = 0.5, V = 0.6, RW = 300;
+const rate = (a, t) => a.length / Math.min(Math.max(t, 30), RW) * 3600;
+SL.app({
+  title: 'Demo A · Fin de línea a pallet (cartón)',
+  desc: 'La máquina ya produce; el dinero se pierde entre la salida y el pallet. Si el palletizador se atrasa, la acumulación se llena y la máquina se detiene (luz roja).',
+  pitch: '"No le vamos a automatizar la corrugadora. Le quitamos las 3 personas que hoy son el tapón de una máquina que ya pagó."',
+  obj: '"Eso lo hace un montacargas." → El montacargas no saca al ritmo de la pegadora; la banda sí (compara fardos/h pallet).',
+  unit: 's', dt: 0.1, sample: 10, speeds: [1, 10, 60, 240],
+  params: [
+    { id: 'mode', label: 'Escenario', opts: ['Hoy: mesa corta + 3 personas', 'Propuesto: banda + 1 persona'], value: 0 },
+    { id: 'cyc', label: 'Ciclo de la máquina', min: 4, max: 8, step: 0.5, value: 5, unit: 's' },
+    { id: 'L', label: 'Largo de banda', min: 8, max: 12, step: 1, value: 10, unit: 'm' },
+    { id: 'acc', label: 'Zona de acumulación', min: 2, max: 3, step: 0.5, value: 2.5, unit: 'm' },
+    { id: 'tp', label: 'Paletizado base', min: 3, max: 8, step: 0.2, value: 4.6, unit: 's/fardo' },
+    { id: 'urg', label: 'Pedido', opts: ['Turno normal', 'Urgente: cambio de medida c/20 min'], value: 0 },
+  ],
+  init() { return { items: [], m: { rem: 1 }, pal: { busy: false, rem: 0, chg: 0 }, made: 0, pall: 0, marked: 0, fell: 0, tm: [], tpl: [], nextChg: 1200, mstop: 0 }; },
+  step(s, dt, p, r) {
+    const hoy = p.mode === 0, L = hoy ? 1.5 : p.L, acc = hoy ? 1.2 : p.acc, k = hoy ? 1.25 : 1;
+    if (p.urg && s.t >= s.nextChg) { s.nextChg += 1200; s.m.rem += 60; s.pal.chg = hoy ? 90 : 30; }
+    s.items.forEach((a, i) => { a.x = Math.min(a.x + V * dt, i ? s.items[i - 1].x - SP : L); });
+    if (s.m.rem > 0) s.m.rem -= dt;
+    if (s.m.rem <= 0) {
+      const last = s.items[s.items.length - 1], inAcc = s.items.filter((a) => a.x > L - acc).length;
+      if ((!last || last.x >= SP) && inAcc < Math.floor(acc / SP)) { s.items.push({ x: 0 }); s.made++; s.tm.push(s.t); s.m.rem = p.cyc * (0.92 + 0.16 * r()); }
+      else s.mstop += dt;
+    }
+    const pl = s.pal;
+    if (pl.chg > 0) pl.chg -= dt;
+    else if (pl.busy && (pl.rem -= dt) <= 0) { pl.busy = false; s.pall++; s.tpl.push(s.t); }
+    if (!pl.busy && pl.chg <= 0 && s.items.length && s.items[0].x >= L - 0.3) {
+      s.items.shift(); pl.busy = true; pl.rem = p.tp * k * (0.85 + 0.3 * r());
+      const u = r(); if (u < (hoy ? 0.008 : 0.001)) s.fell++; else if (u < (hoy ? 0.028 : 0.005)) s.marked++;
+    }
+    while (s.tm.length && s.tm[0] < s.t - RW) s.tm.shift();
+    while (s.tpl.length && s.tpl[0] < s.t - RW) s.tpl.shift();
+  },
+  draw(g, s, p, W, H) {
+    const hoy = p.mode === 0, L = hoy ? 1.5 : p.L, acc = hoy ? 1.2 : p.acc, y = 190;
+    const stopped = s.m.rem <= 0, xe = X0 + L * PX;
+    g.fillStyle = '#243040'; g.fillRect(20, y - 40, 90, 90); SL.text(g, 'Pegadora', 65, y + 4, '#e6edf3', '13px system-ui', 'center');
+    g.fillStyle = stopped ? '#ef5350' : '#3ecf8e'; g.beginPath(); g.arc(65, y - 54, 9, 0, 7); g.fill();
+    SL.text(g, stopped ? 'PARADA: sin desalojo' : 'produciendo', 65, y - 72, stopped ? '#ef5350' : '#3ecf8e', '12px system-ui', 'center');
+    SL.belt(g, [[X0, y], [xe, y]], 24);
+    g.fillStyle = 'rgba(245,185,66,.18)'; g.fillRect(xe - acc * PX, y - 12, acc * PX, 24);
+    SL.text(g, 'acumulación', xe - acc * PX / 2, y + 30, '#f5b942', '11px system-ui', 'center');
+    s.items.forEach((a) => { g.fillStyle = '#c59b6d'; g.fillRect(X0 + a.x * PX - 10, y - 8, 20, 16); });
+    g.fillStyle = '#7a5c3a'; const n = s.pal.busy ? 1 : 0; g.fillRect(xe + 15, y - 30, 70, 60); SL.text(g, 'PALLET', xe + 50, y + 4, '#fff', '12px system-ui', 'center');
+    const np = hoy ? 3 : 1;
+    for (let i = 0; i < np; i++) { g.fillStyle = s.pal.busy || hoy ? '#4fc3f7' : '#2a3646'; g.beginPath(); g.arc(xe + 40 + i * 26, y + 70, 10, 0, 7); g.fill(); }
+    SL.text(g, hoy ? '3 personas en acarreo' : '1 persona en pallet', xe + 40, y + 98, '#8b9bb0', '12px system-ui', 'center');
+    SL.text(g, `Fardos en acumulación: ${s.items.length}`, 20, H - 14);
+  },
+  kpis(s, p) {
+    const T = Math.max(s.t, 1);
+    return [
+      { label: 'Fardos/h máquina (últ. 5 min)', value: rate(s.tm, s.t).toFixed(0) },
+      { label: 'Fardos/h pallet (últ. 5 min)', value: rate(s.tpl, s.t).toFixed(0) },
+      { label: 'Potencial máquina', value: (3600 / p.cyc).toFixed(0) + ' /h' },
+      { label: 'Máquina parada por desalojo', value: (s.mstop / 60).toFixed(1) + ' min (' + ((100 * s.mstop) / T).toFixed(0) + ' %)' },
+      { label: 'Personas en acarreo', value: p.mode === 0 ? 3 : 1 },
+      { label: 'Cajas marcadas / caídas', value: s.marked + ' / ' + s.fell },
+      { label: 'Pallet acumulado', value: s.pall + ' fardos' },
+    ];
+  },
+  series: (s) => ({ 'Máquina /h': rate(s.tm, s.t), 'Pallet /h': rate(s.tpl, s.t), 'Acumulados': s.items.length }),
+});
+</script></body></html>

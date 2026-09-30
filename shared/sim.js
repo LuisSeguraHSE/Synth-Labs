@@ -6,7 +6,7 @@
  */
 (function () {
   const SL = (window.SL = {});
-  const W = 800, H = 450, CH = 200, MAXPTS = 400, SPEEDS = [1, 5, 20, 60];
+  const W = 800, H = 450, CH = 200, MAXPTS = 400, DEF_SPEEDS = [1, 5, 20, 60];
 
   SL.rng = function (seed) {
     let s = seed >>> 0 || 1;
@@ -23,12 +23,26 @@
   SL.lerp = (a, b, t) => a + (b - a) * t;
   SL.color = (v) => (v > 0.66 ? '#3ecf8e' : v > 0.33 ? '#f5b942' : '#ef5350'); // v en 0..1
 
+  // Polilínea: SL.along(pts,d) -> {x,y,a} a distancia d (px) ; SL.len(pts) ; SL.belt(g,pts,w)
+  SL.len = (pts) => pts.reduce((a, q, i) => (i ? a + Math.hypot(q[0] - pts[i - 1][0], q[1] - pts[i - 1][1]) : 0), 0);
+  SL.along = (pts, d) => {
+    for (let i = 1; i < pts.length; i++) {
+      const a = pts[i - 1], b = pts[i], l = Math.hypot(b[0] - a[0], b[1] - a[1]);
+      if (d <= l || i === pts.length - 1) { const f = SL.clamp(d / l, 0, 1); return { x: SL.lerp(a[0], b[0], f), y: SL.lerp(a[1], b[1], f), a: Math.atan2(b[1] - a[1], b[0] - a[0]) }; }
+      d -= l;
+    }
+  };
+  SL.belt = (g, pts, w, col) => {
+    g.lineJoin = 'round'; g.lineCap = 'butt'; g.strokeStyle = col || '#2a3646'; g.lineWidth = w || 22;
+    g.beginPath(); pts.forEach((q, i) => (i ? g.lineTo(q[0], q[1]) : g.moveTo(q[0], q[1]))); g.stroke();
+  };
+  SL.text = (g, t, x, y, col, font, al) => { g.fillStyle = col || '#8b9bb0'; g.font = font || '13px system-ui'; g.textAlign = al || 'left'; g.fillText(t, x, y); g.textAlign = 'left'; };
   SL.app = function (cfg) {
-    const dt = cfg.dt || 0.1, sample = cfg.sample || 1;
+    const dt = cfg.dt || 0.1, sample = cfg.sample || 1, SPEEDS = cfg.speeds || DEF_SPEEDS;
     const root = document.getElementById('app');
     document.title = cfg.title + ' · Synth-Labs';
     root.innerHTML = `
-      <header><a href="../../index.html">← Synth-Labs</a><h1>${cfg.title}</h1><p>${cfg.desc || ''}</p></header>
+      <header><a href="../../index.html">← Synth-Labs</a><h1>${cfg.title}</h1><p>${cfg.desc || ''}</p>${cfg.pitch ? `<blockquote>${cfg.pitch}</blockquote>` : ''}${cfg.obj ? `<p class="obj"><b>Objeción:</b> ${cfg.obj}</p>` : ''}</header>
       <main>
         <section class="view">
           <canvas id="c" width="${W}" height="${H}"></canvas>
@@ -55,6 +69,13 @@
     cfg.params.forEach((q) => {
       p[q.id] = q.value;
       const row = document.createElement('label');
+      if (q.opts) {
+        row.innerHTML = `<span>${q.label}</span><span></span><select>${q.opts.map((o, i) => `<option value="${i}"${i === q.value ? ' selected' : ''}>${o}</option>`).join('')}</select>`;
+        const sel = row.querySelector('select');
+        sel.onchange = () => { p[q.id] = +sel.value; if (q.reset !== false) reset(); };
+        box.appendChild(row);
+        return;
+      }
       row.innerHTML = `<span>${q.label}</span><output>${q.value} ${q.unit || ''}</output>
         <input type="range" min="${q.min}" max="${q.max}" step="${q.step}" value="${q.value}">`;
       const inp = row.querySelector('input'), out = row.querySelector('output');

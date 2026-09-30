@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="stylesheet" href="../../shared/style.css"></head>
+<body><div id="app"></div>
+<script src="../../shared/sim.js"></script>
+<script>
+// Producto grande: colchón/rollo/panel. Unidad: segundos desde las 07:00. Fatiga en traslado manual.
+const hh = (t) => { const h = 7 + t / 3600; return String(Math.floor(h)).padStart(2, '0') + ':' + String(Math.floor((h % 1) * 60)).padStart(2, '0'); };
+const SPC = 2.4, VB = 0.3;
+const rate = (a, t) => a.filter((x) => x > t - 3600).length;
+SL.app({
+  title: 'Demo F · Producto grande (colchón, rollo, panel)',
+  desc: 'Pieza de 1.5–2 m y 15–40 kg. "Hoy": dos personas la cargan 20 m y la fatiga baja el ritmo a las 16:00. "Propuesto": transportador de listones/banda ancha con giro 90° lento hacia mesa de empaque.',
+  pitch: '"Su cuello no es la resortera; es mover el colchón terminado sin matar a la gente a las 4 de la tarde."',
+  obj: '"Es muy custom." → El módulo es estándar (tramos de 12 m); lo que se personaliza es el ancho, no el software.',
+  unit: 's', dt: 0.5, sample: 60, speeds: [1, 20, 120, 480],
+  clock: (t) => 'Turno ' + hh(t),
+  params: [
+    { id: 'mode', label: 'Escenario', opts: ['Hoy: 2 personas cargan', 'Propuesto: transportador de listones'], value: 0 },
+    { id: 'rate', label: 'Producción terminada', min: 30, max: 75, step: 5, value: 55, unit: 'pzas/h' },
+    { id: 'w', label: 'Peso de la pieza', min: 15, max: 40, step: 1, value: 28, unit: 'kg' },
+    { id: 'len', label: 'Largo de la pieza', min: 1.5, max: 2, step: 0.1, value: 1.9, unit: 'm' },
+    { id: 'dist', label: 'Distancia a empaque', min: 10, max: 30, step: 1, value: 20, unit: 'm' },
+  ],
+  init() { return { q: 0, team: { rem: 0, tot: 1, on: false }, belt: [], pack: { q: 0, rem: 0, busy: false }, done: [], n: 0, floor: 0, at1h: null, carried: 0 }; },
+  step(s, dt, p, r) {
+    const hoy = p.mode === 0, h = s.t / 3600, f = 1 + 0.0045 * (p.w / 25) * Math.pow(h, 1.8);
+    if (r() < (p.rate / 3600) * dt) s.q++;
+    if (hoy) {
+      const tm = s.team;
+      if (tm.on && (tm.rem -= dt) <= 0) { tm.on = false; s.pack.q++; if (r() < 0.03 * f) s.floor++; }
+      if (!tm.on && s.q > 0) { s.q--; tm.on = true; tm.tot = tm.rem = ((2 * p.dist) / 0.9 + 18) * f * (0.92 + 0.16 * r()); s.carried++; }
+    } else {
+      s.belt.forEach((b) => (b.d += VB * dt));
+      if (s.q > 0 && (!s.belt.length || s.belt[s.belt.length - 1].d >= SPC)) { s.q--; s.belt.push({ d: 0 }); if (r() < 0.002) s.floor++; }
+      while (s.belt.length && s.belt[0].d >= p.dist) { s.belt.shift(); s.pack.q++; }
+    }
+    const pk = s.pack;
+    if (pk.busy && (pk.rem -= dt) <= 0) { pk.busy = false; s.n++; s.done.push(s.t); }
+    if (!pk.busy && pk.q > 0) { pk.q--; pk.busy = true; pk.rem = 32 * (1 + 0.01 * h) * (0.9 + 0.2 * r()); }
+    if (s.at1h === null && s.t >= 3600) s.at1h = s.n;
+    while (s.done.length && s.done[0] < s.t - 3600) s.done.shift();
+  },
+  draw(g, s, p, W, H) {
+    const hoy = p.mode === 0, x0 = 90, x1 = 640, y = 210, PXM = (x1 - x0) / p.dist, pl = p.len * PXM;
+    g.fillStyle = '#243040'; g.fillRect(20, y - 40, 65, 80); SL.text(g, 'Prod.', 52, y + 4, '#e6edf3', '12px system-ui', 'center');
+    g.fillStyle = '#243040'; g.fillRect(x1 + 5, y - 40, 120, 80); SL.text(g, 'Empaque', x1 + 65, y - 15, '#e6edf3', '13px system-ui', 'center');
+    g.fillStyle = s.pack.busy ? '#3ecf8e' : '#2a3646'; g.beginPath(); g.arc(x1 + 65, y + 15, 14, 0, 7); g.fill();
+    const pc = (x, col) => { g.fillStyle = col || '#d7c9a7'; g.fillRect(x, y - 9, Math.min(pl, 38), 18); };
+    if (hoy) {
+      g.strokeStyle = '#2a3646'; g.setLineDash([6, 6]); g.lineWidth = 2; g.beginPath(); g.moveTo(x0, y); g.lineTo(x1, y); g.stroke(); g.setLineDash([]);
+      for (let i = 0; i < Math.min(s.q, 12); i++) pc(28 + (i % 4) * 12, '#ef5350');
+      const tm = s.team;
+      if (tm.on) { const f = 1 - tm.rem / tm.tot, d = f < 0.5 ? f * 2 : 2 - f * 2, x = x0 + d * (x1 - x0); if (f < 0.5) pc(x - 19); for (const o of [-14, 14]) { g.fillStyle = '#4fc3f7'; g.beginPath(); g.arc(x, y + o * 1.3, 8, 0, 7); g.fill(); } }
+      SL.text(g, 'Traslado manual: 2 personas · ida y vuelta', x0, y - 60, '#ef5350', '13px system-ui');
+    } else {
+      SL.belt(g, [[x0, y], [x1, y]], 26); for (let x = x0; x < x1; x += 10) { g.strokeStyle = '#1c2633'; g.lineWidth = 1; g.beginPath(); g.moveTo(x, y - 13); g.lineTo(x, y + 13); g.stroke(); }
+      s.belt.forEach((b) => pc(x0 + b.d * PXM - Math.min(pl, 38) / 2));
+      g.strokeStyle = '#f5b942'; g.lineWidth = 3; g.beginPath(); g.arc(x1 - 10, y + 70, 70, -1.2, -0.3); g.stroke();
+      SL.text(g, 'Listones/banda ancha · giro 90° lento · 0 personas en traslado', x0, y - 60, '#3ecf8e', '13px system-ui');
+    }
+    SL.text(g, `Piezas en espera en producción: ${s.q} · en mesa de empaque: ${s.pack.q}`, 20, H - 14);
+  },
+  kpis(s, p) {
+    const h = s.t / 3600, f = 1 + 0.0045 * (p.w / 25) * Math.pow(h, 1.8), lastH = rate(s.done, s.t);
+    return [
+      { label: 'Unidades/h — primera hora', value: s.at1h === null ? '—' : s.at1h },
+      { label: 'Unidades/h — última hora', value: s.t < 3600 ? '—' : lastH },
+      { label: 'Factor de fatiga (traslado)', value: p.mode === 0 ? '×' + f.toFixed(2) : '×1.00' },
+      { label: 'Personas por traslado', value: p.mode === 0 ? 2 : 0 },
+      { label: 'Pasillo ocupado', value: (p.mode === 0 ? p.dist * 2 + s.q * 2.2 : p.dist * 1.1).toFixed(0) + ' m²' },
+      { label: 'Piezas que tocan el piso', value: s.floor },
+      { label: 'Piezas empacadas', value: s.n },
+    ];
+  },
+  series: (s) => ({ 'Empacadas': s.n, 'En espera': s.q, 'Última hora': rate(s.done, s.t) }),
+});
+</script></body></html>

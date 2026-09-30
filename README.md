@@ -25,6 +25,9 @@ shared/style.css                Estilos comunes
 | Mantenimiento | `mantenimiento/estrategia-mantenimiento` | ¿Qué umbral preventivo minimiza el costo total? |
 | Agua/Automatización | `agua/control-nivel-pid` | ¿Qué sintonía PID rechaza la perturbación de demanda? |
 
+## Demos comerciales de transportadores
+Ver `transportadores/README.md` (8 demos A–H, escenario Hoy vs Propuesto).
+
 ## Agregar una simulación
 1. Crear `<industria>/<nombre>/index.html` copiando una existente.
 2. Definir `params`, `init`, `step(s,dt,p,rng)`, `draw`, `kpis`, `series` en `SL.app({...})`.
