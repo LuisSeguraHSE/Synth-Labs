@@ -18,8 +18,21 @@ app.load('normal');
 window.coldRoom = app; // acceso de depuración desde la consola
 
 let last = performance.now(), acc = 0;
+// Presupuesto de rendimiento: si en calidad Alta el equipo no sostiene ~25 FPS, baja a Media (una vez).
+const perf = { n: 0, sum: 0, done: false };
+function watchPerf(dt) {
+  if (perf.done || app.userQuality || document.hidden) return;
+  if (++perf.n <= 30) return; // ignora el arranque
+  perf.sum += dt;
+  if (perf.n >= 150) {
+    perf.done = true;
+    const fps = (perf.n - 30) / perf.sum;
+    if (fps < 25 && (app.quality ?? 'high') === 'high') ui.setQuality('medium', `Ajustada a Media: este equipo dibujaba ${fps.toFixed(0)} FPS en Alta. Puedes volver a Alta en la barra de vista.`);
+  }
+}
 function frame(now) {
-  const dtR = Math.min(0.1, (now - last) / 1000); last = now;
+  const raw = (now - last) / 1000, dtR = Math.min(0.1, raw); last = now;
+  watchPerf(raw);
   if (app.playing) {
     acc += dtR * app.speed;
     let n = 0;

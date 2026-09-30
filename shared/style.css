@@ -1,28 +1,28 @@
-:root { --bg:#0b0f14; --panel:#141b24; --line:#243040; --tx:#e6edf3; --mut:#8b9bb0; --ac:#4fc3f7; }
+@import url('controls.css');
+:root { --bg:#0a0e13; --panel:#121922; --line:#223041; --tx:#e6edf3; --mut:#8b9bb0; --ac:#38bdf8; }
 * { box-sizing: border-box; }
 body { margin:0; background:var(--bg); color:var(--tx); font:14px/1.45 system-ui,Segoe UI,Roboto,sans-serif; }
 a { color:var(--ac); text-decoration:none; }
-header { padding:14px 20px; border-bottom:1px solid var(--line); }
+header { padding:14px 20px; border-bottom:1px solid var(--line); background:linear-gradient(180deg,#0f151c,var(--bg)); }
 header h1 { margin:4px 0; font-size:20px; }
 header p { margin:0; color:var(--mut); max-width:900px; }
 main { display:grid; grid-template-columns:minmax(0,1fr) 300px; gap:16px; padding:16px 20px; }
 @media (max-width:980px) { main { grid-template-columns:1fr; } }
 canvas { width:100%; height:auto; display:block; background:#10151c; border:1px solid var(--line); border-radius:6px; margin-bottom:10px; }
-aside { background:var(--panel); border:1px solid var(--line); border-radius:6px; padding:12px; align-self:start; }
-aside h3 { margin:14px 0 6px; font-size:12px; text-transform:uppercase; letter-spacing:.06em; color:var(--mut); }
-.ctl { display:flex; flex-wrap:wrap; gap:6px; }
-button { background:#1c2633; color:var(--tx); border:1px solid var(--line); border-radius:4px; padding:5px 9px; cursor:pointer; }
-button:hover { border-color:var(--ac); } button.on { background:var(--ac); color:#04202e; }
-.clock { margin-top:10px; font:600 16px ui-monospace,monospace; color:var(--ac); }
-label { display:grid; grid-template-columns:1fr auto; margin-bottom:8px; }
+aside { background:linear-gradient(180deg,#141c26,var(--panel)); border:1px solid var(--line); border-radius:8px; padding:14px; align-self:start; box-shadow:0 10px 30px -18px rgba(0,0,0,.8); }
+aside h3 { margin:16px 0 8px; font-size:11px; text-transform:uppercase; letter-spacing:.09em; color:var(--mut); display:flex; align-items:center; gap:8px; }
+aside h3::after { content:''; flex:1; height:1px; background:linear-gradient(90deg,var(--line),transparent); }
+.ctl { display:flex; flex-wrap:wrap; gap:6px; align-items:center; }
+button { font-size:13px; }
+.clock { margin-top:12px; font:600 16px var(--sl-mono); color:#9fe3ff; background:#060d14; border:1px solid #1b2937; border-radius:4px; padding:4px 10px; box-shadow:inset 0 1px 3px rgba(0,0,0,.7); }
+label { display:grid; grid-template-columns:1fr auto; align-items:center; gap:4px 8px; margin-bottom:10px; font-size:13px; }
 label input { grid-column:1 / 3; width:100%; }
-label output { color:var(--mut); font-variant-numeric:tabular-nums; }
 table { width:100%; border-collapse:collapse; }
 td { padding:3px 0; border-bottom:1px solid var(--line); } td:last-child { text-align:right; font-variant-numeric:tabular-nums; font-weight:600; }
 /* portal */
 .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(260px,1fr)); gap:14px; padding:16px 20px; }
-.card { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:14px; display:block; color:var(--tx); }
-.card:hover { border-color:var(--ac); } .card small { color:var(--ac); text-transform:uppercase; letter-spacing:.06em; }
+.card { background:linear-gradient(180deg,#151e29,var(--panel)); border:1px solid var(--line); border-radius:8px; padding:14px; display:block; color:var(--tx); transition:border-color .15s, transform .15s, box-shadow .15s; }
+.card:hover { border-color:rgba(56,189,248,.6); transform:translateY(-2px); box-shadow:0 10px 24px -14px rgba(56,189,248,.55); } .card small { color:var(--ac); text-transform:uppercase; letter-spacing:.06em; }
 .card h2 { margin:4px 0; font-size:16px; } .card p { margin:0; color:var(--mut); }
 blockquote { margin:8px 0 0; padding:6px 12px; border-left:3px solid var(--ac); color:var(--tx); font-style:italic; max-width:900px; }
-.obj { margin-top:6px; } select { grid-column:1 / 3; width:100%; background:#1c2633; color:var(--tx); border:1px solid var(--line); border-radius:4px; padding:4px; }
+.obj { margin-top:6px; } label select { grid-column:1 / 3; width:100%; }

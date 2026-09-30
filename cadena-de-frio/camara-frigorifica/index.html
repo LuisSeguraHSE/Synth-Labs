@@ -7,7 +7,7 @@
 <link rel="icon" href="data:,">
 <link rel="stylesheet" href="css/app.css">
 <script type="importmap">
-{ "imports": { "three": "../../shared/vendor/three/three.module.min.js", "three/addons/controls/OrbitControls.js": "../../shared/vendor/three/OrbitControls.js" } }
+{ "imports": { "three": "../../shared/vendor/three/three.module.min.js", "three/addons/controls/OrbitControls.js": "../../shared/vendor/three/OrbitControls.js", "three/addons/environments/RoomEnvironment.js": "../../shared/vendor/three/RoomEnvironment.js" } }
 </script>
 </head>
 <body class="mode-eng">
@@ -90,7 +90,7 @@
       <p id="capLock" class="lock" hidden>🔒 Sistema apagado: no se puede ajustar la capacidad.</p>
       <label class="sw"><input type="checkbox" id="curtain"><span>Cortina de aire en puerta</span></label>
       <div data-level="sim">
-        <label class="sw"><input type="checkbox" id="evapFail"><span>Falla de evaporador</span></label>
+        <label class="sw"><input type="checkbox" id="evapFail" class="danger"><span>Falla de evaporador</span></label>
         <button id="btnDefrost" class="wide">Desescarche ahora</button>
       </div>
     </section>
@@ -119,11 +119,12 @@
       <div class="seg" id="viewSeg"><button data-v="3d" class="on">3D</button><button data-v="planta">PLANTA</button><button data-v="seccion">SECCIÓN</button></div>
       <div class="seg" id="levelSeg" hidden><button data-v="0">Nivel bajo</button><button data-v="1" class="on">Nivel alto</button></div>
       <div class="layers">
-        <label><input type="checkbox" data-layer="heat" checked> Mapa térmico</label>
-        <label><input type="checkbox" data-layer="flow"> Flujo de aire</label>
-        <label><input type="checkbox" data-layer="sensors"> Sensores</label>
-        <label><input type="checkbox" data-layer="pallets" checked> Pallets</label>
+        <label class="chip"><input type="checkbox" data-layer="heat" checked> Mapa térmico</label>
+        <label class="chip"><input type="checkbox" data-layer="flow"> Flujo de aire</label>
+        <label class="chip"><input type="checkbox" data-layer="sensors"> Sensores</label>
+        <label class="chip"><input type="checkbox" data-layer="pallets" checked> Pallets</label>
       </div>
+      <div class="seg small" id="qualSeg" title="Calidad gráfica: Alta = sombras, reflejos y detalle completo"><button data-v="high" class="on">Alta</button><button data-v="medium">Media</button></div>
     </div>
     <div id="scene" class="scene">
       <div id="tip3d" class="tip" hidden></div>
@@ -288,6 +289,7 @@
   </form>
 </dialog>
 
+<script src="../../shared/controls.js"></script>
 <script type="module" src="js/main.js"></script>
 </body>
 </html>

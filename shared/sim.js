@@ -32,9 +32,19 @@
       d -= l;
     }
   };
+  // Transportador: bastidor, guías laterales, banda y rodillos (líneas finas < 10 px se dibujan simples).
   SL.belt = (g, pts, w, col) => {
-    g.lineJoin = 'round'; g.lineCap = 'butt'; g.strokeStyle = col || '#2a3646'; g.lineWidth = w || 22;
-    g.beginPath(); pts.forEach((q, i) => (i ? g.lineTo(q[0], q[1]) : g.moveTo(q[0], q[1]))); g.stroke();
+    w = w || 22;
+    const path = () => { g.beginPath(); pts.forEach((q, i) => (i ? g.lineTo(q[0], q[1]) : g.moveTo(q[0], q[1]))); };
+    g.save(); g.lineJoin = 'round'; g.lineCap = 'butt';
+    if (w < 10) { path(); g.strokeStyle = col || '#2a3646'; g.lineWidth = w; g.stroke(); g.restore(); return; }
+    path(); g.strokeStyle = '#070b10'; g.lineWidth = w + 7; g.stroke();
+    g.shadowColor = 'transparent';
+    path(); g.strokeStyle = '#6b7d93'; g.lineWidth = w + 3; g.stroke();
+    path(); g.strokeStyle = col || '#2a3646'; g.lineWidth = w - 1; g.stroke();
+    path(); g.setLineDash([2, 8]); g.strokeStyle = 'rgba(0,0,0,.4)'; g.lineWidth = w - 3; g.stroke();
+    path(); g.setLineDash([]); g.strokeStyle = 'rgba(255,255,255,.06)'; g.lineWidth = Math.max(2, w * 0.25); g.stroke();
+    g.restore();
   };
   SL.text = (g, t, x, y, col, font, al) => { g.fillStyle = col || '#8b9bb0'; g.font = font || '13px system-ui'; g.textAlign = al || 'left'; g.fillText(t, x, y); g.textAlign = 'left'; };
   SL.app = function (cfg) {
@@ -48,10 +58,10 @@
           <canvas id="c" width="${W}" height="${H}"></canvas>
           <canvas id="ch" width="${W}" height="${CH}"></canvas>
         </section>
-        <aside>
+        <aside class="panel">
           <div class="ctl">
             <button id="play">⏸ Pausa</button><button id="reset">↺ Reiniciar</button>
-            <span id="spd"></span>
+            <span id="spd" class="seg"></span>
           </div>
           <div id="clock" class="clock"></div>
           <h3>Parámetros</h3><div id="params"></div>
@@ -59,8 +69,24 @@
         </aside>
       </main>`;
 
-    const c = root.querySelector('#c').getContext('2d');
-    const ch = root.querySelector('#ch').getContext('2d');
+    // Lienzos nítidos en pantallas de alta densidad: se dibuja en unidades lógicas (800 × 450).
+    const dpr = Math.min(2, window.devicePixelRatio || 1), cv = root.querySelector('#c'), cvh = root.querySelector('#ch');
+    cv.width = W * dpr; cv.height = H * dpr; cvh.width = W * dpr; cvh.height = CH * dpr;
+    const c = cv.getContext('2d'), ch = cvh.getContext('2d');
+    // Fondo de plano técnico (retícula + viñeta), pre-renderizado una vez.
+    const bg = document.createElement('canvas'); bg.width = W * dpr; bg.height = H * dpr;
+    (() => {
+      const g = bg.getContext('2d'); g.scale(dpr, dpr);
+      g.fillStyle = '#0e141b'; g.fillRect(0, 0, W, H);
+      for (const [step, a] of [[25, 0.045], [100, 0.09]]) {
+        g.strokeStyle = `rgba(56,189,248,${a})`; g.lineWidth = 1; g.beginPath();
+        for (let x = 0; x <= W; x += step) { g.moveTo(x + 0.5, 0); g.lineTo(x + 0.5, H); }
+        for (let y = 0; y <= H; y += step) { g.moveTo(0, y + 0.5); g.lineTo(W, y + 0.5); }
+        g.stroke();
+      }
+      const v = g.createRadialGradient(W / 2, H / 2, H * 0.3, W / 2, H / 2, W * 0.7);
+      v.addColorStop(0, 'rgba(0,0,0,0)'); v.addColorStop(1, 'rgba(0,0,0,.45)'); g.fillStyle = v; g.fillRect(0, 0, W, H);
+    })();
     const p = {};
     let state, rng, hist, running = true, speed = 1, acc = 0, last = 0, nextSample = 0;
 
@@ -95,9 +121,11 @@
     });
     const mark = () => [...spd.children].forEach((b, i) => b.classList.toggle('on', SPEEDS[i] === speed));
     mark();
+    window.SLControls?.paintAll(root);
     root.querySelector('#play').onclick = (e) => {
       running = !running;
       e.target.textContent = running ? '⏸ Pausa' : '▶ Continuar';
+      e.target.classList.toggle('accent', !running);
     };
     root.querySelector('#reset').onclick = reset;
 
@@ -111,6 +139,7 @@
     // --- gráfico de tendencias (cada serie normalizada a su propio máximo)
     const PAL = ['#4fc3f7', '#f5b942', '#3ecf8e', '#ef5350', '#ba68c8'];
     function drawChart(s) {
+      ch.setTransform(dpr, 0, 0, dpr, 0, 0);
       ch.clearRect(0, 0, W, CH);
       ch.fillStyle = '#10151c'; ch.fillRect(0, 0, W, CH);
       ch.strokeStyle = '#243040'; ch.lineWidth = 1;
@@ -149,8 +178,11 @@
           }
         }
       }
-      c.clearRect(0, 0, W, H);
+      c.setTransform(1, 0, 0, 1, 0, 0); c.drawImage(bg, 0, 0);
+      c.setTransform(dpr, 0, 0, dpr, 0, 0);
+      c.save(); c.shadowColor = 'rgba(0,0,0,.45)'; c.shadowBlur = 5; c.shadowOffsetY = 2; // profundidad sutil
       cfg.draw(c, state, p, W, H);
+      c.restore();
       if (cfg.series) drawChart(state);
       clk.textContent = cfg.clock ? cfg.clock(state.t || 0) : `t = ${(state.t || 0).toFixed(1)} ${cfg.unit || 's'}`;
       kp.innerHTML = cfg.kpis(state, p).map((k) => `<tr><td>${k.label}</td><td>${k.value}</td></tr>`).join('');

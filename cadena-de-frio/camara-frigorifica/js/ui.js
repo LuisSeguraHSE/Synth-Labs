@@ -41,7 +41,7 @@ export function initUI(app) {
   SPEEDS.forEach((v) => { const b = document.createElement('button'); b.textContent = '×' + v; b.dataset.v = v; $('speeds').appendChild(b); });
   const markSpeed = () => { [...$('speeds').children].forEach((b) => b.classList.toggle('on', +b.dataset.v === app.speed)); $('speedLbl').textContent = app.playing ? `×${app.speed}` : 'pausa'; };
   $('speeds').onclick = (e) => { const b = e.target.closest('button'); if (b) { app.speed = +b.dataset.v; app.playing = true; $('btnPlay').textContent = '⏸'; markSpeed(); } };
-  $('btnPlay').onclick = () => { app.playing = !app.playing; $('btnPlay').textContent = app.playing ? '⏸' : '▶'; markSpeed(); };
+  $('btnPlay').onclick = () => { app.playing = !app.playing; $('btnPlay').textContent = app.playing ? '⏸' : '▶'; $('btnPlay').classList.toggle('accent', !app.playing); markSpeed(); };
   $('btnStep10').onclick = () => { sim().advance(600); refresh(true); };
   $('btnReset').onclick = () => app.load(app.scenario, { ...P() });
   $('modes').onclick = (e) => {
@@ -134,6 +134,12 @@ export function initUI(app) {
     app.scene.setView(b.dataset.v); [...$('viewSeg').children].forEach((x) => x.classList.toggle('on', x === b));
     $('levelSeg').hidden = b.dataset.v !== 'planta';
   };
+  function setQuality(q, why) {
+    app.scene.setQuality(q); app.quality = q;
+    [...$('qualSeg').children].forEach((x) => x.classList.toggle('on', x.dataset.v === q));
+    if (why) { $('hints').innerHTML = `<b>Calidad gráfica</b><div>${why}</div>`; $('hints').hidden = false; clearTimeout(ui.hintTimer); ui.hintTimer = setTimeout(() => ($('hints').hidden = true), 7000); }
+  }
+  $('qualSeg').onclick = (e) => { const b = e.target.closest('button'); if (!b) return; app.userQuality = true; setQuality(b.dataset.v); };
   $('levelSeg').onclick = (e) => { const b = e.target.closest('button'); if (!b) return; app.scene.setLevel(+b.dataset.v); [...$('levelSeg').children].forEach((x) => x.classList.toggle('on', x === b)); };
   document.querySelectorAll('[data-layer]').forEach((c) => (c.onchange = () => app.scene.setLayers({ [c.dataset.layer]: c.checked })));
   $('winSeg').onclick = (e) => { const b = e.target.closest('button'); if (!b) return; app.charts.setWindow(+b.dataset.v); [...$('winSeg').children].forEach((x) => x.classList.toggle('on', x === b)); refresh(true); };
@@ -176,6 +182,7 @@ export function initUI(app) {
     $('scenario').value = app.scenario; $('scDesc').textContent = SCENARIOS[app.scenario].desc;
     ['sp', 'fan', 'hyst', 'capAvail', 'tExt', 'rhExt', 'Kp', 'Ki', 'Kd'].forEach((k) => (ui.committed[k] = p[k]));
     fanNote(); ladder(); legend();
+    window.SLControls?.paintAll();
   }
 
   function fanNote() {
@@ -224,6 +231,7 @@ export function initUI(app) {
       const o = st.evapOut;
       return `<b>EVAPORADOR EV-01</b><div><span class="k">Cooling</span>${kW(o.Q)}</div><div><span class="k">Fan</span>${p.fan} %${p.evapFail ? ' ⚠' : ''}</div><div><span class="k">Air outlet</span>${o.Tsup.toFixed(1)} °C</div>`;
     }
+    if (sel.kind === 'cond') return `<b>UNIDAD CONDENSADORA CU-01</b><div><span class="k">Compresor</span>${st.ctrl.on ? (st.ctrl.u * 100).toFixed(0) + ' %' : 'detenido'}</div><div><span class="k">Potencia</span>${kW(st.elec.comp)}</div><div><span class="k">COP</span>${st.evapOut.Q > 0 ? st.evapOut.cop.toFixed(2) : '—'}</div>`;
     if (sel.kind === 'door') return `<b>PUERTA P-01</b><div><span class="k">Estado</span>${st.door.cmd ? 'ABIERTA' : 'cerrada'}</div><div><span class="k">Carga</span>${kW(st.door.Q)}</div><div><span class="k">Cortina</span>${p.curtain ? 'sí' : 'no'}</div>`;
     if (sel.kind === 'zone') {
       const z = R.zones[sel.id];
@@ -257,6 +265,10 @@ export function initUI(app) {
       const o = st.evapOut, a = st.air;
       title = 'Evaporador EV-01';
       body = kv([['Capacidad entregada', kW(o.Q)], ['— sensible / latente', `${kW(o.Qs)} / ${kW(o.Qlat)}`], ['Capacidad compresor', kW(o.Qcomp)], ['Límite por aire', kW(o.Qair)], ['Ventiladores', `${p.fan} % (efectivo ${(a.fanFrac * 100).toFixed(0)} %)`], ['Caudal', `${a.Vdot.toFixed(2)} m³/s`], ['Aire de salida', `${o.Tsup.toFixed(1)} °C`], ['Aire de retorno', `${st.kpi.Tret.toFixed(1)} °C`], ['T evaporación', `${o.Tevap.toFixed(1)} °C`], ['COP', o.cop.toFixed(2)], ['Potencia compresor', kW(st.elec.comp)], ['Escarcha', `${st.evap.frost.toFixed(0)} kg`], ['Próximo desescarche', p.defrostEvery > 0 ? clock(st.evap.nextDefrost) : 'desactivado'], ['Estado', p.evapFail ? '⚠ FALLA' : st.evap.defrostLeft > 0 ? '❄ desescarche' : 'normal']]);
+    } else if (sel.kind === 'cond') {
+      const o = st.evapOut;
+      title = 'Unidad condensadora CU-01';
+      body = kv([['Estado', !p.refrigOn ? '⏻ sistema apagado' : st.evap.defrostLeft > 0 ? '❄ detenida por desescarche' : st.ctrl.on ? 'en marcha' : 'en espera'], ['Carga del compresor', `${(st.ctrl.u * 100).toFixed(0)} %`], ['Control', p.control === 'pid' ? `PID ${p.pidPreset}` : `ON/OFF ±${p.hyst} °C`], ['Capacidad entregada', kW(o.Q)], ['Capacidad disponible', kW(o.avail)], ['Potencia compresor', kW(st.elec.comp)], ['COP', o.Q > 0 ? o.cop.toFixed(2) : '—'], ['T evaporación', `${o.Tevap.toFixed(1)} °C`], ['T condensación (aprox.)', `${(p.tExt + 10).toFixed(0)} °C`], ['Arranques', st.ctrl.starts], ['Energía compresor', `${(st.energy.compJ / 3.6e6).toFixed(1)} kWh`]]);
     } else if (sel.kind === 'door') {
       const d = st.door;
       title = 'Puerta P-01';
@@ -355,8 +367,8 @@ export function initUI(app) {
     if (d.cmd) $('doorBanner').innerHTML = `<div><small>Puerta abierta</small><b>${fmtDur(st.t - d.openedAt)}</b></div><div><small>Carga adicional</small><b>+${(d.Q / 1000).toFixed(1)} kW</b></div><div><small>Energía adicional</small><b>+${(d.elecJ / 3.6e6).toFixed(2)} kWh</b></div><div><small>HR</small><b>${st.kpi.rh.toFixed(0)} %</b></div>`;
     // Ingreso
     const g = st.ingress, free = app.sim.freeSlots();
-    $('btnIngress').disabled = !!g || free <= 0;
-    $('ingressInfo').textContent = g ? `Ingresando lote ${g.batch.id}: ${g.batch.n - g.left - (g.trip ? 1 : 0)}/${g.batch.n} en cámara · montacargas en ruta` : free <= 0 ? 'Cámara llena.' : `${free} posiciones libres.`;
+    $('btnIngress').disabled = !!g || free <= 0; $('btnIngress').classList.toggle('run', !!g);
+    $('ingressInfo').textContent = g ? `Ingresando lote ${g.batch.id}: ${g.batch.n - g.left}/${g.batch.n} en cámara · montacargas en ruta` : free <= 0 ? 'Cámara llena.' : `${free} posiciones libres.`;
     // Bloqueos por contexto
     $('capAvail').disabled = !p.refrigOn; $('capLock').hidden = p.refrigOn;
     $('fan').disabled = st.evap.defrostLeft > 0;
@@ -481,7 +493,7 @@ export function initUI(app) {
   }
 
   return {
-    refresh,
+    refresh, setQuality,
     onLoad() {
       ui.sel = null; $('detail').hidden = true; ui.logLen = -1;
       syncControls(); lessons.reset(); refresh(true);

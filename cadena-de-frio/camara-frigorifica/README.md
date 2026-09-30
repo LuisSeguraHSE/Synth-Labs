@@ -74,6 +74,13 @@ y perfiles de uso con datos de sensores.
   recuperación, pull-down, condensación, control) · Simulación (+ escenarios, parámetros avanzados, fallas, A/B, +10 min).
 - **Escena 3D:** vistas 3D / planta (por nivel) / sección (gradiente vertical). Capas: mapa térmico, flujo de aire
   (partículas cuya velocidad sigue al ventilador), sensores, pallets. Hover técnico y clic para el detalle.
+- **Nivel de detalle:** paneles con juntas y zócalo sanitario, piso de concreto con señalización, luminarias LED;
+  racks selectivos con bastidores perforados, arriostres, largueros y protecciones; pallets con tarima de 17 piezas,
+  36 cartones y film (los cartones exteriores muestran la temperatura de superficie y los interiores la de núcleo);
+  puerta con marco, riel, hoja, cortina de tiras y baliza; evaporador con rejillas, 5 aspas por ventilador, bandeja,
+  drenaje y LED de estado; unidad condensadora exterior cuyo ventilador gira con el compresor; montacargas con mástil,
+  horquillas que elevan el pallet, ruedas y baliza. Todo lo repetido va en `InstancedMesh`.
+- **Calidad gráfica:** *Alta* (sombras suaves, reflejos de entorno, film de pallets) o *Media* para equipos modestos.
 - **Causa → efecto:** banner de puerta (kW, tiempo, kWh), «¿Por qué cambió la temperatura?», diagrama de balance,
   consecuencias al mover un control, «¿Qué está pasando?» por reglas, controles bloqueados según el contexto.
 - **Gráfico temporal:** aire / superficie / núcleo con setpoint y límite de alarma, y un segundo panel de

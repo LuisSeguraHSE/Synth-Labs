@@ -1,0 +1,129 @@
+/* Synth-Labs · sistema de controles "panel de instrumentos".
+   Identidad: teclas con profundidad (borde inferior), esquinas asimétricas, LEDs de estado,
+   faders con escala y lecturas tipo LCD. Un solo archivo para las 2D y la cámara 3D.
+   Semántica de estado (no se usa para decorar): verde = correcto · amarillo = advertencia · rojo = crítico. */
+:root {
+  --sl-acc: #38bdf8; --sl-acc-hi: #7dd3fc; --sl-acc-lo: #0b7fb8; --sl-ink: #03131d;
+  --sl-bg: #0a0e13; --sl-panel: #121922; --sl-panel-2: #0d141b; --sl-field: #0b1117;
+  --sl-line: #223041; --sl-line-2: #2e3e52; --sl-tx: #e6edf3; --sl-mut: #8b9bb0;
+  --sl-ok: #0ca30c; --sl-warn: #fab219; --sl-crit: #d03b3b;
+  --sl-key: linear-gradient(180deg, #223042 0%, #19232f 100%);
+  --sl-key-hover: linear-gradient(180deg, #283a4f 0%, #1c2836 100%);
+  --sl-fill: linear-gradient(180deg, var(--sl-acc-hi) 0%, var(--sl-acc) 55%, var(--sl-acc-lo) 100%);
+  --sl-radius: 3px 9px 3px 9px;
+  --sl-mono: ui-monospace, 'SF Mono', 'Cascadia Mono', Menlo, Consolas, monospace;
+}
+
+:focus-visible { outline: 2px solid var(--sl-acc); outline-offset: 2px; }
+
+/* ---------- Botones (teclas) ---------- */
+button {
+  position: relative; font: inherit; font-weight: 600; letter-spacing: .02em; color: var(--sl-tx); cursor: pointer;
+  background: var(--sl-key); border: 1px solid var(--sl-line-2); border-bottom: 2px solid #070b10; border-radius: var(--sl-radius);
+  padding: 6px 12px; box-shadow: inset 0 1px 0 rgba(255, 255, 255, .06), 0 1px 2px rgba(0, 0, 0, .35);
+  transition: background .15s, border-color .15s, box-shadow .15s, transform .05s;
+}
+button:hover:not(:disabled) { background: var(--sl-key-hover); border-color: rgba(56, 189, 248, .55); box-shadow: inset 0 1px 0 rgba(255, 255, 255, .08), 0 0 0 1px rgba(56, 189, 248, .18), 0 6px 16px -8px rgba(56, 189, 248, .6); }
+button:active:not(:disabled) { transform: translateY(1px); border-bottom-width: 1px; box-shadow: inset 0 2px 5px rgba(0, 0, 0, .55); }
+button:disabled {
+  cursor: not-allowed; color: var(--sl-mut); opacity: .6;
+  background: repeating-linear-gradient(135deg, rgba(255, 255, 255, .035) 0 6px, transparent 6px 12px), var(--sl-key);
+}
+button.accent, button.primary, button.on:not(.seg button):not(.tabs button) {
+  background: var(--sl-fill); color: var(--sl-ink); border-color: var(--sl-acc-hi); border-bottom-color: #064f74;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .45), 0 0 14px -4px rgba(56, 189, 248, .75);
+}
+button.accent:hover:not(:disabled), button.primary:hover:not(:disabled) { background: linear-gradient(180deg, #a5e4fe, #49c6fa 55%, #0c8dcc); }
+button.ghost { background: transparent; box-shadow: none; border-color: var(--sl-line); border-bottom-width: 1px; }
+/* Tecla de acción con LED (ABRIR PUERTA, INGRESAR…) */
+button.big { display: flex; align-items: center; justify-content: center; gap: 10px; padding: 11px 12px; text-transform: uppercase; letter-spacing: .08em; font-size: 12.5px; }
+button.big::before { content: ''; width: 9px; height: 9px; border-radius: 50%; background: #3a4a5e; box-shadow: inset 0 1px 2px rgba(0, 0, 0, .7); flex: none; }
+button.big.open { background: linear-gradient(180deg, #5a4511, #33280b); border-color: var(--sl-warn); color: #fff3d6; }
+button.big.open::before { background: var(--sl-warn); box-shadow: 0 0 10px var(--sl-warn); animation: sl-led 1s steps(2) infinite; }
+button.big.run::before { background: var(--sl-ok); box-shadow: 0 0 8px var(--sl-ok); }
+@keyframes sl-led { 50% { opacity: .35; } }
+
+/* ---------- Segmentados (selector de modo) ---------- */
+.seg { display: inline-flex; gap: 2px; padding: 3px; background: var(--sl-field); border: 1px solid var(--sl-line-2); border-radius: 9px; box-shadow: inset 0 1px 3px rgba(0, 0, 0, .6); }
+.seg button { background: transparent; border: 0; border-radius: 6px; padding: 4px 10px; color: var(--sl-mut); box-shadow: none; }
+.seg button + button { border-left: 0; }
+.seg button:hover:not(:disabled) { color: var(--sl-tx); background: #16212c; border: 0; box-shadow: none; }
+.seg button:active:not(:disabled) { transform: none; }
+.seg button.on { background: var(--sl-fill); color: var(--sl-ink); box-shadow: inset 0 1px 0 rgba(255, 255, 255, .5), 0 2px 10px -3px rgba(56, 189, 248, .9); }
+.seg.wide { display: flex; } .seg.wide button { flex: 1; }
+.seg.small button { padding: 2px 9px; font-size: 12px; }
+
+/* ---------- Pestañas (con LED y barra activa) ---------- */
+.tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--sl-line-2); }
+.tabs button { display: inline-flex; align-items: center; gap: 8px; background: transparent; border: 1px solid transparent; border-bottom: 0; border-radius: 9px 9px 0 0; padding: 7px 14px 8px; color: var(--sl-mut); box-shadow: none; margin-bottom: -1px; }
+.tabs button::before { content: ''; width: 7px; height: 7px; border-radius: 2px; background: #34455a; }
+.tabs button:hover:not(:disabled) { color: var(--sl-tx); background: #141d27; border-color: transparent; box-shadow: none; }
+.tabs button:active:not(:disabled) { transform: none; }
+.tabs button.on { color: var(--sl-tx); background: linear-gradient(180deg, #1a2531, var(--sl-panel)); border-color: var(--sl-line-2); }
+.tabs button.on::before { background: var(--sl-acc); box-shadow: 0 0 8px var(--sl-acc); }
+.tabs button.on::after { content: ''; position: absolute; left: 10px; right: 10px; top: -1px; height: 2px; border-radius: 2px; background: var(--sl-acc); box-shadow: 0 0 10px var(--sl-acc); }
+
+/* ---------- Sliders (fader con escala y relleno) ---------- */
+input[type=range] { -webkit-appearance: none; appearance: none; width: 100%; height: 26px; background: transparent; cursor: pointer; margin: 2px 0; --p: 50%; }
+input[type=range]::-webkit-slider-runnable-track {
+  height: 6px; border-radius: 3px; border: 1px solid #06090d;
+  background: repeating-linear-gradient(90deg, transparent 0 calc(10% - 1px), rgba(230, 237, 243, .16) calc(10% - 1px) 10%),
+    linear-gradient(90deg, var(--sl-acc-lo), var(--sl-acc) var(--p), #1f2b39 var(--p));
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, .6);
+}
+input[type=range]::-webkit-slider-thumb {
+  -webkit-appearance: none; width: 14px; height: 24px; margin-top: -10px; border-radius: 3px; border: 1px solid #05080c;
+  background: linear-gradient(90deg, transparent 43%, rgba(10, 16, 22, .9) 43% 57%, transparent 57%), linear-gradient(180deg, #f3f7fb, #a8b7c6);
+  box-shadow: 0 2px 4px rgba(0, 0, 0, .55); transition: box-shadow .15s;
+}
+input[type=range]::-moz-range-track { height: 6px; border-radius: 3px; border: 1px solid #06090d; background: repeating-linear-gradient(90deg, transparent 0 calc(10% - 1px), rgba(230, 237, 243, .16) calc(10% - 1px) 10%), #1f2b39; }
+input[type=range]::-moz-range-progress { height: 6px; border-radius: 3px; background: linear-gradient(90deg, var(--sl-acc-lo), var(--sl-acc)); }
+input[type=range]::-moz-range-thumb { width: 12px; height: 22px; border-radius: 3px; border: 1px solid #05080c; background: linear-gradient(90deg, transparent 43%, rgba(10, 16, 22, .9) 43% 57%, transparent 57%), linear-gradient(180deg, #f3f7fb, #a8b7c6); box-shadow: 0 2px 4px rgba(0, 0, 0, .55); }
+input[type=range]:hover::-webkit-slider-thumb, input[type=range]:focus-visible::-webkit-slider-thumb { box-shadow: 0 2px 4px rgba(0, 0, 0, .55), 0 0 0 5px rgba(56, 189, 248, .22); }
+input[type=range]:hover::-moz-range-thumb { box-shadow: 0 0 0 5px rgba(56, 189, 248, .22); }
+input[type=range]:focus-visible { outline: none; }
+input[type=range]:disabled { cursor: not-allowed; opacity: .55; }
+input[type=range]:disabled::-webkit-slider-runnable-track { background: repeating-linear-gradient(135deg, #2a3544 0 5px, #1a222d 5px 10px); }
+input[type=range]:disabled::-webkit-slider-thumb { background: linear-gradient(180deg, #7d8a98, #56616d); }
+
+/* Lectura LCD del valor */
+output, .lcd {
+  font: 600 12px/1.6 var(--sl-mono); color: #9fe3ff; background: #060d14; border: 1px solid #1b2937; border-radius: 3px;
+  padding: 0 7px; text-align: right; font-variant-numeric: tabular-nums; box-shadow: inset 0 1px 3px rgba(0, 0, 0, .7); white-space: nowrap;
+}
+
+/* ---------- Interruptores ---------- */
+.sw input[type=checkbox], input[type=checkbox].switch {
+  -webkit-appearance: none; appearance: none; position: relative; flex: none; margin: 0; cursor: pointer;
+  width: 40px; height: 22px; border-radius: 11px; background: #1b2531; border: 1px solid var(--sl-line-2);
+  box-shadow: inset 0 1px 3px rgba(0, 0, 0, .7); transition: background .18s, border-color .18s;
+}
+.sw input[type=checkbox]::before, input[type=checkbox].switch::before {
+  content: ''; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%;
+  background: linear-gradient(180deg, #f3f7fb, #a8b7c6); box-shadow: 0 1px 3px rgba(0, 0, 0, .6); transition: transform .18s;
+}
+.sw input[type=checkbox]:checked, input[type=checkbox].switch:checked { background: linear-gradient(180deg, #16a34a, #0b7a2a); border-color: #22c55e; }
+.sw input[type=checkbox]:checked::before, input[type=checkbox].switch:checked::before { transform: translateX(18px); }
+.sw input[type=checkbox].danger:checked { background: linear-gradient(180deg, #d03b3b, #8f2121); border-color: #f87171; }
+
+/* ---------- Chips de capa (checkbox con LED) ---------- */
+.chip { display: inline-flex; align-items: center; gap: 7px; padding: 4px 11px 4px 9px; border: 1px solid var(--sl-line-2); border-radius: 999px; background: var(--sl-field); cursor: pointer; user-select: none; color: var(--sl-mut); transition: border-color .15s, background .15s, color .15s; }
+.chip input { -webkit-appearance: none; appearance: none; margin: 0; width: 8px; height: 8px; border-radius: 2px; background: #34455a; box-shadow: inset 0 0 0 1px rgba(0, 0, 0, .5); cursor: pointer; }
+.chip:hover { border-color: rgba(56, 189, 248, .5); color: var(--sl-tx); }
+.chip:has(input:checked) { border-color: rgba(56, 189, 248, .65); background: rgba(56, 189, 248, .1); color: var(--sl-tx); }
+.chip input:checked { background: var(--sl-acc); box-shadow: 0 0 7px var(--sl-acc); }
+
+/* ---------- Campos ---------- */
+select, input[type=number], input[type=text] {
+  font: inherit; color: var(--sl-tx); background-color: var(--sl-field); border: 1px solid var(--sl-line-2); border-radius: 6px;
+  padding: 5px 8px; box-shadow: inset 0 1px 3px rgba(0, 0, 0, .55);
+}
+select { -webkit-appearance: none; appearance: none; padding-right: 28px; cursor: pointer;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%237dd3fc' stroke-width='1.6'/%3E%3C/svg%3E");
+  background-repeat: no-repeat; background-position: right 10px center; }
+input[type=number] { font-family: var(--sl-mono); }
+select:hover, input[type=number]:hover { border-color: rgba(56, 189, 248, .5); }
+
+/* ---------- Tarjetas con escuadra de instrumento ---------- */
+.card, aside { position: relative; }
+.card::before, aside.panel::before { content: ''; position: absolute; left: -1px; top: -1px; width: 16px; height: 16px; border-left: 2px solid var(--sl-acc); border-top: 2px solid var(--sl-acc); border-top-left-radius: 8px; opacity: .75; pointer-events: none; }

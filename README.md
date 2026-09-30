@@ -23,8 +23,10 @@ El archivo `.nojekyll` en la raíz evita que GitHub procese los archivos con Jek
 ## Estructura
 ```
 index.html                      Portal
-shared/sim.js                   Motor: bucle de tiempo fijo, RNG con semilla, UI de parámetros, KPIs y tendencias
-shared/style.css                Estilos comunes
+shared/sim.js                   Motor 2D: bucle de tiempo fijo, RNG con semilla, UI de parámetros, KPIs y tendencias
+shared/controls.css · .js       Sistema de controles común (teclas, segmentados, pestañas, faders, interruptores, chips)
+shared/style.css                Estilos de las páginas 2D y del portal
+shared/vendor/three/            Three.js r168 + OrbitControls + RoomEnvironment (uso sin internet)
 <industria>/<simulación>/       index.html autosuficiente + README.md (modelo, supuestos, extensión)
 ```
 
@@ -47,6 +49,11 @@ Ver [`cadena-de-frio/`](cadena-de-frio/) · [▶ Abrir cámara frigorífica 3D](
 1. Crear `<industria>/<nombre>/index.html` copiando una existente.
 2. Definir `params`, `init`, `step(s,dt,p,rng)`, `draw`, `kpis`, `series` en `SL.app({...})`.
 3. Añadir la tarjeta en `index.html` y un `README.md` local.
+
+## Sistema de controles
+`shared/controls.css` + `shared/controls.js`: teclas con profundidad y LED, segmentados, pestañas con indicador, faders con escala y relleno, interruptores, chips de capa y lecturas LCD. Lo usan las 2D y la cámara 3D.
+
+El motor 2D (`shared/sim.js`) dibuja en alta densidad (nítido en pantallas retina), sobre un fondo de plano técnico con retícula, con sombras suaves y transportadores con bastidor, guías y rodillos (`SL.belt`).
 
 ## Supuestos generales
 - Modelos didácticos, semilla fija (42) ⇒ escenarios comparables al reiniciar.
