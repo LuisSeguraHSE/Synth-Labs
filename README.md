@@ -29,7 +29,7 @@ shared/style.css                Estilos comunes
 Ver `transportadores/README.md` (8 demos A–H, escenario Hoy vs Propuesto).
 
 ## Cadena de frío
-Ver `cadena-de-frio/README.md` (cámara, transporte refrigerado, andén/cross-dock).
+Ver `cadena-de-frio/README.md`. La **cámara frigorífica 3D** (`cadena-de-frio/camara-frigorifica/`) es un simulador modular con Three.js (incluido en `shared/vendor/three/`, funciona sin internet); requiere servidor local.
 
 ## Agregar una simulación
 1. Crear `<industria>/<nombre>/index.html` copiando una existente.

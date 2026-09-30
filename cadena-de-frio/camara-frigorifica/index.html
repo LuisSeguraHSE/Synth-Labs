@@ -1,70 +1,293 @@
 <!doctype html>
-<html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<link rel="stylesheet" href="../../shared/style.css"></head>
-<body><div id="app"></div>
-<script src="../../shared/sim.js"></script>
-<script>
-// Cámara frigorífica: aire + producto con inercia, compresor con histéresis, aperturas de puerta y desescarche. Unidad: minutos.
-const tc = (v) => (v >= 0 ? '' : '') + v.toFixed(1) + ' °C';
-SL.app({
-  title: 'Cadena de frío · Cámara frigorífica',
-  desc: 'Control on/off con histéresis, aperturas de puerta, desescarche y producto con inercia térmica. Mide excursiones de temperatura y energía.',
-  pitch: '"La cámara no falla por el compresor: falla por la puerta abierta y el pallet esperando en el andén."',
-  obj: '"Ya tenemos cámara de sobra." → El KPI es minutos de producto fuera de rango, no la capacidad instalada.',
-  unit: 'min', dt: 0.1, sample: 5, speeds: [1, 10, 60, 240],
-  clock: (t) => `Día ${Math.floor(t / 1440) + 1} · ${String(Math.floor((t % 1440) / 60)).padStart(2, '0')}:${String(Math.floor(t % 60)).padStart(2, '0')}`,
-  params: [
-    { id: 'mode', label: 'Escenario', opts: ['Hoy: puerta abierta al cargar', 'Propuesto: cortina de aire + antecámara'], value: 0 },
-    { id: 'sp', label: 'Setpoint', min: -25, max: 8, step: 1, value: 4, unit: '°C' },
-    { id: 'band', label: 'Histéresis', min: 1, max: 4, step: 0.5, value: 2, unit: '°C' },
-    { id: 'lim', label: 'Límite de producto (sobre setpoint)', min: 1, max: 5, step: 0.5, value: 2, unit: '°C' },
-    { id: 'tamb', label: 'Temperatura ambiente', min: 15, max: 40, step: 1, value: 30, unit: '°C' },
-    { id: 'door', label: 'Aperturas de puerta', min: 0, max: 30, step: 1, value: 6, unit: '/h' },
-    { id: 'dur', label: 'Duración de apertura', min: 0.5, max: 5, step: 0.5, value: 2, unit: 'min' },
-    { id: 'cap', label: 'Capacidad frigorífica', min: 4, max: 30, step: 1, value: 14, unit: 'kW' },
-  ],
-  init(p) { return { ta: p.sp, tp: p.sp, on: false, open: 0, nextD: 0, defr: 0, nextDef: 360, runMin: 0, cyc: 0, kwh: 0, bad: 0, peak: p.sp, nOpen: 0, alarm: 0 }; },
-  step(s, dt, p, r) {
-    const hoy = p.mode === 0, amb = p.tamb, kd = 0.02 * (hoy ? 1 : 0.35);
-    if (s.open > 0) s.open -= dt;
-    if (p.door > 0 && s.open <= 0 && r() < (p.door / 60) * dt) { s.open = p.dur * (0.6 + 0.8 * r()); s.nOpen++; }
-    if (s.t >= s.nextDef) { s.defr = 20; s.nextDef += 360; }
-    const defrost = s.defr > 0; if (defrost) s.defr -= dt;
-    if (!defrost) { if (!s.on && s.ta > p.sp + p.band / 2) { s.on = true; s.cyc++; } else if (s.on && s.ta < p.sp - p.band / 2) s.on = false; } else s.on = false;
-    const cool = s.on ? p.cap * 0.012 * (1 - 0.01 * Math.max(0, amb - 25)) : 0;
-    s.ta += dt * ((amb - s.ta) * (0.0015 + (s.open > 0 ? kd : 0)) - cool + (defrost ? 0.03 : 0));
-    s.tp += dt * (s.ta - s.tp) / 90;
-    if (s.on) { s.runMin += dt; s.kwh += (p.cap / (3.2 - 0.04 * Math.max(0, amb - 25))) * (dt / 60); }
-    if (defrost) s.kwh += 4 * (dt / 60);
-    s.peak = Math.max(s.peak, s.tp);
-    if (s.tp > p.sp + p.lim) { s.bad += dt; if (s.tp > p.sp + p.lim + 0.01 && !s.al) { s.al = true; s.alarm++; } } else s.al = false;
-  },
-  draw(g, s, p, W, H) {
-    const x = 200, y = 70, w = 400, h = 260, f = SL.clamp((s.ta - p.sp) / 12, -0.2, 1);
-    g.fillStyle = `rgb(${Math.round(40 + 200 * Math.max(0, f))},${Math.round(90 + 40 * (1 - Math.abs(f)))},${Math.round(200 - 150 * Math.max(0, f))})`; g.fillRect(x, y, w, h);
-    g.strokeStyle = '#e6edf3'; g.lineWidth = 4; g.strokeRect(x, y, w, h);
-    const pt = SL.clamp((s.tp - p.sp) / (p.lim * 2), 0, 1);
-    for (let i = 0; i < 12; i++) { g.fillStyle = SL.color(1 - pt); g.fillRect(x + 25 + (i % 6) * 60, y + 40 + Math.floor(i / 6) * 90, 45, 65); }
-    g.fillStyle = s.open > 0 ? '#ef5350' : '#2a3646'; g.fillRect(x - 6, y + 90, 12, 120);
-    SL.text(g, s.open > 0 ? 'PUERTA ABIERTA' : 'puerta cerrada', x - 10, y + 235, s.open > 0 ? '#ef5350' : '#8b9bb0', '12px system-ui', 'right');
-    if (p.mode === 1) { g.fillStyle = 'rgba(79,195,247,.35)'; g.fillRect(x - 60, y + 80, 54, 140); SL.text(g, 'antecámara', x - 33, y + 235, '#4fc3f7', '11px system-ui', 'center'); }
-    g.fillStyle = s.on ? '#3ecf8e' : s.defr > 0 ? '#f5b942' : '#2a3646'; g.fillRect(650, 120, 110, 70); SL.text(g, s.on ? 'Compresor ON' : s.defr > 0 ? 'Desescarche' : 'Compresor OFF', 705, 160, '#000', '13px system-ui', 'center');
-    SL.text(g, 'Aire: ' + tc(s.ta), x + w / 2, y + 20, '#fff', '15px system-ui', 'center');
-    SL.text(g, 'Producto: ' + tc(s.tp) + ' (límite ' + tc(p.sp + p.lim) + ')', x + w / 2, y + h + 25, s.tp > p.sp + p.lim ? '#ef5350' : '#3ecf8e', '14px system-ui', 'center');
-  },
-  kpis(s, p) {
-    return [
-      { label: 'Temperatura aire', value: tc(s.ta) },
-      { label: 'Temperatura producto', value: tc(s.tp) },
-      { label: 'Pico de producto', value: tc(s.peak) },
-      { label: 'Minutos fuera de rango', value: s.bad.toFixed(0) + ' min' },
-      { label: 'Alarmas de excursión', value: s.alarm },
-      { label: 'Aperturas de puerta', value: s.nOpen },
-      { label: 'Compresor encendido', value: ((100 * s.runMin) / Math.max(s.t, 1)).toFixed(0) + ' %' },
-      { label: 'Energía eléctrica', value: s.kwh.toFixed(0) + ' kWh' },
-      { label: 'Arranques de compresor', value: s.cyc },
-    ];
-  },
-  series: (s, p) => ({ 'Aire °C': s.ta, 'Producto °C': s.tp, 'Setpoint °C': p.sp, 'kWh acum.': s.kwh }),
-});
-</script></body></html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Cold Room Simulator · Synth-Labs</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="css/app.css">
+<script type="importmap">
+{ "imports": { "three": "../../shared/vendor/three/three.module.min.js", "three/addons/controls/OrbitControls.js": "../../shared/vendor/three/OrbitControls.js" } }
+</script>
+</head>
+<body class="mode-eng">
+<div id="fileWarn" class="filewarn" hidden>
+  Esta simulación usa módulos JavaScript: ábrela con un servidor local.<br>
+  En la raíz del repositorio ejecuta <code>python3 -m http.server 8000</code> y abre
+  <code>http://localhost:8000/cadena-de-frio/camara-frigorifica/</code>
+</div>
+<script>if (location.protocol === 'file:') document.getElementById('fileWarn').hidden = false;</script>
+
+<!-- ===================== BARRA SUPERIOR ===================== -->
+<header class="top">
+  <div class="brand"><a href="../../index.html" title="Volver al portal">←</a><b>COLD ROOM SIMULATOR</b><span class="sub">Cámara frigorífica · modelo didáctico</span></div>
+  <button id="alarmPill" class="pill ok" title="Ver alarmas"><span class="dot"></span><span id="alarmText">Normal</span></button>
+  <div class="clock"><span id="clock">Día 1 · 12:00</span><small id="speedLbl">×1</small></div>
+  <div class="transport">
+    <button id="btnPlay" title="Pausa / continuar">⏸</button>
+    <span id="speeds" class="seg"></span>
+    <button id="btnStep10" data-level="sim" title="Avanzar 10 minutos">+10 min</button>
+    <button id="btnReset" title="Reiniciar escenario">↺</button>
+  </div>
+  <div class="seg modes" id="modes">
+    <button data-mode="op">Operación</button><button data-mode="eng" class="on">Ingeniería</button><button data-mode="sim">Simulación</button>
+  </div>
+  <div class="actions">
+    <button id="btnExplain" class="accent">¿Qué está pasando?</button>
+    <button id="btnLesson">Guía paso a paso</button>
+    <button id="btnAB" data-level="sim">Comparar A/B</button>
+  </div>
+</header>
+
+<main class="layout">
+  <!-- ===================== CONTROLES ===================== -->
+  <aside id="left" class="col">
+    <section class="card" data-level="sim">
+      <h3>Escenario</h3>
+      <select id="scenario"></select>
+      <p class="muted small" id="scDesc"></p>
+      <button id="btnLoadSc" class="wide">Cargar escenario</button>
+    </section>
+
+    <section class="card">
+      <h3>Acciones</h3>
+      <button id="btnDoor" class="big">ABRIR PUERTA</button>
+      <div id="doorInfo" class="doorinfo" hidden></div>
+      <button id="btnIngress" class="big">INGRESAR PALLETS</button>
+      <p id="ingressInfo" class="muted small"></p>
+    </section>
+
+    <section class="card">
+      <h3>Operación</h3>
+      <label class="rng"><span>Setpoint</span><output id="oSp"></output><input id="sp" type="range" min="-25" max="12" step="0.5"></label>
+      <label class="rng"><span>Ventiladores</span><output id="oFan"></output><input id="fan" type="range" min="0" max="100" step="5"></label>
+      <p id="fanNote" class="consq"></p>
+    </section>
+
+    <section class="card" data-level="eng">
+      <h3>Control</h3>
+      <div class="seg wide" id="ctrlSeg"><button data-v="onoff">ON/OFF</button><button data-v="pid">PID</button></div>
+      <div id="onoffBox">
+        <label class="rng"><span>Histéresis ±</span><output id="oHyst"></output><input id="hyst" type="range" min="0.5" max="3" step="0.5"></label>
+        <div class="ladder" id="ladder"></div>
+      </div>
+      <div id="pidBox" hidden>
+        <p class="muted small">Respuesta</p>
+        <div class="seg wide" id="pidSeg"><button data-v="suave">Suave</button><button data-v="normal">Normal</button><button data-v="agresiva">Agresiva</button></div>
+        <div data-level="sim" class="adv">
+          <label class="rng"><span>Kp</span><output id="oKp"></output><input id="Kp" type="range" min="0" max="5" step="0.1"></label>
+          <label class="rng"><span>Ki (1/min)</span><output id="oKi"></output><input id="Ki" type="range" min="0" max="1.5" step="0.02"></label>
+          <label class="rng"><span>Kd (min)</span><output id="oKd"></output><input id="Kd" type="range" min="0" max="0.5" step="0.01"></label>
+        </div>
+      </div>
+      <p id="ctrlLock" class="lock" hidden></p>
+    </section>
+
+    <section class="card" data-level="eng">
+      <h3>Sistema frigorífico</h3>
+      <label class="sw"><input type="checkbox" id="refrigOn"><span>Refrigeración</span></label>
+      <label class="rng"><span>Capacidad disponible</span><output id="oCap"></output><input id="capAvail" type="range" min="0" max="100" step="5"></label>
+      <p id="capLock" class="lock" hidden>🔒 Sistema apagado: no se puede ajustar la capacidad.</p>
+      <label class="sw"><input type="checkbox" id="curtain"><span>Cortina de aire en puerta</span></label>
+      <div data-level="sim">
+        <label class="sw"><input type="checkbox" id="evapFail"><span>Falla de evaporador</span></label>
+        <button id="btnDefrost" class="wide">Desescarche ahora</button>
+      </div>
+    </section>
+
+    <section class="card" data-level="eng">
+      <h3>Entorno</h3>
+      <label class="rng"><span>Temperatura exterior</span><output id="oText"></output><input id="tExt" type="range" min="10" max="45" step="1"></label>
+      <p class="muted small">Aislamiento</p>
+      <div class="seg wide" id="insSeg"><button data-v="bajo">Bajo</button><button data-v="medio">Medio</button><button data-v="alto">Alto</button></div>
+      <p class="muted small" id="insNote"></p>
+      <label class="rng" data-level="sim"><span>HR exterior</span><output id="oRhe"></output><input id="rhExt" type="range" min="20" max="95" step="5"></label>
+    </section>
+
+    <section class="card" data-level="sim">
+      <details>
+        <summary>Parámetros avanzados (nivel 4)</summary>
+        <div id="advForm" class="adv-form"></div>
+        <button id="btnApplyGeo" class="wide">Aplicar dimensiones (reinicia)</button>
+      </details>
+    </section>
+  </aside>
+
+  <!-- ===================== ESCENA 3D ===================== -->
+  <section id="center">
+    <div class="viewbar">
+      <div class="seg" id="viewSeg"><button data-v="3d" class="on">3D</button><button data-v="planta">PLANTA</button><button data-v="seccion">SECCIÓN</button></div>
+      <div class="seg" id="levelSeg" hidden><button data-v="0">Nivel bajo</button><button data-v="1" class="on">Nivel alto</button></div>
+      <div class="layers">
+        <label><input type="checkbox" data-layer="heat" checked> Mapa térmico</label>
+        <label><input type="checkbox" data-layer="flow"> Flujo de aire</label>
+        <label><input type="checkbox" data-layer="sensors"> Sensores</label>
+        <label><input type="checkbox" data-layer="pallets" checked> Pallets</label>
+      </div>
+    </div>
+    <div id="scene" class="scene">
+      <div id="tip3d" class="tip" hidden></div>
+      <div id="doorBanner" class="banner" hidden></div>
+      <div id="hints" class="hints" hidden></div>
+      <div class="legend" id="heatLegend"></div>
+      <div id="lesson" class="lesson" hidden></div>
+    </div>
+  </section>
+
+  <!-- ===================== KPIs ===================== -->
+  <aside id="right" class="col">
+    <section class="card kmain">
+      <h3>Temperatura del aire</h3>
+      <div class="bignum"><span id="kTavg">—</span><small id="kTrend"></small></div>
+      <div class="triple">
+        <div><small>Aire</small><b id="kAir">—</b></div>
+        <div><small>Superficie</small><b id="kSurf">—</b></div>
+        <div><small>Núcleo</small><b id="kCore">—</b></div>
+      </div>
+      <p class="muted small">Producto: promedio ponderado por masa de lo que está en cámara.</p>
+      <div class="row"><span>Estado</span><b id="kState">—</b></div>
+      <div class="row"><span>Potencia eléctrica</span><b id="kPow">—</b></div>
+      <div class="row"><span>Zona más caliente</span><b id="kHot" class="clickable">—</b></div>
+      <div class="row"><span>Humedad relativa</span><b id="kRh">—</b></div>
+      <div class="rhbar"><div id="rhOpt"></div><i id="rhMark"></i><span>Seco</span><span>Óptimo</span><span>Húmedo</span></div>
+      <div class="row"><span>Ocupación</span><b id="kOcc">—</b></div>
+      <div class="bar"><i id="occBar"></i></div>
+    </section>
+
+    <section class="card" data-level="eng">
+      <h3>Refrigeración</h3>
+      <div class="row"><span>Utilización</span><b id="kUtil">—</b></div>
+      <div class="bar"><i id="utilBar"></i></div>
+      <div class="grid3">
+        <div><small>Capacidad frigorífica</small><b id="kQ">—</b></div>
+        <div><small>Potencia compresor</small><b id="kPc">—</b></div>
+        <div><small>COP</small><b id="kCop">—</b></div>
+      </div>
+      <p id="kLimit" class="note" hidden></p>
+    </section>
+
+    <section class="card" data-level="eng">
+      <h3>Carga térmica actual <b id="kLoad" class="right">—</b></h3>
+      <div id="loadBars" class="hbars"></div>
+    </section>
+
+    <section class="card" data-level="eng">
+      <h3>¿Por qué cambió la temperatura?</h3>
+      <div id="why"></div>
+    </section>
+
+    <section class="card" data-level="eng">
+      <h3>Energía</h3>
+      <div class="grid3">
+        <div><small>Consumo</small><b id="kE">—</b></div>
+        <div><small>Costo</small><b id="kCost">—</b></div>
+        <div><small>Arranques</small><b id="kStarts">—</b></div>
+      </div>
+      <p class="muted small" id="kEsplit"></p>
+    </section>
+
+    <section class="card" data-level="eng">
+      <h3>Recuperación</h3>
+      <div id="recBox" class="muted small">Sin perturbaciones todavía. Abre la puerta o ingresa producto.</div>
+    </section>
+
+    <section class="card" data-level="eng">
+      <h3>Pull-down de producto</h3>
+      <div id="pdBox" class="muted small">Sin lotes calientes. Usa «Ingresar pallets».</div>
+    </section>
+
+    <section class="card" data-level="eng">
+      <h3>Riesgo de condensación <b id="kCond" class="right">—</b></h3>
+      <p id="kCondTxt" class="muted small"></p>
+    </section>
+
+    <section class="card" id="detail" hidden>
+      <h3 id="detTitle">Detalle</h3>
+      <div id="detBody"></div>
+      <canvas id="detChart" class="mini" hidden></canvas>
+      <button id="detClose" class="wide">Cerrar</button>
+    </section>
+  </aside>
+</main>
+
+<!-- ===================== GRÁFICO TEMPORAL ===================== -->
+<section id="charts" class="card wide-card">
+  <div class="chead">
+    <h3>Temperatura · producto · potencia</h3>
+    <div class="seg" id="winSeg"><button data-v="3600">1 h</button><button data-v="14400" class="on">4 h</button><button data-v="43200">12 h</button><button data-v="0">Todo</button></div>
+    <button id="btnTable" class="ghost">Tabla</button><button id="btnCsv" class="ghost">CSV</button>
+  </div>
+  <div id="chartWrap" class="chartwrap">
+    <div id="legT" class="legend-row"></div>
+    <canvas id="cvT" class="cv-temp"></canvas>
+    <div id="legP" class="legend-row"></div>
+    <canvas id="cvP" class="cv-pow"></canvas>
+    <div id="tipC" class="tip" hidden></div>
+  </div>
+  <div id="tableBox" class="tablebox" hidden></div>
+</section>
+
+<!-- ===================== EVENTOS / ALARMAS / BALANCE ===================== -->
+<section id="bottom" class="card wide-card">
+  <div class="tabs" id="tabs"><button data-t="events" class="on">Eventos</button><button data-t="alarms">Alarmas</button><button data-t="balance">Balance térmico</button></div>
+  <div id="tabEvents" class="tab">
+    <div class="seg small" id="evFilter"><button data-f="all" class="on">Todos</button><button data-f="door">Puerta</button><button data-f="ingress">Producto</button><button data-f="alarm">Alarmas</button><button data-f="ctrl">Control</button><button data-f="user">Usuario</button></div>
+    <ol id="timeline" class="timeline"></ol>
+  </div>
+  <div id="tabAlarms" class="tab" hidden><div id="alarmList"></div></div>
+  <div id="tabBalance" class="tab" hidden>
+    <div class="balance"><svg id="sankey" viewBox="0 0 760 260" role="img" aria-label="Balance térmico"></svg><table id="balTable" class="tbl"></table></div>
+  </div>
+</section>
+
+<!-- ===================== MODALES ===================== -->
+<dialog id="mIngress" class="modal">
+  <form method="dialog">
+    <h3>Ingresar pallets</h3>
+    <label>Producto <select id="inProd"></select></label>
+    <label>Cantidad <input id="inN" type="number" min="1" max="48" value="10"> <small id="inFree"></small></label>
+    <label>Masa total <output id="inMass"></output></label>
+    <label>T inicial (°C) <input id="inT" type="number" min="-5" max="35" step="0.5" value="14"></label>
+    <label>Ubicación <select id="inDist"><option value="distribuida">Distribuida en racks</option><option value="concentrada">Concentrada (llena un rack primero)</option></select></label>
+    <label>Puerta <select id="inDoor"><option value="1">Abierta durante todo el ingreso</option><option value="0">Abrir solo al pasar cada pallet</option></select></label>
+    <p class="muted small" id="inNote"></p>
+    <div class="mbtns"><button value="cancel">Cancelar</button><button id="inOk" value="ok" class="accent">Confirmar ingreso</button></div>
+  </form>
+</dialog>
+
+<dialog id="mAlarm" class="modal"><form method="dialog"><h3>Alarmas activas</h3><div id="alarmDetail"></div><div class="mbtns"><button value="ok">Cerrar</button></div></form></dialog>
+
+<dialog id="mExplain" class="modal"><form method="dialog"><h3>¿Qué está pasando?</h3><div id="explainBody"></div><p class="muted small">Explicación generada por reglas a partir del estado del modelo.</p><div class="mbtns"><button id="explainRefresh" type="button">Actualizar</button><button value="ok">Cerrar</button></div></form></dialog>
+
+<dialog id="mAB" class="modal wide">
+  <form method="dialog">
+    <h3>Comparación A/B</h3>
+    <p class="muted small">Corre dos simulaciones completas del mismo escenario (misma semilla) sin interfaz y compara los resultados.</p>
+    <div class="abcfg">
+      <label>Escenario <select id="abSc"></select></label>
+      <label>Duración <select id="abDur"><option value="7200">2 h</option><option value="14400" selected>4 h</option><option value="28800">8 h</option></select></label>
+    </div>
+    <div class="abgrid">
+      <fieldset><legend>Escenario A</legend>
+        <label>Control <select data-ab="A" data-k="control"><option value="onoff" selected>ON/OFF</option><option value="pid">PID</option></select></label>
+        <label>Respuesta PID <select data-ab="A" data-k="pidPreset"><option value="suave">Suave</option><option value="normal" selected>Normal</option><option value="agresiva">Agresiva</option></select></label>
+        <label>Ventiladores % <input data-ab="A" data-k="fan" type="number" min="10" max="100" step="5" value="70"></label>
+        <label>Cortina de aire <select data-ab="A" data-k="curtain"><option value="0" selected>No</option><option value="1">Sí</option></select></label>
+        <label>Aislamiento <select data-ab="A" data-k="insulation"><option value="bajo">Bajo</option><option value="medio" selected>Medio</option><option value="alto">Alto</option></select></label>
+      </fieldset>
+      <fieldset><legend>Escenario B</legend>
+        <label>Control <select data-ab="B" data-k="control"><option value="onoff">ON/OFF</option><option value="pid" selected>PID</option></select></label>
+        <label>Respuesta PID <select data-ab="B" data-k="pidPreset"><option value="suave">Suave</option><option value="normal" selected>Normal</option><option value="agresiva">Agresiva</option></select></label>
+        <label>Ventiladores % <input data-ab="B" data-k="fan" type="number" min="10" max="100" step="5" value="70"></label>
+        <label>Cortina de aire <select data-ab="B" data-k="curtain"><option value="0" selected>No</option><option value="1">Sí</option></select></label>
+        <label>Aislamiento <select data-ab="B" data-k="insulation"><option value="bajo">Bajo</option><option value="medio" selected>Medio</option><option value="alto">Alto</option></select></label>
+      </fieldset>
+    </div>
+    <div class="mbtns"><button id="abRun" type="button" class="accent">Ejecutar comparación</button><button value="ok">Cerrar</button></div>
+    <div id="abOut"></div>
+  </form>
+</dialog>
+
+<script type="module" src="js/main.js"></script>
+</body>
+</html>
