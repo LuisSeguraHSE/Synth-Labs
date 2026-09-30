@@ -1,5 +1,7 @@
 # Jabas a tienda
 
+**[▶ Abrir simulación](https://luissegurahse.github.io/Synth-Labs/transportadores/d-jabas-tienda/)** · [Portal](https://luissegurahse.github.io/Synth-Labs/) · [Código](./index.html)
+
 **Qué simula:** Flujo de jabas llenas hacia muelle/tienda y vacías de retorno; torres de 4–6 jabas con peso real; caso "segundo piso".
 
 **Modelo Hoy vs Propuesto:** Hoy: 3 personas con torres (viaje 150 s), la jaba toca el piso, riesgo de caída ∝ (kg/20)². Propuesto: banda modular + elevador (cadencia 3–10 s/jaba), retorno de vacías en banda inferior, sin contacto con piso.

@@ -1,5 +1,7 @@
 # Producto grande (colchón, rollo, panel)
 
+**[▶ Abrir simulación](https://luissegurahse.github.io/Synth-Labs/transportadores/f-producto-grande/)** · [Portal](https://luissegurahse.github.io/Synth-Labs/) · [Código](./index.html)
+
 **Qué simula:** Pieza de 1.5–2 m y 15–40 kg. Turno desde las 07:00; el traslado manual (2 personas, 20 m) se degrada con la fatiga: factor = 1 + 0.0045·(kg/25)·h^1.8.
 
 **Modelo Hoy vs Propuesto:** Hoy: 1 equipo de 2 personas, ida y vuelta, piezas al piso (3 %×fatiga). Propuesto: transportador de listones (0.3 m/s, espaciado 2.4 m), giro 90° lento, mesa de empaque.

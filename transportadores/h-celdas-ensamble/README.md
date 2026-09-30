@@ -1,5 +1,7 @@
 # Celdas de ensamble (poca banda)
 
+**[▶ Abrir simulación](https://luissegurahse.github.io/Synth-Labs/transportadores/h-celdas-ensamble/)** · [Portal](https://luissegurahse.github.io/Synth-Labs/) · [Código](./index.html)
+
 **Qué simula:** Corte → costura/canto → armado → QC. Órdenes de N piezas; una orden urgente salta la cola (con setup de 3 min por cambio de orden).
 
 **Modelo Hoy vs Propuesto:** Hoy: el lote se mueve completo a la siguiente celda, 2 % de piezas perdidas (retrabajo). Propuesto: FIFO pieza a pieza con tope entre celdas, 0.4 % de pérdida.
