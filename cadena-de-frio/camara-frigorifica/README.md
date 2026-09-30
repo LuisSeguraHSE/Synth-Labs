@@ -1,5 +1,7 @@
 # Cold Room Simulator · cámara frigorífica
 
+**[▶ Abrir simulación](https://luissegurahse.github.io/Synth-Labs/cadena-de-frio/camara-frigorifica/)** · [Portal](https://luissegurahse.github.io/Synth-Labs/) · [Código](./index.html)
+
 Simulador didáctico de una cámara frigorífica en el navegador (Three.js + Canvas, sin build).
 Responde visualmente: qué pasa si ingresa producto caliente, si se abre la puerta, si cambian los
 ventiladores o el setpoint; cómo responde el control ON/OFF o PID; cuánto consume; cuánto tarda en

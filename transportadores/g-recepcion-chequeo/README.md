@@ -1,5 +1,7 @@
 # Recepción y chequeo
 
+**[▶ Abrir simulación](https://luissegurahse.github.io/Synth-Labs/transportadores/g-recepcion-chequeo/)** · [Portal](https://luissegurahse.github.io/Synth-Labs/) · [Código](./index.html)
+
 **Qué simula:** Camiones → descarga → puesto de control (conteo/foto/sello) → desviador ok / no conforme → slot o picking.
 
 **Modelo Hoy vs Propuesto:** Hoy: descarga a piso (25 bultos), 3 personas recuentan (14 s/bulto), el camión sale al terminar el recuento, detección 72 %. Propuesto: banda (12 bultos), 1 puesto (3.6 s/bulto), camión sale al terminar de descargar, detección 96 %.

@@ -1,5 +1,7 @@
 # Clasificador chico (4–6 destinos)
 
+**[▶ Abrir simulación](https://luissegurahse.github.io/Synth-Labs/transportadores/e-clasificador-compacto/)** · [Portal](https://luissegurahse.github.io/Synth-Labs/) · [Código](./index.html)
+
 **Qué simula:** Lazo de 30 m con inducción, lectura (3 % sin lectura → rechazo), desviadores a chutes (Lima, Norte, Sur, Aéreo, Sierra, Selva) y recirculación si el chute está lleno (máx. 3 vueltas). Mix: bolsa, caja, irregular.
 
 **Modelo Hoy vs Propuesto:** Hoy: 6 personas llevan cada bulto (250 bultos/h/persona, error 3 %). Propuesto: 2 personas (inducción + excepciones), error 0.4 %.

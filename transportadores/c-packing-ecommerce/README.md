@@ -1,5 +1,7 @@
 # Packing e-commerce / courier
 
+**[▶ Abrir simulación](https://luissegurahse.github.io/Synth-Labs/transportadores/c-packing-ecommerce/)** · [Portal](https://luissegurahse.github.io/Synth-Labs/) · [Código](./index.html)
+
 **Qué simula:** Olas de 40–80 pedidos a 4–8 puestos; packing 45/65/90 s (sobre/caja/frágil); salida a 3 chutes (Lima/Norte/Sur). Pico 17:00–20:00 (ola cada 15 min vs 40 min).
 
 **Modelo Hoy vs Propuesto:** Hoy: cola en el piso, +14 s de caminata por pedido, estorbo 7 % por puesto sobre 4, error 1.2 %. Propuesto: cola en banda (30 pedidos), +3 s, sin estorbo, error 0.4 %.

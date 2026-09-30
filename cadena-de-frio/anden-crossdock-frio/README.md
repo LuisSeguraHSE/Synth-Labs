@@ -1,5 +1,7 @@
 # Andén y cross-dock refrigerado
 
+**[▶ Abrir simulación](https://luissegurahse.github.io/Synth-Labs/cadena-de-frio/anden-crossdock-frio/)** · [Portal](https://luissegurahse.github.io/Synth-Labs/) · [Código](./index.html)
+
 **Modelo:** Camiones con N pallets; cada pallet se calienta (τ = 120 min) mientras espera a ser movido a cámara. Cola FIFO con operarios.
 
 **Hoy vs Propuesto:** Hoy: andén a ambiente −4 °C, 2 montacargas (2.8 min/pallet). Propuesto: andén a 8 °C, rodillos y 1 operario (1.2 min/pallet).

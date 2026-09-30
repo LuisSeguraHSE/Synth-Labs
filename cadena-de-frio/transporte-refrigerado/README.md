@@ -1,5 +1,7 @@
 # Transporte refrigerado (última milla)
 
+**[▶ Abrir simulación](https://luissegurahse.github.io/Synth-Labs/cadena-de-frio/transporte-refrigerado/)** · [Portal](https://luissegurahse.github.io/Synth-Labs/) · [Código](./index.html)
+
 **Modelo:** Ruta con N paradas (tramo + descarga); en cada parada la puerta abierta deja entrar aire ambiente. Producto con τ = 60 min.
 
 **Hoy vs Propuesto:** Hoy: sin prefrío (aire +6 °C, producto +2 °C al salir) ni cortina. Propuesto: prefrío, cortina de tiras (×0.4), monitoreo.

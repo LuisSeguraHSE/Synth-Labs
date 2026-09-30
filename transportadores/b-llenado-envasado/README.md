@@ -1,5 +1,7 @@
 # Llenadora → tapa → etiqueta → caja
 
+**[▶ Abrir simulación](https://luissegurahse.github.io/Synth-Labs/transportadores/b-llenado-envasado/)** · [Portal](https://luissegurahse.github.io/Synth-Labs/) · [Código](./index.html)
+
 **Qué simula:** Tres estaciones en serie (6/3/4 s), buffer de 1–2 m, desvío de rechazo a vía corta, encajado de 4 baldes o 6 galones y cambio de lote con 8 min de setup.
 
 **Modelo Hoy vs Propuesto:** Hoy: buffer de 1 pieza, espera humana para cargar la llenadora (0–3 s), derrames al piso, y al cambiar de lote el producto en buffers queda en el piso (retrabajo). Propuesto: buffer configurable, bandeja de derrame (contiene), la banda se vacía en orden.
