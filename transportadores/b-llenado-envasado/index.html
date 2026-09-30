@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="stylesheet" href="../../shared/style.css"></head>
+<body><div id="app"></div>
+<script src="../../shared/sim.js"></script>
+<script>
+// Llenadora → tapa → etiqueta → encajado. Unidad: segundos.
+const NM = ['Llenadora', 'Tapadora', 'Etiquetadora'], PXB = 1;
+SL.app({
+  title: 'Demo B · Llenadora → tapa → etiqueta → caja',
+  desc: 'El problema no es el reactor ni la llenadora: es el piso lleno de baldes. Cambia de escenario y de lote (8 min de setup) y observa dónde queda el producto a medio etiquetar.',
+  pitch: '"Cada vez que la llenadora espera a que alguien cargue un balde, está pagando sueldo de máquina parada."',
+  obj: '"Hay solventes." → Banda industrial con bandeja de derrame, guías laterales, motor tapado: no es una banda de courier.',
+  unit: 's', dt: 0.1, sample: 10, speeds: [1, 10, 60, 240],
+  params: [
+    { id: 'mode', label: 'Escenario', opts: ['Hoy: 4 personas entre máquinas', 'Propuesto: banda + buffer + desvío'], value: 0 },
+    { id: 'tf', label: 'Llenado', min: 3, max: 10, step: 0.5, value: 6, unit: 's' },
+    { id: 'tt', label: 'Tapado', min: 2, max: 8, step: 0.5, value: 3, unit: 's' },
+    { id: 'tl', label: 'Etiquetado', min: 2, max: 8, step: 0.5, value: 4, unit: 's' },
+    { id: 'bufm', label: 'Buffer entre estaciones (propuesto)', min: 0, max: 2, step: 0.5, value: 1.5, unit: 'm' },
+    { id: 'rej', label: 'Rechazo (tapa/etiqueta mala)', min: 0, max: 10, step: 0.5, value: 3, unit: '%' },
+    { id: 'case', label: 'Envases por caja', min: 4, max: 6, step: 2, value: 4 },
+    { id: 'lot', label: 'Cambio de lote cada', min: 10, max: 60, step: 5, value: 20, unit: 'min' },
+  ],
+  init() { return { st: [0, 1, 2].map(() => ({ s: 'idle', rem: 0, work: 0, block: 0 })), buf: [0, 0, 0], rw: [], pk: { busy: false, rem: 0 }, cases: 0, packed: 0, rework: 0, spillFloor: 0, spillTray: 0, floor: 0, setup: 0, nextLot: 1200, fdown: 0 }; },
+  step(s, dt, p, r) {
+    const hoy = p.mode === 0, cap = hoy ? 1 : Math.max(1, Math.round(p.bufm * 6)), T = [p.tf, p.tt, p.tl];
+    if (s.t >= s.nextLot) {
+      s.nextLot += p.lot * 60; s.setup = 480;
+      if (hoy) { const n = s.buf[0] + s.buf[1]; s.floor += n; s.rework += n; s.buf[0] = s.buf[1] = 0; }
+    }
+    if (s.setup > 0) s.setup -= dt;
+    for (let i = 0; i < 3; i++) {
+      const k = s.st[i];
+      if (k.s === 'idle') {
+        const can = i === 0 ? s.setup <= 0 : s.buf[i - 1] > 0;
+        if (can) { if (i) s.buf[i - 1]--; k.s = 'work'; k.rem = T[i] * (0.9 + 0.2 * r()) + (hoy && i === 0 ? 3 * r() : 0); }
+        else if (i === 0) s.fdown += dt;
+      } else if (k.s === 'work') {
+        k.work += dt; if ((k.rem -= dt) <= 0) { k.s = 'done'; if (i === 0 && r() < 0.012) { if (hoy) s.spillFloor++; else s.spillTray++; } }
+      }
+      if (k.s === 'done') {
+        const lim = i === 2 ? 12 : cap;
+        if (s.buf[i] < lim) {
+          if (i === 2 && r() < p.rej / 100) { s.rw.push(hoy ? 45 : 20); s.rework++; } else s.buf[i]++;
+          k.s = 'idle';
+        } else { k.block += dt; if (i === 0) s.fdown += dt; }
+      }
+    }
+    for (let j = s.rw.length - 1; j >= 0; j--) if ((s.rw[j] -= dt) <= 0 && s.buf[2] < 12) { s.buf[2]++; s.rw.splice(j, 1); }
+    const pk = s.pk;
+    if (pk.busy && (pk.rem -= dt) <= 0) { pk.busy = false; s.cases++; s.packed += p.case; }
+    if (!pk.busy && s.buf[2] >= p.case) { s.buf[2] -= p.case; pk.busy = true; pk.rem = 8; }
+  },
+  draw(g, s, p, W, H) {
+    const hoy = p.mode === 0, cap = hoy ? 1 : Math.max(1, Math.round(p.bufm * 6)), y = 130;
+    const cols = { idle: '#8b9bb0', work: '#3ecf8e', done: '#f5b942' };
+    SL.belt(g, [[30, y + 35], [770, y + 35]], 14);
+    [...NM, 'Encajado'].forEach((n, i) => {
+      const x = 30 + i * 205; g.fillStyle = i < 3 ? cols[s.st[i].s] : s.pk.busy ? '#3ecf8e' : '#8b9bb0'; g.fillRect(x, y, 100, 70);
+      SL.text(g, n, x + 50, y + 28, '#000', '14px system-ui', 'center');
+      SL.text(g, i < 3 ? (s.st[i].s === 'work' ? 'trabaja' : s.st[i].s === 'done' ? 'bloqueada' : i ? 'sin pieza' : (s.setup > 0 ? 'SETUP' : 'espera')) : s.case || p.case + '/caja', x + 50, y + 50, '#000', '12px system-ui', 'center');
+      if (i < 3) {
+        const b = s.buf[i], m = i === 2 ? 12 : cap;
+        for (let j = 0; j < m; j++) { g.fillStyle = j < b ? '#4fc3f7' : '#1c2633'; g.fillRect(x + 105 + (j % 6) * 16 - (m < 6 ? 0 : 0), y + 8 + Math.floor(j / 6) * 14, 12, 12); }
+      }
+    });
+    if (!hoy) { g.strokeStyle = '#4fc3f7'; g.setLineDash([6, 4]); g.strokeRect(20, y + 75, 760, 14); g.setLineDash([]); SL.text(g, 'bandeja de derrame', 30, y + 104, '#4fc3f7', '12px system-ui'); }
+    SL.text(g, `Vía de rechazo / retrabajo: ${s.rw.length}`, 440, y + 120, '#ef5350', '13px system-ui');
+    SL.text(g, hoy ? 'PISO (producto a medio etiquetar, derrames):' : 'Piso limpio: la banda se vacía en orden', 30, 300, hoy ? '#ef5350' : '#3ecf8e', '13px system-ui');
+    for (let i = 0; i < Math.min(s.floor, 120); i++) { g.fillStyle = '#c59b6d'; g.beginPath(); g.arc(40 + (i % 40) * 18, 325 + Math.floor(i / 40) * 18, 6, 0, 7); g.fill(); }
+    for (let i = 0; i < Math.min(s.spillFloor, 40); i++) { g.fillStyle = '#4fc3f7'; g.beginPath(); g.arc(500 + (i % 13) * 16, 385 + Math.floor(i / 13) * 14, 5, 0, 7); g.fill(); }
+    SL.text(g, `Cajas: ${s.cases}`, 690, 420, '#e6edf3', '14px system-ui', 'center');
+  },
+  kpis(s, p) {
+    const T = Math.max(s.t, 1);
+    return [
+      { label: 'Envases/min efectivos', value: ((60 * s.packed) / T).toFixed(2) },
+      { label: 'Envases/min teóricos', value: (60 / Math.max(p.tf, p.tt, p.tl)).toFixed(2) },
+      { label: 'Llenadora detenida', value: (s.fdown / 60).toFixed(1) + ' min (' + ((100 * s.fdown) / T).toFixed(0) + ' %)' },
+      { label: 'Derrames al piso / contenidos', value: s.spillFloor + ' / ' + s.spillTray },
+      { label: 'Retrabajos', value: s.rework },
+      { label: 'Personas entre máquinas', value: p.mode === 0 ? 4 : 2 },
+      { label: 'Cajas cerradas', value: s.cases },
+    ];
+  },
+  series: (s) => ({ 'Envases empacados': s.packed, 'Buffer 1': s.buf[0], 'Buffer 2': s.buf[1], 'Piso': s.floor }),
+});
+</script></body></html>

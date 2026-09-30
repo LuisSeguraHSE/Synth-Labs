@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="stylesheet" href="../../shared/style.css"></head>
+<body><div id="app"></div>
+<script src="../../shared/sim.js"></script>
+<script>
+// Clasificador compacto con recirculación. Unidad: segundos. Lazo de 30 m; desviadores en bordes superior/inferior.
+const DN = ['Lima', 'Norte', 'Sur', 'Aéreo', 'Sierra', 'Selva'], WT = [0.4, 0.22, 0.2, 0.1, 0.05, 0.03], LM = 30, DS = [3, 6, 9, 18, 21, 24], RJ = 27.5;
+const LOOP = [[100, 100], [700, 100], [700, 300], [100, 300], [100, 100]], LL = SL.len(LOOP), TY = [['bolsa', 0.5], ['caja', 0.7], ['irregular', 1.2]];
+const at = (s) => SL.along(LOOP, ((s % LM) / LM) * LL);
+SL.app({
+  title: 'Demo E · Clasificador chico (4–6 destinos)',
+  desc: 'Inducción → lectura → desviadores → chutes, con recirculación cuando el chute está lleno. Mix de bolsas, cajas e irregulares. Baja el volumen para ver el punto de equilibrio.',
+  pitch: '"No es el sorter de 150 mil unidades. Es el de 1.500–4.000 bultos/hora que les quita la fila de las 6 pm."',
+  obj: '"Muy caro para el volumen." → Revisa el KPI de payback: a X bultos/día la banda se paga; debajo, no insistas.',
+  unit: 's', dt: 0.1, sample: 10, speeds: [1, 5, 20, 60],
+  params: [
+    { id: 'mode', label: 'Escenario', opts: ['Hoy: 6 personas clasificando', 'Propuesto: clasificador + 2 personas'], value: 1 },
+    { id: 'nd', label: 'Destinos con chute', min: 4, max: 6, step: 1, value: 4, reset: true },
+    { id: 'rate', label: 'Volumen de bultos', min: 300, max: 4000, step: 100, value: 2000, unit: '/h' },
+    { id: 'v', label: 'Velocidad de banda', min: 0.6, max: 1.4, step: 0.1, value: 0.9, unit: 'm/s' },
+    { id: 'cap', label: 'Capacidad de chute', min: 6, max: 40, step: 2, value: 16, unit: 'bultos' },
+    { id: 'drain', label: 'Retiro del chute', min: 2, max: 12, step: 0.5, value: 3.5, unit: 's/bulto' },
+    { id: 'inv', label: 'Inversión del sistema', min: 30, max: 250, step: 10, value: 90, unit: 'k USD' },
+    { id: 'sal', label: 'Costo mensual por persona', min: 500, max: 1800, step: 50, value: 900, unit: 'USD' },
+  ],
+  init(p) { return { it: [], q: 0, ch: Array.from({ length: 6 }, () => ({ n: 0, tm: 0, got: 0 })), man: Array.from({ length: 6 }, () => ({ rem: 0, it: null })), out: 0, ok: 0, bad: 0, rec: 0, rej: 0, inq: 0, nextIn: 0 }; },
+  step(s, dt, p, r) {
+    const hoy = p.mode === 0, nd = p.nd, w = WT.slice(0, nd), sw = w.reduce((a, b) => a + b, 0);
+    if (r() < (p.rate / 3600) * dt) { const u = r(), ty = u < 0.45 ? 0 : u < 0.85 ? 1 : 2; let d = 0, a = r() * sw; while (a > w[d] && d < nd - 1) a -= w[d++]; s.q++; s.inq = (s.inq || 0); s.pend = (s.pend || []); s.pend.push({ ty, d }); }
+    s.pend = s.pend || [];
+    s.ch.forEach((c, i) => { if (c.n > 0 && (c.tm += dt) >= p.drain) { c.n--; c.tm = 0; } });
+    if (hoy) {
+      for (let i = 0; i < 6; i++) {
+        const k = s.man[i];
+        if (k.it && (k.rem -= dt) <= 0) { s.out++; if (r() < 0.03) s.bad++; else s.ok++; k.it = null; }
+        if (!k.it && s.pend.length) { k.it = s.pend.shift(); s.q--; k.rem = (3600 / 250) * (0.8 + 0.4 * r()) * (1 + 0.15 * TY[k.it.ty][1]); }
+      }
+      return;
+    }
+    const v = p.v;
+    for (const a of s.it) {
+      const prev = a.s; a.s += v * dt; a.age += dt;
+      if (Math.floor(a.s / LM) > Math.floor(prev / LM)) { a.lap++; if (a.lap > 3 && !a.rj) a.rj = true; }
+      const pos = a.s % LM, pp = prev % LM;
+      if (!a.done && !a.rj && pos >= DS[a.d] && (pp < DS[a.d] || pp > pos)) {
+        if (s.ch[a.d].n < p.cap) { s.ch[a.d].n++; a.done = true; s.out++; if (r() < 0.004) s.bad++; else s.ok++; if (a.lap > 0) s.rec++; }
+        else a.miss = true;
+      }
+      if (!a.done && a.rj && pos >= RJ && (pp < RJ || pp > pos)) { a.done = true; s.rej++; }
+    }
+    s.it = s.it.filter((a) => !a.done);
+    if (s.pend.length) {
+      const c = TY[s.pend[0].ty][1] + 0.3;
+      if (!s.it.some((a) => { const x = a.s % LM; return x < c || x > LM - c; })) { const it = s.pend.shift(); s.q--; s.it.push({ s: 0, d: it.d, ty: it.ty, lap: 0, age: 0, rj: r() < 0.03, done: false }); }
+    }
+  },
+  draw(g, s, p, W, H) {
+    const hoy = p.mode === 0;
+    if (hoy) {
+      SL.text(g, 'Cola de bultos en el piso: ' + s.q, 40, 50, '#ef5350', '14px system-ui');
+      for (let i = 0; i < Math.min(s.q, 200); i++) { g.fillStyle = '#c59b6d'; g.fillRect(40 + (i % 40) * 17, 70 + Math.floor(i / 40) * 17, 13, 13); }
+      s.man.forEach((k, i) => { g.fillStyle = k.it ? '#3ecf8e' : '#2a3646'; g.beginPath(); g.arc(120 + i * 100, 250, 24, 0, 7); g.fill(); SL.text(g, 'P' + (i + 1), 120 + i * 100, 255, '#fff', '13px system-ui', 'center'); });
+      SL.text(g, '6 personas llevan cada bulto a su destino (error ~3%, sin recirculación)', 40, 320, '#8b9bb0');
+    } else {
+      SL.belt(g, LOOP, 22);
+      for (let k = 0; k < p.nd; k++) { const q = at(DS[k]), top = DS[k] < 15, y0 = top ? 100 : 300, sg = top ? -1 : 1; g.fillStyle = '#243040'; g.fillRect(q.x - 45, y0 + sg * 60 - 20, 90, 40); SL.text(g, DN[k] + ' ' + s.ch[k].n + '/' + p.cap, q.x, y0 + sg * 60 + 5, s.ch[k].n >= p.cap ? '#ef5350' : '#3ecf8e', '12px system-ui', 'center'); g.strokeStyle = '#f5b942'; g.lineWidth = 3; g.beginPath(); g.moveTo(q.x - 8, y0); g.lineTo(q.x + 8, y0 + sg * 40); g.stroke(); }
+      const rq = at(RJ); g.fillStyle = '#4a2424'; g.fillRect(rq.x - 90, rq.y - 25, 70, 50); SL.text(g, 'Rechazo ' + s.rej, rq.x - 55, rq.y + 4, '#ef5350', '12px system-ui', 'center');
+      s.it.forEach((a) => { const q = at(a.s); g.fillStyle = a.rj ? '#ef5350' : a.lap > 0 ? '#ba68c8' : ['#4fc3f7', '#c59b6d', '#f5b942'][a.ty]; if (a.ty === 0) { g.beginPath(); g.arc(q.x, q.y, 6, 0, 7); g.fill(); } else if (a.ty === 1) g.fillRect(q.x - 8, q.y - 6, 16, 12); else { g.beginPath(); g.moveTo(q.x - 11, q.y); g.lineTo(q.x, q.y - 8); g.lineTo(q.x + 11, q.y); g.lineTo(q.x, q.y + 8); g.fill(); } });
+      SL.text(g, 'Inducción ▶ (cola: ' + s.q + ')', 105, 135, '#e6edf3', '12px system-ui');
+      SL.text(g, 'Violeta: recirculando · Rojo: no leído → rechazo · azul bolsa / marrón caja / amarillo irregular', 40, 430, '#8b9bb0', '12px system-ui');
+    }
+  },
+  kpis(s, p) {
+    const hrs = Math.max(s.t, 1) / 3600, need = Math.ceil(p.rate / 250), sav = (need - 2) * p.sal, pay = (p.inv * 1000) / Math.max(sav, 1);
+    return [
+      { label: 'Bultos/h', value: (s.out / hrs).toFixed(0) },
+      { label: '% bien clasificado', value: ((100 * s.ok) / Math.max(s.out, 1)).toFixed(1) + ' %' },
+      { label: '% recirculado', value: p.mode === 0 ? 'n/a' : ((100 * s.rec) / Math.max(s.out, 1)).toFixed(1) + ' %' },
+      { label: 'Rechazos (sin lectura)', value: s.rej },
+      { label: 'Cola de inducción', value: s.q },
+      { label: 'Personas clasificando', value: p.mode === 0 ? 6 : 2 },
+      { label: 'Personas equivalentes hoy', value: need },
+      { label: 'Payback estimado', value: sav <= 0 ? 'no conviene' : pay > 60 ? '> 60 meses' : pay.toFixed(0) + ' meses' },
+    ];
+  },
+  series: (s) => ({ 'Cola': s.q, 'Clasificados': s.out, 'Recirculados': s.rec, 'Chute Lima': s.ch[0].n }),
+});
+</script></body></html>

@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="stylesheet" href="../../shared/style.css"></head>
+<body><div id="app"></div>
+<script src="../../shared/sim.js"></script>
+<script>
+// Flota de máquinas con salud 100→0, riesgo aleatorio creciente, cuadrillas limitadas. Unidad: días (1 s sim = 1 día).
+SL.app({
+  title: 'Mantenimiento · Correctivo vs preventivo',
+  desc: 'Compara run-to-failure (umbral 0) con mantenimiento preventivo por condición. Busca el umbral que minimiza el costo total.',
+  unit: 'días', dt: 0.1, sample: 5,
+  params: [
+    { id: 'n', label: 'Máquinas', min: 4, max: 40, step: 1, value: 20, reset: true },
+    { id: 'thr', label: 'Umbral preventivo (0 = correctivo)', min: 0, max: 80, step: 5, value: 35, unit: '% salud' },
+    { id: 'crew', label: 'Cuadrillas', min: 1, max: 8, step: 1, value: 2 },
+    { id: 'life', label: 'Vida nominal', min: 30, max: 200, step: 10, value: 90, unit: 'días' },
+    { id: 'cc', label: 'Costo correctivo', min: 1000, max: 30000, step: 1000, value: 12000, unit: 'USD' },
+    { id: 'cp', label: 'Costo preventivo', min: 200, max: 10000, step: 200, value: 1800, unit: 'USD' },
+    { id: 'lost', label: 'Pérdida por día parado', min: 500, max: 10000, step: 500, value: 3000, unit: 'USD/d' },
+  ],
+  init(p, r) {
+    const m = [];
+    for (let i = 0; i < p.n; i++) m.push({ h: 60 + 40 * r(), rate: 0, st: 'run', rem: 0, type: '' });
+    m.forEach((k) => (k.rate = 100 / (p.life * 0.6 + p.life * 0.8 * r())));
+    return { m, q: [], fail: 0, pm: 0, cost: 0, up: 0, tot: 0 };
+  },
+  step(s, dt, p, r) {
+    let busy = s.m.filter((k) => k.st === 'fix').length;
+    for (const k of s.m) {
+      if (k.st === 'run') {
+        k.h -= k.rate * dt;
+        const haz = (0.0015 * dt) * (1 + ((100 - k.h) / 25) ** 2);
+        if (k.h <= 0 || r() < haz) { k.st = 'wait'; k.type = 'C'; s.fail++; s.q.push(k); }
+        else if (p.thr > 0 && k.h < p.thr) { k.st = 'wait'; k.type = 'P'; s.q.push(k); }
+      } else if (k.st === 'fix' && (k.rem -= dt) <= 0) {
+        k.st = 'run'; k.h = 100; k.rate = 100 / (p.life * (0.6 + 0.8 * r()));
+      }
+    }
+    s.q.sort((a, b) => (a.type === 'C' ? 0 : 1) - (b.type === 'C' ? 0 : 1)); // correctivos primero
+    while (busy < p.crew && s.q.length) {
+      const k = s.q.shift(); k.st = 'fix'; busy++;
+      if (k.type === 'C') { k.rem = 2 + 3 * r(); s.cost += p.cc; } else { k.rem = 0.5 + r(); s.cost += p.cp; s.pm++; }
+    }
+    const down = s.m.filter((k) => k.st !== 'run').length;
+    s.cost += down * p.lost * dt; s.up += (s.m.length - down) * dt; s.tot += s.m.length * dt;
+  },
+  draw(g, s, p, W, H) {
+    const cols = Math.min(10, s.m.length), cw = 72;
+    s.m.forEach((k, i) => {
+      const x = 25 + (i % cols) * cw, y = 40 + Math.floor(i / cols) * 105;
+      g.fillStyle = k.st === 'run' ? '#1c2633' : k.st === 'fix' ? '#4fc3f7' : '#ef5350';
+      g.fillRect(x, y, 60, 80);
+      const f = SL.clamp(k.h / 100, 0, 1);
+      g.fillStyle = SL.color(f); g.fillRect(x + 6, y + 74 - 60 * f, 48, 60 * f);
+      g.fillStyle = '#e6edf3'; g.font = '11px system-ui'; g.fillText(k.st === 'run' ? Math.max(0, k.h | 0) + '%' : k.st === 'fix' ? (k.type === 'C' ? 'CORR' : 'PREV') : 'espera', x + 8, y + 12);
+    });
+    g.fillStyle = '#8b9bb0'; g.font = '13px system-ui';
+    g.fillText('Barra = salud · Azul = en mantenimiento · Rojo = parada esperando cuadrilla', 20, H - 12);
+  },
+  kpis(s) {
+    return [
+      { label: 'Disponibilidad', value: ((100 * s.up) / Math.max(s.tot, 1)).toFixed(1) + ' %' },
+      { label: 'Fallas (correctivos)', value: s.fail },
+      { label: 'Preventivos', value: s.pm },
+      { label: 'Costo total', value: '$' + Math.round(s.cost).toLocaleString() },
+      { label: 'Costo por día', value: '$' + Math.round(s.cost / Math.max(s.t, 1)).toLocaleString() },
+      { label: 'Cola de cuadrilla', value: s.q.length },
+    ];
+  },
+  series: (s) => ({ 'Disponibilidad %': (100 * s.up) / Math.max(s.tot, 1), 'Salud prom. %': s.m.reduce((a, k) => a + Math.max(k.h, 0), 0) / s.m.length, 'Costo acum.': s.cost }),
+});
+</script></body></html>

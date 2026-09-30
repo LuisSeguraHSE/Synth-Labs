@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="stylesheet" href="../../shared/style.css"></head>
+<body><div id="app"></div>
+<script src="../../shared/sim.js"></script>
+<script>
+// Celdas de ensamble: corte → costura/canto → armado → QC. Unidad: minutos.
+const CN = ['Corte', 'Costura/canto', 'Armado', 'QC'];
+SL.app({
+  title: 'Demo H · Celdas de ensamble (poca banda)',
+  desc: 'Textil y mueble: el valor es el flujo, no el motor. "Hoy" los lotes se mueven completos y el WIP queda en el piso. "Propuesto": tramo corto FIFO pieza a pieza con tope visible. Una orden urgente salta la cola y se ve su costo.',
+  pitch: '"No le vendemos un almacén automático. Le hacemos visible dónde se esconde el pedido del cliente."',
+  obj: '"Es muy poco para automatizar." → Cierre: estudio de layout (software) + 1 tramo de 4–8 m si el WIP está entre dos máquinas concretas.',
+  unit: 'min', dt: 0.1, sample: 10, speeds: [1, 10, 60, 240],
+  params: [
+    { id: 'mode', label: 'Escenario', opts: ['Hoy: lotes completos al piso', 'Propuesto: FIFO pieza a pieza'], value: 0 },
+    { id: 'q', label: 'Piezas por orden', min: 4, max: 12, step: 1, value: 6 },
+    { id: 'arr', label: 'Llega una orden cada', min: 14, max: 40, step: 1, value: 30, unit: 'min' },
+    { id: 'urg', label: 'Orden urgente cada (0 = ninguna)', min: 0, max: 180, step: 30, value: 90, unit: 'min' },
+    { id: 'due', label: 'Plazo prometido', min: 60, max: 360, step: 10, value: 150, unit: 'min' },
+    { id: 'buf', label: 'Tope entre celdas (propuesto)', min: 1, max: 6, step: 1, value: 3, unit: 'pzas' },
+    { id: 't0', label: 'Tiempo Corte', min: 1, max: 5, step: 0.2, value: 2, unit: 'min/pza' },
+    { id: 't1', label: 'Tiempo Costura/canto', min: 1, max: 5, step: 0.2, value: 3.2, unit: 'min/pza' },
+    { id: 't2', label: 'Tiempo Armado', min: 1, max: 5, step: 0.2, value: 2.6, unit: 'min/pza' },
+    { id: 't3', label: 'Tiempo QC', min: 0.5, max: 4, step: 0.1, value: 1.4, unit: 'min/pza' },
+  ],
+  init() { return { ords: [], cells: CN.map(() => ({ o: null, rem: 0, setup: 0, busy: 0 })), nextA: 0, nextU: null, id: 0, ot: 0, n: 0, ln: 0, lu: 0, nu: 0, ls: 0, lost: 0, cnt: 0 }; },
+  step(s, dt, p, r) {
+    const hoy = p.mode === 0, T = [p.t0, p.t1, p.t2, p.t3];
+    if (s.nextU === null) s.nextU = p.urg ? p.urg : 1e9;
+    const mk = (u) => { s.id++; const o = { id: s.id, q: p.q, u, t0: s.t, av: [p.q, 0, 0, 0], pr: [0, 0, 0, 0] }; s.ords.push(o); };
+    if (s.t >= s.nextA) { mk(false); s.nextA += p.arr; }
+    if (p.urg && s.t >= s.nextU) { mk(true); s.nextU += p.urg; }
+    CN.forEach((_, i) => {
+      const c = s.cells[i];
+      if (!c.o) {
+        const cand = s.ords.filter((o) => o.pr[i] < o.q && o.av[i] - o.pr[i] > 0);
+        cand.sort((a, b) => (b.u - a.u) || a.t0 - b.t0);
+        if (cand.length) { c.o = cand[0]; c.setup = 3; }
+      }
+      const o = c.o; if (!o) return;
+      if (c.setup > 0) { c.setup -= dt; return; }
+      if (c.rem > 0) {
+        c.busy += dt;
+        if ((c.rem -= dt) <= 0) {
+          if (r() < (hoy ? 0.02 : 0.004)) { s.lost++; }
+          else {
+            o.pr[i]++;
+            if (i < 3) { if (hoy) { if (o.pr[i] === o.q) o.av[i + 1] = o.q; } else o.av[i + 1]++; }
+          }
+          if (o.pr[i] >= o.q) {
+            c.o = null;
+            if (i === 3) { const L = s.t - o.t0; s.n++; s.ln += L; if (L <= p.due) s.ot++; if (o.u) { s.nu++; s.lu += L; } else s.ls += L; s.ords = s.ords.filter((x) => x !== o); }
+          }
+        }
+      } else if (o.av[i] - o.pr[i] > 0 && (hoy || i === 3 || o.av[i + 1] - o.pr[i + 1] < p.buf)) c.rem = T[i] * (0.8 + 0.4 * r());
+    });
+  },
+  draw(g, s, p, W, H) {
+    const hoy = p.mode === 0;
+    CN.forEach((n, i) => {
+      const x = 30 + i * 195, y = 90, c = s.cells[i];
+      g.fillStyle = !c.o ? '#2a3646' : c.setup > 0 ? '#f5b942' : c.rem > 0 ? '#3ecf8e' : '#ef5350'; g.fillRect(x, y, 120, 80);
+      SL.text(g, n, x + 60, y + 30, '#000', '14px system-ui', 'center');
+      SL.text(g, c.o ? (c.o.u ? 'URGENTE #' : 'Orden #') + c.o.id : 'libre', x + 60, y + 52, '#000', '12px system-ui', 'center');
+      SL.text(g, c.setup > 0 ? 'setup' : c.o && c.rem <= 0 ? 'esperando pieza/tope' : '', x + 60, y + 68, '#000', '11px system-ui', 'center');
+      const wait = s.ords.reduce((a, o) => a + (o.av[i] - o.pr[i] - (c.o === o && c.rem > 0 ? 1 : 0)), 0);
+      if (i < 3) for (let j = 0; j < Math.min(wait, 60); j++) { g.fillStyle = hoy ? '#ef5350' : '#4fc3f7'; g.fillRect(x + 125 + (j % 4) * 11, hoy ? y + 10 + Math.floor(j / 4) * 11 + (j % 3) * 4 : y + 10 + Math.floor(j / 4) * 11, 8, 8); }
+      if (i === 0) SL.text(g, 'Entrada: ' + wait + ' pzas', x + 60, y + 100, '#8b9bb0', '12px system-ui', 'center');
+    });
+    if (!hoy) for (let i = 0; i < 3; i++) SL.belt(g, [[150 + i * 195, 160], [225 + i * 195, 160]], 8);
+    SL.text(g, hoy ? 'WIP en el PISO entre celdas (rojo): lote completo espera al lote completo' : 'Tramo corto FIFO (azul): pieza a pieza, con tope de ' + p.buf, 30, 260, hoy ? '#ef5350' : '#3ecf8e', '13px system-ui');
+    SL.text(g, `Órdenes en sistema: ${s.ords.length} · urgentes: ${s.ords.filter((o) => o.u).length}`, 30, 290, '#e6edf3', '13px system-ui');
+  },
+  kpis(s, p) {
+    const inSys = s.ords.reduce((a, o) => a + (o.q - o.pr[3]), 0);
+    return [
+      { label: 'Lead time promedio', value: s.n ? (s.ln / s.n).toFixed(0) + ' min' : '—' },
+      { label: 'Lead time normal / urgente', value: (s.n - s.nu ? (s.ls / (s.n - s.nu)).toFixed(0) : '—') + ' / ' + (s.nu ? (s.lu / s.nu).toFixed(0) : '—') + ' min' },
+      { label: 'WIP (piezas en sistema)', value: inSys },
+      { label: 'OTIF (≤ plazo)', value: s.n ? ((100 * s.ot) / s.n).toFixed(0) + ' %' : '—' },
+      { label: 'Órdenes terminadas', value: s.n },
+      { label: 'Retrabajos por pieza perdida', value: s.lost },
+    ];
+  },
+  series: (s) => ({ 'WIP piezas': s.ords.reduce((a, o) => a + (o.q - o.pr[3]), 0), 'Lead time prom.': s.n ? s.ln / s.n : 0, 'Terminadas': s.n }),
+});
+</script></body></html>

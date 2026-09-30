@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="stylesheet" href="../../shared/style.css"></head>
+<body><div id="app"></div>
+<script src="../../shared/sim.js"></script>
+<script>
+// Jabas a tienda: llenas hacia muelle/tienda, vacías de retorno. Unidad: segundos.
+const PATH = [[170, 110], [360, 110], [460, 250], [640, 250]], PL = SL.len(PATH);
+SL.app({
+  title: 'Demo D · Jabas a tienda',
+  desc: 'Supermercado y CD de frescos viven de jabas. "Hoy": personas suben y bajan la rampa con torres de jabas (y la jaba toca el piso). "Propuesto": banda modular + elevador, sin piso.',
+  pitch: '"No es un CD robotizado; es no mandar a alguien con 20 kg por la rampa."',
+  obj: '"Es solo para Falabella." → Es el caso grande; el módulo cabe en un CD regional o un mayorista. Piloto: un solo eje (llenas o vacías).',
+  unit: 's', dt: 0.5, sample: 30, speeds: [1, 10, 60, 240],
+  params: [
+    { id: 'mode', label: 'Escenario', opts: ['Hoy: 3 personas con torres', 'Propuesto: banda + elevador'], value: 0 },
+    { id: 'rate', label: 'Jabas llenas a despachar', min: 200, max: 900, step: 50, value: 500, unit: '/h' },
+    { id: 'n', label: 'Jabas por torre', min: 4, max: 6, step: 1, value: 4 },
+    { id: 'w', label: 'Peso por jaba', min: 3, max: 8, step: 0.5, value: 5, unit: 'kg' },
+    { id: 'trip', label: 'Viaje ida y vuelta (rampa)', min: 90, max: 240, step: 10, value: 150, unit: 's' },
+    { id: 'cad', label: 'Cadencia del elevador', min: 3, max: 10, step: 0.5, value: 5, unit: 's/jaba' },
+  ],
+  init() { return { q: [], pers: [0, 1, 2].map(() => ({ rem: 0, tot: 1, jb: [] })), belt: [], nextE: 0, deliv: 0, trips: 0, inc: 0, floor: 0, lsum: 0, emp: 0, tw: 0 }; },
+  step(s, dt, p, r) {
+    const hoy = p.mode === 0;
+    if (r() < (p.rate / 3600) * dt) s.q.push(s.t);
+    if (hoy) {
+      for (const k of s.pers) {
+        if (k.rem > 0 && (k.rem -= dt) <= 0) { k.jb.forEach((t0) => { s.deliv++; s.lsum += s.t - t0; s.floor++; s.emp++; }); k.jb = []; }
+        if (k.rem <= 0 && s.q.length && (s.q.length >= p.n || s.t - s.q[0] > 120)) {
+          k.jb = s.q.splice(0, p.n); k.tot = k.rem = p.trip * (0.9 + 0.2 * r()); s.trips++;
+          if (r() < 0.006 * ((p.n * p.w) / 20) ** 2) s.inc++;
+        }
+      }
+    } else {
+      if (s.t >= s.nextE && s.q.length && s.belt.length < 40) { s.belt.push({ t0: s.q.shift(), tin: s.t }); s.nextE = s.t + p.cad; }
+      while (s.belt.length && s.t - s.belt[0].tin >= 40) { const b = s.belt.shift(); s.deliv++; s.emp++; s.lsum += s.t - b.t0; s.tw++; if (r() < 0.0008 * (p.n * p.w) / 20) s.inc++; }
+    }
+  },
+  draw(g, s, p, W, H) {
+    const hoy = p.mode === 0;
+    g.fillStyle = '#1c2633'; g.fillRect(20, 70, 150, 160); SL.text(g, 'CD 2º piso', 95, 95, '#e6edf3', '14px system-ui', 'center');
+    g.fillRect(640, 210, 140, 100); SL.text(g, 'Muelle / tienda', 710, 235, '#e6edf3', '14px system-ui', 'center');
+    SL.belt(g, PATH, hoy ? 6 : 22, hoy ? '#2a3646' : '#2a3646');
+    for (let i = 0; i < Math.min(s.q.length, 60); i++) { g.fillStyle = '#3ecf8e'; g.fillRect(28 + (i % 10) * 14, 110 + Math.floor(i / 10) * 14, 11, 11); }
+    SL.text(g, `En espera: ${s.q.length}`, 95, 215, '#3ecf8e', '12px system-ui', 'center');
+    if (hoy) {
+      s.pers.forEach((k, i) => {
+        if (k.rem > 0) { const f = 1 - k.rem / k.tot, d = (f < 0.5 ? f * 2 : 2 - f * 2) * PL, q = SL.along(PATH, d); g.fillStyle = '#4fc3f7'; g.beginPath(); g.arc(q.x, q.y + i * 8 - 8, 8, 0, 7); g.fill(); if (f < 0.5) { g.fillStyle = '#3ecf8e'; g.fillRect(q.x - 6, q.y - 26 + i * 8 - 8, 12, 4 * k.jb.length); } }
+      });
+      SL.text(g, 'Jabas tocan el piso: ' + s.floor, 560, 345, '#ef5350', '14px system-ui');
+    } else {
+      s.belt.forEach((b) => { const q = SL.along(PATH, Math.min(1, (s.t - b.tin) / 40) * PL); g.fillStyle = '#3ecf8e'; g.fillRect(q.x - 7, q.y - 6, 14, 12); });
+      const back = PATH.map((q) => [q[0], q[1] + 40]); SL.belt(g, back, 10, '#243040');
+      for (let i = 0; i < 8; i++) { const q = SL.along(back, (((s.t / 6 + i / 8) % 1)) * PL); g.fillStyle = '#8b9bb0'; g.fillRect(q.x - 6, q.y - 4, 12, 8); }
+      SL.text(g, 'Sin contacto con el piso · retorno de vacías en banda inferior', 20, 345, '#3ecf8e', '13px system-ui');
+    }
+    SL.text(g, hoy ? 'Personas subiendo/bajando con torres' : 'Elevador + banda modular lavable', 20, 30, '#e6edf3', '14px system-ui');
+  },
+  kpis(s, p) {
+    const hrs = Math.max(s.t, 1) / 3600;
+    return [
+      { label: 'Jabas/h entregadas', value: (s.deliv / hrs).toFixed(0) },
+      { label: 'Capacidad sistema', value: (p.mode === 0 ? (3 * p.n * 3600) / p.trip : 3600 / p.cad).toFixed(0) + ' /h' },
+      { label: 'Viajes de personal con torre', value: p.mode === 0 ? s.trips : 0 },
+      { label: 'Carga por viaje', value: (p.n * p.w).toFixed(0) + ' kg' },
+      { label: 'Tiempo de surtido prom.', value: (s.lsum / Math.max(s.deliv, 1) / 60).toFixed(1) + ' min' },
+      { label: 'Incidentes (caídas)', value: s.inc },
+      { label: 'Jabas que tocan el piso', value: p.mode === 0 ? s.floor : 0 },
+      { label: 'Vacías devueltas', value: s.emp },
+    ];
+  },
+  series: (s) => ({ 'En espera': s.q.length, 'Entregadas': s.deliv, 'Incidentes': s.inc }),
+});
+</script></body></html>
