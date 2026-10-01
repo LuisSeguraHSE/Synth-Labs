@@ -22,6 +22,85 @@ function drive(s, p, loaded) {
 // Match factor = camiones disponibles · t carga / t ciclo sin colas (1 pala)
 const matchF = (s, p) => { const a = drive(s, p, true), b = drive(s, p, false), cyc = p.load + p.dump + (p.dist / a.v) * 60 + (p.dist / b.v) * 60; return (s.trucks.filter((t) => !t.dn).length * p.load) / cyc; };
 const onRoute = (t) => t.ph === 'haul' || t.ph === 'ret';
+const isLoaded = (t) => t.ph === 'haul' || t.ph === 'qC' || t.ph === 'dump';
+// Posición dibujada de cada camión (la usan draw y el mapa de calor)
+function tPos(s, p, t) {
+  const f = SL.clamp(1 - t.dk / p.dist, 0, 1);
+  if (t.ph === 'haul') return { ...pt(S, C, f, -14), dir: 1 };
+  if (t.ph === 'ret') return { ...pt(C, S, f, 14), dir: -1 };
+  if (t.ph === 'qS') return { x: S.x + 46 + 34 * (s.qS.indexOf(t) + 1), y: S.y + 54, dir: -1 };
+  if (t.ph === 'qC') return { x: C.x - 52 - 34 * (s.qC.indexOf(t) + 1), y: C.y - 26, dir: 1 };
+  if (t.ph === 'load') return { x: S.x + 34, y: S.y + 10, dir: -1 };
+  return { x: C.x - 50, y: C.y - 26, dir: -1 }; // descargando en reversa a la tolva
+}
+// Emisión de polvo PM10 en camino no pavimentado (AP-42 §13.2.2): E[kg/VKT] = 0.2819·1.5·(s/12)^0.9·(W/3)^0.45, W en t cortas, limo s = 8 %.
+// Camino mojado (lluvia) ≈ −90 %. Devuelve kg/h.
+const pm10 = (s, p, t) => { if (!onRoute(t) || t.dn || t.v <= 0) return 0; const W = p.payload * (isLoaded(t) ? 1 + EMPTY : EMPTY) * 1.1023; return 0.2819 * 1.5 * 0.694 * (W / 3) ** 0.45 * t.v * (s.rain ? 0.1 : 1); };
+const RL = Math.hypot(C.x - S.x, C.y - S.y), UX = (C.x - S.x) / RL, UY = (C.y - S.y) / RL;
+// Corte del rajo en terrazas: cresta del banco k (0 = superficie) en función de x
+const bench = (k, x) => 215 + k * 33 - 0.06 * x * (1 - k / 4);
+let BG = null;
+function scene() { // fondo estático (cielo, cordillera, bancos, piso del rajo, tendido eléctrico), pre-renderizado una vez
+  if (BG) return BG;
+  BG = document.createElement('canvas'); BG.width = 1600; BG.height = 900; const g = BG.getContext('2d'); g.scale(2, 2);
+  const r = SL.rng(11);
+  g.fillStyle = SL.vgrad(g, 0, 210, 'rgba(22,38,58,.9)', 'rgba(14,20,27,0)'); g.fillRect(0, 0, 800, 210);
+  for (let k = 0; k < 40; k++) { g.fillStyle = `rgba(220,230,245,${0.15 + 0.35 * r()})`; g.fillRect(r() * 800, r() * 90, 1, 1); } // estrellas
+  const ridge = (pts, base, col) => { g.beginPath(); g.moveTo(0, base); pts.forEach(([x, y]) => g.lineTo(x, y)); g.lineTo(800, base); g.closePath(); g.fillStyle = col; g.fill(); };
+  ridge([[0, 128], [60, 100], [130, 118], [220, 66], [300, 104], [390, 82], [470, 108], [560, 54], [640, 92], [720, 70], [800, 96]], 230, '#17212d');
+  g.fillStyle = 'rgba(230,236,245,.18)'; for (const [x, y] of [[220, 66], [560, 54], [720, 70]]) { g.beginPath(); g.moveTo(x - 16, y + 12); g.lineTo(x, y); g.lineTo(x + 18, y + 13); g.lineTo(x + 6, y + 9); g.lineTo(x - 4, y + 12); g.fill(); } // nieve
+  ridge([[0, 168], [80, 150], [190, 166], [290, 142], [410, 160], [510, 138], [600, 152], [690, 140], [800, 146]], 240, '#211d1a');
+  // Bancos del rajo: cara (oscura) + berma (clara) + cresta iluminada
+  for (let k = 0; k < 4; k++) {
+    g.beginPath(); for (let x = 0; x <= 800; x += 40) g.lineTo(x, bench(k, x)); for (let x = 800; x >= 0; x -= 40) g.lineTo(x, bench(k + 1, x)); g.closePath();
+    g.fillStyle = ['#3a2f26', '#352a21', '#30261e', '#2b221b'][k]; g.fill();
+    g.beginPath(); for (let x = 0; x <= 800; x += 40) g.lineTo(x, bench(k, x)); for (let x = 800; x >= 0; x -= 40) g.lineTo(x, bench(k, x) + 11); g.closePath();
+    g.fillStyle = 'rgba(15,10,6,.45)'; g.fill();
+    g.strokeStyle = 'rgba(255,230,200,.10)'; g.lineWidth = 1.5; g.beginPath(); for (let x = 0; x <= 800; x += 40) g.lineTo(x, bench(k, x)); g.stroke();
+    g.strokeStyle = 'rgba(0,0,0,.25)'; g.lineWidth = 1; for (let x = 6; x < 800; x += 9 + r() * 9) { const y0 = bench(k, x); g.beginPath(); g.moveTo(x, y0 + 1); g.lineTo(x + 2 - r() * 4, y0 + 10); g.stroke(); } // estrías de la cara
+    for (let n = 0; n < 26; n++) { const x = r() * 800, y = bench(k, x) + 14 + r() * 16, w = 2 + r() * 4; g.fillStyle = `rgba(${90 + r() * 40},${72 + r() * 30},${55 + r() * 25},.7)`; g.beginPath(); g.moveTo(x - w, y); g.lineTo(x - w * 0.4, y - w * 0.8); g.lineTo(x + w * 0.6, y - w * 0.6); g.lineTo(x + w, y); g.fill(); }
+  }
+  // Malla de perforación en el banco 1 (próxima tronadura)
+  for (let i = 0; i < 9; i++) for (let j = 0; j < 2; j++) { const x = 330 + i * 11 + j * 5, y = bench(1, x) + 18 + j * 7; g.fillStyle = '#120d09'; g.beginPath(); g.ellipse(x, y, 1.8, 0.9, 0, 0, 7); g.fill(); g.fillStyle = '#e8672b'; g.fillRect(x + 1.5, y - 4, 0.8, 4); }
+  // Piso del rajo con huellas y charcos secos
+  const fl = bench(4, 0); g.fillStyle = SL.vgrad(g, fl, 450 - fl, '#2a221b', '#1b1612'); g.beginPath(); for (let x = 0; x <= 800; x += 40) g.lineTo(x, bench(4, x)); g.lineTo(800, 450); g.lineTo(0, 450); g.fill();
+  g.strokeStyle = 'rgba(0,0,0,.22)'; g.lineWidth = 2; g.setLineDash([2, 3]);
+  for (const o of [0, 7]) { g.beginPath(); g.moveTo(150, 360 + o); g.bezierCurveTo(260, 400 + o, 420, 400 + o, 560, 388 + o); g.stroke(); g.beginPath(); g.moveTo(170, 352 + o); g.quadraticCurveTo(130, 380 + o, 150, 420 + o); g.stroke(); }
+  g.setLineDash([]);
+  for (let n = 0; n < 160; n++) { g.fillStyle = `rgba(${r() < 0.5 ? '255,230,200' : '0,0,0'},${0.05 + r() * 0.08})`; g.fillRect(r() * 800, fl + 4 + r() * (446 - fl), 1.5, 1.5); }
+  // Plataforma de planta con muro de contención (tierra armada) y baranda
+  g.fillStyle = SL.vgrad(g, C.y + 44, 52, '#4a4e52', '#2c3034'); g.fillRect(606, C.y + 44, 194, 52);
+  g.strokeStyle = 'rgba(0,0,0,.35)'; g.lineWidth = 1; for (let x = 606; x < 800; x += 16) for (let y = C.y + 50; y < C.y + 96; y += 12) g.strokeRect(x + ((y / 12) % 2) * 8, y, 16, 12);
+  g.fillStyle = '#5b6066'; g.fillRect(600, C.y + 42, 200, 5); g.fillStyle = 'rgba(255,255,255,.14)'; g.fillRect(600, C.y + 42, 200, 1);
+  g.strokeStyle = '#f5c542'; g.lineWidth = 1.2; g.beginPath(); g.moveTo(604, C.y + 42); g.lineTo(604, C.y + 32); g.lineTo(612, C.y + 32); g.stroke();
+  // Terraplén y plataforma de espera en la cota del chancador (fin de rampa)
+  g.beginPath(); g.moveTo(296, C.y - 14); g.lineTo(640, C.y - 14); for (let x = 640; x >= 236; x -= 20) g.lineTo(x, bench(0, x)); g.closePath();
+  g.fillStyle = SL.vgrad(g, C.y - 14, 90, '#3b3027', '#2f261e'); g.fill();
+  g.strokeStyle = 'rgba(0,0,0,.2)'; g.lineWidth = 1; for (let x = 300; x < 640; x += 7 + r() * 8) { g.beginPath(); g.moveTo(x, C.y - 12); g.lineTo(x - 3 + r() * 6, C.y - 2 + r() * 14); g.stroke(); }
+  g.fillStyle = '#4a3d31'; g.fillRect(286, C.y - 14, 420, 8); g.fillStyle = SL.vgrad(g, C.y - 30, 18, '#7a6752', '#5e4f40'); g.fillRect(286, C.y - 30, 420, 16);
+  g.fillStyle = 'rgba(255,240,220,.12)'; g.fillRect(286, C.y - 30, 420, 1.2);
+  g.fillStyle = '#5e4f40'; for (let x = 292; x < 600; x += 22) { g.beginPath(); g.moveTo(x - 4, C.y - 29); g.lineTo(x, C.y - 34); g.lineTo(x + 4, C.y - 29); g.fill(); } // berma de seguridad
+  // Tendido eléctrico de media tensión hacia la planta
+  const poles = [[262, bench(0, 262)], [420, bench(0, 420)], [560, bench(0, 560)], [612, C.y + 42]];
+  poles.forEach(([x, y]) => { g.strokeStyle = '#4a3a2a'; g.lineWidth = 2; g.beginPath(); g.moveTo(x, y); g.lineTo(x, y - 46); g.stroke(); g.strokeStyle = '#6b5a48'; g.lineWidth = 1.5; g.beginPath(); g.moveTo(x - 8, y - 42); g.lineTo(x + 8, y - 42); g.stroke(); g.fillStyle = '#c3ccd6'; for (const d of [-7, 0, 7]) g.fillRect(x + d - 0.6, y - 45, 1.2, 3); });
+  g.strokeStyle = 'rgba(30,30,30,.8)'; g.lineWidth = 0.7;
+  for (let i = 1; i < poles.length; i++) for (const d of [-7, 0, 7]) { const [ax, ay] = poles[i - 1], [bx, by] = poles[i]; g.beginPath(); g.moveTo(ax + d, ay - 44); g.quadraticCurveTo((ax + bx) / 2 + d, (ay + by) / 2 - 34, bx + d, by - 44); g.stroke(); }
+  // Camino de acarreo con bermas de seguridad
+  SL.road(g, [[S.x, S.y], [C.x, C.y]], 54);
+  g.fillStyle = 'rgba(0,0,0,.25)'; for (let d = 30; d < RL - 20; d += 34) for (const o of [-38, 38]) { const x = S.x + UX * d - UY * o, y = S.y + UY * d + UX * o; g.beginPath(); g.ellipse(x, y + 1, 4, 2, 0, 0, 7); g.fill(); }
+  for (let d = 30; d < RL - 20; d += 34) for (const o of [-38, 38]) { const x = S.x + UX * d - UY * o, y = S.y + UY * d + UX * o; g.fillStyle = '#6a5847'; g.beginPath(); g.moveTo(x - 4, y + 1); g.lineTo(x - 1, y - 3.5); g.lineTo(x + 3, y - 2.5); g.lineTo(x + 4.5, y + 1); g.fill(); } // rocas de berma
+  // Luz de torres de iluminación sobre el piso
+  SL.lightPool(g, 30, 360, 110, 0.07); SL.lightPool(g, 560, 360, 120, 0.06);
+  return BG;
+}
+// Torre de iluminación móvil (remolque diésel + mástil + 4 focos)
+function lightTower(g, x, y, h = 58) {
+  SL.contact(g, x, y, 14, 3);
+  g.fillStyle = SL.metal(g, y - 10, 10, '#c9912a'); g.fillRect(x - 11, y - 11, 22, 8); SL.wheel(g, x - 5, y - 3, 3); SL.wheel(g, x + 6, y - 3, 3);
+  g.strokeStyle = '#8b9bb0'; g.lineWidth = 2; g.beginPath(); g.moveTo(x, y - 11); g.lineTo(x, y - h); g.stroke();
+  g.fillStyle = '#2a3440'; g.fillRect(x - 10, y - h - 3, 20, 3);
+  for (let k = 0; k < 4; k++) { const lx = x - 8.5 + k * 5.5; g.fillStyle = '#20282f'; g.fillRect(lx - 2, y - h - 8, 4.5, 5); const gr = g.createRadialGradient(lx, y - h - 5, 0, lx, y - h - 5, 10); gr.addColorStop(0, 'rgba(255,240,200,.55)'); gr.addColorStop(1, 'rgba(255,240,200,0)'); g.fillStyle = gr; g.fillRect(lx - 10, y - h - 15, 20, 20); g.fillStyle = '#fff6d8'; g.fillRect(lx - 1.4, y - h - 7, 3, 3); }
+}
 SL.app({
   title: 'Minería · Ciclo de acarreo',
   desc: 'Camiones compiten por 1 pala y 1 chancador con tolva. Sube la flota hasta que la productividad se sature y crezcan las colas; provoca fallas, lluvia o atollos. Clic en camiones y equipos para inspeccionar.',
@@ -85,44 +164,83 @@ SL.app({
     if (hi !== s.hiAl) { s.hiAl = hi; if (s.qC.length || !hi) SL.log(s, hi ? 'Tolva en nivel alto: enclavamiento de descarga' : 'Tolva con espacio: descarga habilitada', hi ? 'warn' : 'ok'); }
   },
   draw(g, s, p, W, H) {
-    // Rajo en terrazas (izquierda) y plataforma de planta (derecha)
-    ['#3a2f25', '#342a21', '#2e251d', '#282019'].forEach((c, i) => { g.fillStyle = c; g.fillRect(0, 300 + i * 34, 260 - i * 50, 34); g.fillStyle = 'rgba(255,255,255,.05)'; g.fillRect(0, 300 + i * 34, 260 - i * 50, 2); });
-    g.fillStyle = '#2a3038'; g.fillRect(600, C.y + 44, 200, 10);
-    SL.road(g, [[S.x, S.y], [C.x, C.y]], 54); SL.hot('road', 330, 200, 140, 70);
-    SL.tag(g, `Rampa ${p.grade} % · RR ${p.rr + (s.rain ? 2 : 0)} %`, 470, 268, s.rain ? SL.STATE.warn : SL.STATE.idle);
-    // Correa del chancador a la pila de acopio
-    g.fillStyle = '#6e5a46'; g.beginPath(); g.moveTo(C.x + 40, C.y + 44); g.quadraticCurveTo(C.x + 72, C.y - 10 - Math.min(30, s.crushed / 3000), C.x + 104, C.y + 44); g.fill();
+    const T = s.t || 0, ST = SL.STATE;
+    g.drawImage(scene(), 0, 0, 800, 450);
+    if (s.qC.length) SL.zone(g, Math.max(290, C.x - 72 - 34 * s.qC.length), C.y - 30, Math.min(332, 34 * s.qC.length + 6), 16, { color: s.qC.length >= p.qal ? ST.warn : '#f5b942', fill: 0.08, dash: [5, 4] });
+    if (s.rain) { g.save(); g.globalAlpha = 0.5; g.strokeStyle = 'rgba(120,170,220,.18)'; g.lineWidth = 50; g.beginPath(); g.moveTo(S.x, S.y); g.lineTo(C.x, C.y); g.stroke(); g.fillStyle = 'rgba(140,190,240,.22)'; for (const [x, y, w] of [[240, 404, 40], [380, 420, 60], [520, 398, 30], [120, 430, 50]]) { g.beginPath(); g.ellipse(x, y, w / 2, 3, 0, 0, 7); g.fill(); } g.restore(); }
+    SL.hot('road', 330, 200, 140, 70);
+    // Señalética de ruta
+    const vl = Math.round(p.vl * (s.rain ? 0.7 : 1));
+    g.strokeStyle = '#8b9bb0'; g.lineWidth = 1.5; g.beginPath(); g.moveTo(196, 236); g.lineTo(196, 256); g.stroke();
+    SL.sign(g, 196, 230, `MÁX ${vl} km/h`, { color: '#b03030' });
+    g.beginPath(); g.moveTo(560, 214); g.lineTo(560, 232); g.stroke(); SL.sign(g, 560, 208, `PENDIENTE ${p.grade} %`, { color: '#c98500', ink: '#10161d' });
+    SL.tag(g, `Rampa ${p.grade} % · RR ${p.rr + (s.rain ? 2 : 0)} %`, 470, 268, s.rain ? ST.warn : ST.idle);
+    // Pila de acopio y correa del chancador (corre sólo si hay alimentación)
+    const pile = Math.min(30, s.crushed / 3000);
+    g.fillStyle = SL.vgrad(g, C.y - 10 - pile, 54 + pile, '#7a6450', '#4e3f31'); g.beginPath(); g.moveTo(C.x + 38, C.y + 44); g.quadraticCurveTo(C.x + 72, C.y - 10 - pile, C.x + 108, C.y + 44); g.fill();
+    g.fillStyle = 'rgba(0,0,0,.2)'; for (let k = 0; k < 9; k++) { g.beginPath(); g.arc(C.x + 52 + k * 5.5, C.y + 38 - (k % 3) * 3 - Math.sin(k) * 2, 1.2, 0, 7); g.fill(); }
     SL.hot('stock', C.x + 40, C.y + 10, 66, 36);
-    SL.belt(g, [[C.x + 26, C.y + 36], [C.x + 70, C.y + 4]], 10);
+    const crRun = !s.crDn && s.cfeed > 0;
+    SL.belt(g, [[C.x + 26, C.y + 36], [C.x + 70, C.y + 4]], 10, undefined, crRun ? 1 : 0);
+    if (crRun) for (let k = 0; k < 4; k++) { const a = (T * 0.8 + k / 4) % 1; g.fillStyle = `rgba(150,135,115,${0.3 * (1 - a)})`; g.beginPath(); g.arc(C.x + 72 + a * 6, C.y + 6 - a * 16, 3 + a * 6, 0, 7); g.fill(); } // polvo en el punto de descarga
+    // Equipos
+    lightTower(g, 18, 346); lightTower(g, 560, 346, 52);
     SL.excavator(g, S.x - 44, S.y + 30, { s: 0.9, t: s.shDn ? 0 : s.t, busy: !!s.shov && !s.shDn }); SL.hot('shovel', S.x - 76, S.y - 30, 112, 64);
+    if (s.shov && !s.shDn) for (let k = 0; k < 5; k++) { const a = (T * 1.2 + k / 5) % 1; g.fillStyle = `rgba(140,120,95,${0.28 * (1 - a)})`; g.beginPath(); g.arc(S.x + 26 + k * 3, S.y - 6 - a * 22, 3 + a * 8, 0, 7); g.fill(); } // polvo de carguío
+    SL.cone(g, S.x + 70, S.y + 26, 0.8); SL.cone(g, S.x + 4, S.y + 44, 0.8);
     SL.crusher(g, C.x + 4, C.y + 44, { s: 0.85, load: Math.max(0.1, s.hop / p.hop), state: s.crDn ? 'down' : s.crus || s.hop > 0 ? 'run' : 'idle' }); SL.hot('crusher', C.x - 26, C.y - 18, 60, 64);
-    SL.tag(g, s.shDn ? 'PALA · FALLA' : `PALA · ${s.shov ? 'cargando' : 'en espera'}`, S.x - 20, S.y - 58, s.shDn ? SL.STATE.down : s.shov ? SL.STATE.run : SL.STATE.idle);
-    SL.tag(g, s.crDn ? 'CHANCADOR · ATOLLO' : `CHANCADOR · ${Math.round(s.cfeed || 0)} t/h`, C.x - 20, C.y - 44, s.crDn ? SL.STATE.down : s.hiAl && s.qC.length ? SL.STATE.warn : s.cfeed > 0 ? SL.STATE.run : SL.STATE.idle);
-    SL.gauge(g, 640, 36, 150, 14, s.hop / p.hop, s.hiAl ? '#f5b942' : '#8a6a4a', `Tolva ${Math.round(s.hop)}/${p.hop} t`); SL.hot('crusher', 640, 30, 150, 24);
-    if (s.rain) { g.strokeStyle = 'rgba(159,211,255,.25)'; g.lineWidth = 1; const t = s.t || 0; for (let k = 0; k < 60; k++) { const x = (k * 137 + t * 400) % 800, y = (k * 71 + t * 900) % 450; g.beginPath(); g.moveTo(x, y); g.lineTo(x - 4, y + 12); g.stroke(); } }
+    SL.stackLight(g, C.x - 30, C.y + 42, s.crDn ? 'down' : s.hiAl ? 'warn' : 'run', { s: 0.8 });
+    SL.dial(g, C.x + 40, C.y + 62, 9, s.ckw / (150 + 0.3 * p.cr), { label: 'kW', red: 0.9 });
+    // Estación de servicio en el piso del rajo: estanque de petróleo (se vacía con el consumo de la flota) y surtidor
+    const tankF = 1 - (s.fuel % 60000) / 60000;
+    SL.tank(g, 712, 372, 34, 50, tankF, { liquid: '#8a6a1e' });
+    g.fillStyle = SL.metal(g, 396, 26, '#c0392b'); g.fillRect(672, 398, 14, 24); g.fillStyle = '#10161d'; g.fillRect(674, 402, 10, 6); g.fillStyle = '#7CFC9a'; g.fillRect(675, 403, 8, 2);
+    g.strokeStyle = '#15191e'; g.lineWidth = 1.5; g.beginPath(); g.moveTo(686, 404); g.quadraticCurveTo(696, 412, 692, 422); g.stroke();
+    SL.sign(g, 704, 352, 'COMBUSTIBLE', { color: '#2f6fb0' });
+    for (const x of [656, 700]) SL.bollard(g, x, 430, 16);
+    // Vigía caminando en la zona de servicio
+    const wx = 600 + 40 * Math.sin(T * 0.25), wd = Math.cos(T * 0.25) >= 0 ? 1 : -1;
+    SL.person(g, wx, 432, { dir: wd, walk: T * 6, s: 0.8, shirt: '#e8672b', vest: '#f5c542' });
+    // Lluvia
+    if (s.rain) { g.strokeStyle = 'rgba(159,211,255,.25)'; g.lineWidth = 1; for (let k = 0; k < 70; k++) { const x = (k * 137 + T * 400) % 800, y = (k * 71 + T * 900) % 450; g.beginPath(); g.moveTo(x, y); g.lineTo(x - 4, y + 12); g.stroke(); } }
+    // Camiones: estela de polvo (∝ emisión PM10), sombra y rotación de ruedas por distancia recorrida
+    const pos = s.trucks.map((t) => tPos(s, p, t));
     s.trucks.forEach((t, i) => {
-      let q, dir = 1;
-      const f = SL.clamp(1 - t.dk / p.dist, 0, 1);
-      if (t.ph === 'haul') q = pt(S, C, f, -14);
-      else if (t.ph === 'ret') { q = pt(C, S, f, 14); dir = -1; }
-      else if (t.ph === 'qS') { q = { x: S.x + 50 + 30 * (s.qS.indexOf(t) + 1), y: S.y + 54 }; dir = -1; }
-      else if (t.ph === 'qC') q = { x: C.x - 56 - 30 * (s.qC.indexOf(t) + 1), y: C.y - 26 };
-      else if (t.ph === 'load') { q = { x: S.x + 34, y: S.y + 10 }; dir = -1; } else q = { x: C.x - 36, y: C.y + 40 };
-      const loaded = t.ph === 'haul' || t.ph === 'qC' || t.ph === 'dump';
-      SL.haulTruck(g, q.x, q.y + 6, { s: 0.72, dir, loaded, color: t.dn ? '#8a5a4a' : undefined, state: t.dn ? 'down' : t.ph.startsWith('q') ? 'block' : t.ph === 'load' || t.ph === 'dump' ? 'info' : 'run' });
-      if (t.dn) SL.tag(g, `C${i + 1} FALLA`, q.x, q.y - 30, SL.STATE.down, '600 10px system-ui');
-      SL.hot('truck:' + i, q.x - 16, q.y - 18, 34, 28);
+      const e = pm10(s, p, t); if (e <= 0) return;
+      const q = pos[i], b = t.ph === 'haul' ? -1 : 1, k0 = Math.min(1, e / 70);
+      for (let k = 0; k < 5; k++) { const a = (T * 2 + k / 5 + i * 0.37) % 1, d = 14 + a * 46; g.fillStyle = `rgba(150,128,100,${0.32 * k0 * (1 - a)})`; g.beginPath(); g.arc(q.x + b * UX * d, q.y + b * UY * d - a * 10, 4 + a * 11, 0, 7); g.fill(); }
     });
+    s.trucks.forEach((t, i) => {
+      const q = pos[i], ph = t.ph, x = q.x, y = q.y;
+      SL.haulTruck(g, x, y + 6, { s: 0.72, dir: q.dir, loaded: isLoaded(t) && ph !== 'dump', dist: t.km * 160, color: t.dn ? '#8a5a4a' : undefined, state: t.dn ? 'down' : ph.startsWith('q') ? 'block' : ph === 'load' || ph === 'dump' ? 'info' : 'run' });
+      if (ph === 'dump') for (let k = 0; k < 3; k++) { const a = (T * 3 + k / 3) % 1; g.fillStyle = `rgba(120,98,76,${0.8 * (1 - a)})`; g.beginPath(); g.arc(x + 18 + k * 3, y - 6 + a * 22, 2.4, 0, 7); g.fill(); } // descarga a tolva
+      if (t.dn) { SL.cone(g, x - 20, y + 8, 0.6); SL.cone(g, x + 20, y + 8, 0.6); SL.tag(g, `C${i + 1} FALLA`, x, y - 30, ST.down, '600 10px system-ui'); }
+      SL.hot('truck:' + i, x - 16, y - 18, 34, 28);
+    });
+    SL.tag(g, s.shDn ? 'PALA · FALLA' : `PALA · ${s.shov ? 'cargando' : 'en espera'}`, S.x - 20, S.y - 58, s.shDn ? ST.down : s.shov ? ST.run : ST.idle);
+    SL.tag(g, s.crDn ? 'CHANCADOR · ATOLLO' : `CHANCADOR · ${Math.round(s.cfeed || 0)} t/h`, C.x - 20, C.y - 58, s.crDn ? ST.down : s.hiAl && s.qC.length ? ST.warn : s.cfeed > 0 ? ST.run : ST.idle);
+    SL.gauge(g, 640, 30, 150, 14, s.hop / p.hop, s.hiAl ? '#f5b942' : '#8a6a4a', `Tolva ${Math.round(s.hop)}/${p.hop} t`); SL.hot('crusher', 640, 24, 150, 24);
+    if (s.qS.length) SL.sign(g, Math.min(740, S.x + 63 + 17 * s.qS.length), S.y + 84, `ESPERA PALA · ${s.qS.length}`, { color: s.qS.length >= p.qal ? '#c98500' : '#3a4a5e' });
     // Panel de despacho
     const mf = matchF(s, p), pr = s.ema;
     SL.rr(g, 10, 10, 232, 66, 6); g.fillStyle = 'rgba(8,12,18,.85)'; g.fill(); g.strokeStyle = '#2e3e52'; g.lineWidth = 1; g.stroke();
     SL.text(g, 'DESPACHO', 20, 28, '#8b9bb0', '600 11px system-ui');
-    SL.led(g, 228, 24, 3, s.qAl ? SL.STATE.warn : SL.STATE.run);
+    SL.led(g, 228, 24, 3, s.qAl ? ST.warn : ST.run);
     SL.text(g, `Match factor ${mf.toFixed(2)} · ${mf < 0.95 ? 'pala sub-utilizada' : mf > 1.05 ? 'camiones esperan' : 'equilibrado'}`, 20, 46, mf < 0.95 || mf > 1.05 ? '#f5b942' : '#3ecf8e', '12px system-ui');
     SL.text(g, `Ritmo ${Math.round(pr)} / meta ${p.plan} t/h`, 20, 64, pr >= p.plan ? '#3ecf8e' : '#ef5350', '12px system-ui');
     SL.hot('disp', 10, 10, 232, 66);
     SL.text(g, 'Tolva con material = cargado · LED verde ruta · amarillo cola · azul carga/descarga · rojo falla', 12, H - 12, '#8b9bb0', '11px system-ui');
   },
+  heatPos: [262, 22],
+  heat: [
+    { id: 'cong', label: 'Congestión', unit: 'camiones', max: 4, mode: 'sum', fn: (s, p) => s.trucks.filter((t) => t.ph === 'qS' || t.ph === 'qC' || t.dn).map((t) => { const q = tPos(s, p, t); return [q.x, q.y - 4, 1, 50]; }) },
+    { id: 'fuel', label: 'Consumo combustible', unit: 'L/h', max: (s, p) => IDLE + SFC * p.pw, mode: 'max', fn: (s, p) => s.trucks.map((t) => { const q = tPos(s, p, t); return [q.x, q.y - 6, t.lph, 40]; }) },
+    { id: 'pm', label: 'Polvo PM10', unit: 'kg/h', max: 120, mode: 'sum', fn: (s, p) => {
+      const out = [];
+      s.trucks.forEach((t) => { const e = pm10(s, p, t); if (e <= 0) return; const q = tPos(s, p, t), b = t.ph === 'haul' ? -1 : 1; [[10, 0.5, 28], [34, 0.3, 38], [62, 0.2, 48]].forEach(([d, w, r]) => out.push([q.x + b * UX * d, q.y + b * UY * d - 6, e * w * 2, r])); });
+      if (s.cfeed > 0 && !s.crDn) out.push([C.x + 70, C.y + 4, 0.0006 * s.cfeed, 36]); // chancado primario (AP-42 ≈ 0.0006 kg/t)
+      return out; } },
+  ],
   vars(s, p) {
     const T = Math.max(s.t || 0, 1), a = drive(s, p, true), b = drive(s, p, false), kw = s.trucks.reduce((x, t) => x + t.kw, 0), lph = s.trucks.reduce((x, t) => x + t.lph, 0);
     const rt = s.trucks.filter(onRoute), av = s.trucks.filter((t) => !t.dn).length, cyc0 = p.load + p.dump + (p.dist / a.v) * 60 + (p.dist / b.v) * 60, mf = matchF(s, p);

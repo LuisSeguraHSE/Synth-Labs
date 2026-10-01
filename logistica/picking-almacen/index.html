@@ -12,6 +12,38 @@ const TR = 0.55, V0 = 1.2, KG = 2.5, ROUTE = [1, 1.2, 0.9], ZN = ['A', 'B', 'C',
 const lamOf = (s, p) => { const hr = ((s.t || 0) / 60) % 16; return p.lam * (hr > 4 && hr < 7 ? p.peak : 1); }; // punta 12:00-15:00
 const dfac = (s, p) => (ROUTE[p.route] * (s.block ? 1.5 : 1)) / (p.vw / V0); // factor de recorrido
 const svcMean = (s, p) => p.svc * (1 - TR + TR * dfac(s, p));
+const AY = 174, BY = 190; // pasillo de picking (pies) y banda de acumulación
+const pkHome = (i) => ({ x: 26 + (i % 10) * 76, y: 296 + Math.floor(i / 10) * 106 }); // estación de consolidación del picker i
+// Posición del picker ocupado en el pasillo: sale de su estación, recorre hasta la ubicación del pedido, extrae y vuelve
+function pkAisle(k, i) {
+  if (!k.busy || !k.o) return null;
+  const x0 = SL.clamp(pkHome(i).x + 40, 16, 784), xt = 24 + k.o.z * 192 + 22 + k.o.u * 128, el = k.tot - k.rem, h = Math.max(k.trav / 2, 1e-6);
+  if (el < h) { const f = el / h; return { x: SL.lerp(x0, xt, f), dir: xt >= x0 ? 1 : -1, walk: true, back: false }; }
+  if (k.rem < h) { const f = 1 - k.rem / h; return { x: SL.lerp(xt, x0, f), dir: x0 >= xt ? 1 : -1, walk: true, back: true }; }
+  return { x: xt, dir: 1, walk: false, back: false };
+}
+let BG = null;
+function scene() { // fondo estático pre-renderizado: piso, racks, demarcaciones, extintores, carros estacionados
+  if (BG) return BG;
+  BG = document.createElement('canvas'); BG.width = 1600; BG.height = 900; const g = BG.getContext('2d'); g.scale(2, 2);
+  const r = SL.rng(3);
+  g.fillStyle = SL.vgrad(g, 0, 450, '#1a2129', '#12181e'); g.fillRect(0, 0, 800, 450);
+  g.fillStyle = SL.vgrad(g, 0, 26, '#0f151b', '#1a2129'); g.fillRect(0, 0, 800, 26);                       // muro posterior
+  g.strokeStyle = 'rgba(0,0,0,.3)'; g.lineWidth = 1; g.beginPath(); for (let x = 0; x <= 800; x += 96) { g.moveTo(x, 0); g.lineTo(x, 450); } for (let y = 40; y < 450; y += 96) { g.moveTo(0, y); g.lineTo(800, y); } g.stroke(); // juntas de losa
+  for (let n = 0; n < 260; n++) { g.fillStyle = `rgba(255,255,255,${0.012 + r() * 0.03})`; g.fillRect(r() * 800, r() * 450, 2, 1); }
+  // Pasillo de picking con líneas de borde y luminarias
+  g.fillStyle = 'rgba(255,255,255,.025)'; g.fillRect(0, 138, 800, 40);
+  g.fillStyle = '#d9a520'; g.fillRect(0, 137, 800, 2); g.fillRect(0, 178, 800, 2);
+  for (let x = 96; x < 800; x += 192) SL.lightPool(g, x, 150, 110, 0.07);
+  for (let i = 0; i < 4; i++) SL.shelf(g, 24 + i * 192, 24, 172, 108, 3, 0.75, i + 1);
+  for (const x of [206, 398, 590]) { g.fillStyle = '#c0392b'; SL.rr(g, x - 3, 104, 6, 14, 2); g.fill(); g.fillStyle = '#20282f'; g.fillRect(x - 1.5, 101, 3, 3); g.fillStyle = '#f1f4f7'; g.fillRect(x - 3, 109, 6, 2); } // extintores
+  // Área de estaciones de consolidación y área de despacho
+  SL.zone(g, 8, 246, 784, 84, { color: '#f5b942', fill: 0.025, dash: [8, 5] });
+  SL.zone(g, 340, 340, 452, 88, { color: '#4fc3f7', label: 'Despacho · pedidos completos', fill: 0.04 });
+  SL.zone(g, 8, 340, 316, 88, { color: '#8b9bb0', hatch: true, fill: 0.02 }); SL.sign(g, 166, 346, 'CARROS DE PICKING', { color: '#3a4a5e' });
+  for (let k = 0; k < 5; k++) { const x = 30 + k * 58, y = 420; SL.contact(g, x + 18, y + 1, 22, 2.5); g.strokeStyle = '#7d8fa3'; g.lineWidth = 1.4; g.strokeRect(x, y - 44, 36, 40); g.lineWidth = 0.7; for (let q = 1; q < 6; q++) { g.beginPath(); g.moveTo(x + q * 6, y - 44); g.lineTo(x + q * 6, y - 4); g.stroke(); } for (let q = 1; q < 5; q++) { g.beginPath(); g.moveTo(x, y - 44 + q * 8); g.lineTo(x + 36, y - 44 + q * 8); g.stroke(); } SL.wheel(g, x + 4, y - 2, 2.6); SL.wheel(g, x + 32, y - 2, 2.6); } // jaulas rodantes
+  return BG;
+}
 function erlang(s, p) { // M/M/c: P(esperar), Wq, P(W ≤ SLA) y dotación mínima para 90 %
   const lam = lamOf(s, p), mu = 1 / svcMean(s, p), a = lam / mu, calc = (c) => {
     if (c <= a) return { pw: 1, wq: Infinity, ok: 0 };
@@ -67,27 +99,59 @@ SL.app({
     const pk = lam > p.lam; if (pk !== s.pk0) { s.pk0 = pk; SL.log(s, pk ? `Inicio hora punta (×${p.peak})` : 'Fin de hora punta', pk ? 'warn' : 'info'); }
   },
   draw(g, s, p, W, H) {
-    const T = s.t || 0, e = erlang(s, p);
-    for (let i = 0; i < 4; i++) { SL.shelf(g, 24 + i * 192, 24, 172, 108, 3, 0.75, i + 1); SL.hot('zone:' + i, 24 + i * 192, 18, 172, 118); SL.tag(g, `Zona ${ZN[i]}`, 110 + i * 192, 14, s.block && i === 2 ? SL.STATE.down : SL.STATE.idle, '600 10px system-ui'); }
-    if (s.block) SL.tag(g, 'PASILLO BLOQUEADO', 494, 80, SL.STATE.down);
-    SL.text(g, `Pedidos en cola: ${s.q.length}`, 20, 160, s.qAl ? '#f5b942' : '#e6edf3', '600 13px system-ui');
-    SL.tag(g, `λ ${(60 * lamOf(s, p)).toFixed(0)} ped/h · ρ ${e.rho.toFixed(2)} · Erlang-C ${isFinite(e.wq) ? e.wq.toFixed(1) + ' min' : '∞'} · rec. ${e.rec} pickers`, 460, 156, e.rho >= 1 ? SL.STATE.down : e.rec > e.c ? SL.STATE.warn : SL.STATE.info);
-    if (s.wms) SL.tag(g, 'WMS FUERA DE LÍNEA', 700, 230, SL.STATE.down);
-    SL.belt(g, [[16, 190], [784, 190]], 20); SL.hot('belt', 16, 176, 768, 28);
+    const T = s.t || 0, e = erlang(s, p), ST = SL.STATE;
+    if (p.n > 10) { g.fillStyle = '#151c23'; g.fillRect(0, 336, 800, 114); } // con 2 filas de pickers se ocultan carros/despacho
+    g.drawImage(scene(), 0, 0, 800, 450);
+    if (p.n > 10) { g.fillStyle = SL.vgrad(g, 336, 114, '#161d24', '#12181e'); g.fillRect(0, 336, 800, 100); SL.zone(g, 8, 352, 784, 84, { color: '#f5b942', fill: 0.025, dash: [8, 5] }); }
+    for (let i = 0; i < 4; i++) { SL.hot('zone:' + i, 24 + i * 192, 18, 172, 118); SL.tag(g, `Zona ${ZN[i]}`, 110 + i * 192, 14, s.block && i === 2 ? ST.down : ST.idle, '600 10px system-ui'); }
+    if (s.block) { SL.tag(g, 'PASILLO BLOQUEADO', 494, 80, ST.down); g.fillStyle = '#8b9bb0'; g.fillRect(468, AY - 20, 2, 20); g.fillRect(520, AY - 20, 2, 20); SL.hazard(g, 466, AY - 22, 58, 5); SL.cone(g, 456, AY + 2, 0.8); SL.cone(g, 532, AY + 2, 0.8); }
+    if (s.wms) SL.tag(g, 'WMS FUERA DE LÍNEA', 302, 80, ST.down);
+    // Banda de acumulación: se detiene cuando está llena
     const nq = Math.min(s.q.length, 44);
-    for (let i = 0; i < nq; i++) SL.carton(g, 20 + i * 17, 183, 14, 14, s.q[i].vip ? '#4fc3f7' : T - s.q[i].t > p.sla ? '#c0504d' : '#b98a58');
-    if (s.q.length > nq) SL.tag(g, `+${s.q.length - nq}`, 764, 170, SL.STATE.warn);
+    SL.belt(g, [[16, BY], [784, BY]], 20, undefined, nq >= 44 ? 0 : 0.6); SL.hot('belt', 16, 176, 768, 28);
+    for (let i = 0; i < nq; i++) SL.carton(g, 20 + i * 17, BY - 7, 14, 14, s.q[i].vip ? '#4fc3f7' : T - s.q[i].t > p.sla ? '#c0504d' : '#b98a58');
+    if (s.q.length > nq) SL.tag(g, `+${s.q.length - nq}`, 764, 170, ST.warn);
+    SL.text(g, `Pedidos en cola: ${s.q.length}`, 20, 234, s.qAl ? '#f5b942' : '#e6edf3', '600 13px system-ui');
+    SL.tag(g, `λ ${(60 * lamOf(s, p)).toFixed(0)} ped/h · ρ ${e.rho.toFixed(2)} · Erlang-C ${isFinite(e.wq) ? e.wq.toFixed(1) + ' min' : '∞'} · rec. ${e.rec} pickers`, 370, 230, e.rho >= 1 ? ST.down : e.rec > e.c ? ST.warn : ST.info);
+    // Estaciones de consolidación
     s.pk.forEach((k, i) => {
-      const x = 26 + (i % 10) * 76, y = 296 + Math.floor(i / 10) * 100, brk = k.brk > 0 && !k.busy;
+      const { x, y } = pkHome(i), brk = k.brk > 0 && !k.busy;
       SL.table(g, x, y - 26, 46);
-      if (k.busy && !k.walk) { SL.carton(g, x + 6, y - 40, 16, 14, '#b98a58'); SL.carton(g, x + 24, y - 36, 12, 10, '#c9a06a'); }
-      if (!brk) SL.person(g, x + 58, y + 8, { dir: -1, busy: k.busy, walk: k.walk ? T * 40 : 0, carry: k.walk && k.rem < k.tot / 2 ? '#b98a58' : null });
-      SL.led(g, x + 4, y - 32, 2.6, brk ? SL.STATE.setup : k.busy ? SL.STATE.run : SL.STATE.idle, k.busy || brk);
+      g.fillStyle = '#20282f'; g.fillRect(x + 34, y - 44, 2, 18); g.fillStyle = '#0b1117'; SL.rr(g, x + 28, y - 52, 14, 10, 1.5); g.fill(); // terminal RF / pantalla
+      g.fillStyle = s.wms ? '#5a1d1d' : k.busy ? '#1d5778' : '#1a2a36'; g.fillRect(x + 29.5, y - 50.5, 11, 7);
+      if (k.busy) { g.fillStyle = 'rgba(159,227,255,.8)'; for (let l = 0; l < Math.min(4, k.o.lines); l++) g.fillRect(x + 31, y - 49 + l * 1.6, 3 + ((l * 5) % 6), 0.8); }
+      if (k.busy) { const fr = 1 - k.rem / k.tot; SL.crate(g, x + 4, y - 40, 22, 14, '#2f6fb0'); if (fr > 0.5) SL.carton(g, x + 8, y - 48, 12, 9, '#c9a06a'); }
+      if (!brk && !k.busy) SL.person(g, x + 58, y + 8, { dir: -1 });
+      if (brk) { g.fillStyle = '#3a4654'; g.fillRect(x + 52, y - 8, 14, 3); g.fillRect(x + 64, y - 22, 3, 17); g.fillStyle = '#26313d'; g.fillRect(x + 54, y - 5, 2, 13); g.fillRect(x + 62, y - 5, 2, 13); } // silla vacía
+      SL.led(g, x + 4, y - 32, 2.6, brk ? ST.setup : k.busy ? ST.run : ST.idle, k.busy || brk);
       SL.text(g, brk ? `P${i + 1} descanso` : `P${i + 1}${k.busy ? ' · ' + (k.walk ? 'camina' : 'extrae') : ''}`, x + 23, y + 24, brk ? '#b39ddb' : '#8b9bb0', '11px system-ui', 'center');
       SL.hot('pk:' + i, x - 4, y - 50, 74, 80);
     });
+    // Pickers en el pasillo (recorriendo o extrayendo en la ubicación)
+    const lbl = [];
+    s.pk.forEach((k, i) => {
+      const a = pkAisle(k, i); if (!a) return;
+      SL.person(g, a.x, AY, { s: 0.85, dir: a.dir, walk: a.walk ? T * 40 + i : 0, busy: !a.walk, carry: a.back ? '#b98a58' : null, shirt: k.o.vip ? '#1f7fb0' : undefined });
+      if (lbl.every((x) => Math.abs(x - a.x) > 16)) { lbl.push(a.x); SL.text(g, `P${i + 1}`, a.x, AY - 36, '#c9d4df', '600 9px system-ui', 'center'); }
+      SL.hot('pk:' + i, a.x - 10, AY - 40, 20, 42);
+    });
+    // Despacho: tarimas con pedidos completos y montacargas
+    if (p.n <= 10) {
+      const np = Math.floor(s.done / 12) % 5, nc = s.done % 12;
+      for (let k = 0; k <= np; k++) { const px = 360 + k * 58; SL.pallet(g, px, 420, 50); const m = k < np ? 12 : nc; for (let j = 0; j < m; j++) SL.carton(g, px + 1 + (j % 4) * 12.2, 408 - Math.floor(j / 4) * 12, 12, 12, '#b98a58'); }
+      const fx = 700 + 60 * Math.sin(T * 0.4), fd = Math.cos(T * 0.4) >= 0 ? 1 : -1;
+      if (np < 4) SL.forklift(g, fx, 424, { s: 1.2, dir: fd, dist: fx * 3, load: fd < 0 ? '#b98a58' : null });
+    }
     SL.text(g, 'Caja roja fuera de SLA · azul urgente · LED violeta = descanso', 20, H - 8, '#8b9bb0', '11px system-ui');
   },
+  heatPos: [552, 214],
+  heat: [
+    { id: 'traf', label: 'Tráfico pasillo', unit: 'pickers', max: 3, mode: 'sum', fn: (s) => s.pk.map((k, i) => pkAisle(k, i)).filter(Boolean).map((a) => [a.x, AY - 14, 1, 46]) },
+    { id: 'wait', label: 'Espera pedidos', unit: 'min', max: (s, p) => 2 * p.sla, mode: 'max', fn: (s) => s.q.map((o, i) => [20 + Math.min(i, 43) * 17 + 7, BY, (s.t || 0) - o.t, 24]) },
+    { id: 'back', label: 'Backlog zona', unit: 'líneas', max: 60, mode: 'max', fn: (s) => {
+      const b = [0, 0, 0, 0]; s.q.forEach((o) => (b[o.z] += o.lines)); s.pk.forEach((k) => { if (k.busy && k.o) b[k.o.z] += k.o.lines * (k.rem / k.tot); });
+      return b.flatMap((v, z) => [50, 110, 170].map((dx) => [24 + z * 192 + dx - 4, 80, v, 80])); } },
+  ],
   vars(s, p) {
     const T = Math.max(s.t || 0, 1), e = erlang(s, p), wk = s.pk.filter((k) => k.busy && k.walk).length, pi = s.pk.filter((k) => k.busy && !k.walk).length, old = s.q.length ? (s.t || 0) - s.q[0].t : 0;
     const kg = s.pk.reduce((a, k) => a + (k.busy && k.rem < k.tot / 2 ? k.o.lines * KG : 0), 0), late = s.q.filter((o) => (s.t || 0) - o.t > p.sla).length;
