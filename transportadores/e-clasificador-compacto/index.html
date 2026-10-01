@@ -16,6 +16,22 @@ const load = (s) => s.it.reduce((a, x) => a + KG[x.ty], 0);
 const occ = (s) => s.it.reduce((a, x) => a + TY[x.ty][1], 0) / LM;
 const amps = (kw) => (kw * 1000) / (Math.sqrt(3) * 400 * 0.85);
 const stTxt = (s, p) => (p.mode === 0 ? 'MANUAL' : s.estop ? 'PARO DE EMERGENCIA' : s.v < 0.05 ? 'DETENIDO' : 'MARCHA');
+// --- Geometría compartida por draw() y el mapa de calor (coordenadas del lienzo)
+const PXM = LL / LM, KGM = 0.45 * KG[0] + 0.4 * KG[1] + 0.15 * KG[2], DPX = 20; // px por m de banda · kg medio por bulto · px por m de piso (Hoy)
+const chX = (k) => 40 + k * 124 + 52;                                          // centro del chute k en "Hoy"
+const manPos = (s, i) => {                                                      // operario manual i: va al chute con el bulto y vuelve
+  const k = s.man[i], hx = 90 + i * 112, hy = 162;
+  if (!k.it || !k.tot) return { x: hx, y: hy, mv: false, carry: false, dir: i % 2 ? -1 : 1 };
+  const f = SL.clamp(1 - k.rem / k.tot, 0, 1), go = f < 0.5, u = go ? f * 2 : 2 - f * 2, tx = chX(k.it.d), ty = 312;
+  return { x: hx + (tx - hx) * u, y: hy + (ty - hy) * u, mv: true, carry: go, dir: (go ? tx >= hx : tx < hx) ? 1 : -1, d: Math.hypot(tx - hx, ty - hy) / DPX };
+};
+const pileXY = (i) => [48 + (i % 40) * 17 + ((i * 7) % 5), 64 + Math.floor(i / 40) * 17 + ((i * 3) % 4)];
+const IND = [40, 94], EXC = [40, 380];                                          // inducción y excepciones (Propuesto)
+// Fondo estático (zonas, luz, bandejas, señalética) pre-renderizado por escenario.
+const BG = {};
+const staticBg = (key, fn) => { let c = BG[key]; if (!c) { c = BG[key] = document.createElement('canvas'); c.width = 1600; c.height = 900; const g = c.getContext('2d'); g.scale(2, 2); fn(g); } return c; };
+const estopBox = (g, x, y) => { g.fillStyle = '#f5c542'; SL.rr(g, x - 4, y - 4, 8, 8, 1.5); g.fill(); g.fillStyle = '#c0392b'; g.beginPath(); g.arc(x, y, 2.4, 0, 7); g.fill(); };
+const DV = { got: [], t: [], last: 0 };                                          // animación de brazos desviadores (sólo vista)
 SL.app({
   title: 'Demo E · Clasificador chico (4–6 destinos)',
   desc: 'Inducción → lectura → desviadores → chutes, con recirculación cuando el chute está lleno. Mix de bolsas, cajas e irregulares. Baja el volumen para ver el punto de equilibrio. Clic en lector, desviadores, chutes y motor para inspeccionar.',
@@ -49,7 +65,7 @@ SL.app({
       for (let i = 0; i < 6; i++) {
         const k = s.man[i];
         if (k.it && (k.rem -= dt) <= 0) { s.out++; k.n++; if (r() < 0.03) s.bad++; else s.ok++; k.it = null; }
-        if (!k.it && !k.off && s.pend.length) { k.it = s.pend.shift(); s.q--; k.rem = (3600 / 250) * (0.8 + 0.4 * r()) * (1 + 0.15 * TY[k.it.ty][1]); }
+        if (!k.it && !k.off && s.pend.length) { k.it = s.pend.shift(); s.q--; k.rem = (3600 / 250) * (0.8 + 0.4 * r()) * (1 + 0.15 * TY[k.it.ty][1]); k.tot = k.rem; }
       }
       ema(); return;
     }
@@ -78,64 +94,144 @@ SL.app({
     }
     ema();
   },
+  heatPos: [520, 402],
+  heat: [
+    { id: 'erg', label: 'Esfuerzo físico', unit: 'kg·m/min', max: 160, mode: 'sum', fn: (s, p) => {
+      // masa × distancia transportada a mano por minuto, en la posición de cada persona
+      if (p.mode === 0) return s.man.map((k, i) => { const q = manPos(s, i); return q.mv ? [q.x, q.y - 18, (KG[k.it.ty] * q.d * 60) / k.tot, 40] : null; }).filter(Boolean);
+      const lam = s.estop || s.v < 0.2 ? 0 : (p.rate * (s.surge ? 2 : 1)) / 60, rj = s.t > 1 ? (s.rej / s.t) * 60 : 0;
+      return [[IND[0], IND[1] - 18, lam * KGM * 0.6, 40], [EXC[0], EXC[1] - 18, rj * KGM * 8, 40]]; // inducción: desliza 0.6 m · excepciones: 8 m
+    } },
+    { id: 'traf', label: 'Tráfico de personas', unit: 'pers.', max: 1.5, mode: 'sum', fn: (s, p) => {
+      if (p.mode === 0) return s.man.map((k, i) => { const q = manPos(s, i); return [q.x, q.y - 14, 1, 34]; });
+      return [[IND[0], IND[1] - 14, 1, 34], [EXC[0], EXC[1] - 14, 1, 34]];
+    } },
+    { id: 'cong', label: 'Bultos en espera', unit: 'bultos', max: (s, p) => Math.max(16, p.cap), mode: 'max', fn: (s, p) => {
+      const pts = [], hoy = p.mode === 0;
+      if (hoy) { const n = Math.min(s.q, 160); for (let i = 0; i < n; i += 3) { const [x, y] = pileXY(i); pts.push([x, y, s.q, 30]); } }
+      else {
+        for (let i = 0; i < Math.min(s.q, 24); i += 2) pts.push([14 + (i % 6) * 13, 186 - Math.floor(i / 6) * 13, s.q, 30]);
+        if (s.rbin) { const rq = at(RJ); pts.push([rq.x - 61, rq.y, s.rbin, 40]); }
+        const rc = s.it.filter((a) => a.lap > 0).length; s.it.forEach((a) => { if (a.lap > 0) { const q = at(a.s); pts.push([q.x, q.y, rc, 22]); } });
+      }
+      for (let k = 0; k < p.nd; k++) { const c = s.ch[k]; if (!c.n) continue; if (hoy) pts.push([chX(k), 362, c.n, 46]); else { const q = at(DS[k]); pts.push([q.x, DS[k] < 15 ? 37 : 359, c.n, 46]); } }
+      return pts;
+    } },
+  ],
   draw(g, s, p, W, H) {
-    const hoy = p.mode === 0;
+    const hoy = p.mode === 0, ST = SL.STATE;
     const parcel = (x, y, ty, a) => {
       g.save();
       if (a.rj || a.lap > 0) { g.strokeStyle = a.rj ? '#ef5350' : '#ba68c8'; g.lineWidth = 2.5; g.beginPath(); g.arc(x, y, 12, 0, 7); g.stroke(); }
-      if (ty === 0) { g.fillStyle = SL.vgrad(g, y - 7, 14, '#8fd0f5', '#3a8fc4'); g.beginPath(); g.ellipse(x, y, 8, 6, 0.2, 0, 7); g.fill(); g.fillStyle = 'rgba(255,255,255,.35)'; g.fillRect(x - 5, y - 5, 4, 2); }
+      if (ty === 0) { SL.contact(g, x + 1, y + 5, 9, 2.5, 0.5); g.fillStyle = SL.vgrad(g, y - 7, 14, '#8fd0f5', '#3a8fc4'); g.beginPath(); g.ellipse(x, y, 8, 6, 0.2, 0, 7); g.fill(); g.fillStyle = 'rgba(255,255,255,.35)'; g.fillRect(x - 5, y - 5, 4, 2); g.fillStyle = '#f1f4f7'; g.fillRect(x - 1, y - 1, 5, 3); }
       else if (ty === 1) SL.carton(g, x - 8, y - 6, 16, 12, '#c59b6d');
-      else { g.fillStyle = SL.vgrad(g, y - 8, 16, '#f5d27a', '#c99a2e'); g.beginPath(); g.moveTo(x - 11, y + 2); g.lineTo(x - 4, y - 8); g.lineTo(x + 10, y - 5); g.lineTo(x + 11, y + 6); g.lineTo(x - 6, y + 8); g.closePath(); g.fill(); }
+      else { SL.contact(g, x, y + 7, 11, 2.5, 0.5); g.fillStyle = SL.vgrad(g, y - 8, 16, '#f5d27a', '#c99a2e'); g.beginPath(); g.moveTo(x - 11, y + 2); g.lineTo(x - 4, y - 8); g.lineTo(x + 10, y - 5); g.lineTo(x + 11, y + 6); g.lineTo(x - 6, y + 8); g.closePath(); g.fill(); g.strokeStyle = 'rgba(0,0,0,.25)'; g.lineWidth = 0.8; g.stroke(); }
       g.restore();
     };
     if (hoy) {
-      SL.text(g, 'Cola de bultos en el piso: ' + s.q, 40, 40, '#ef5350', '600 14px system-ui'); SL.hot('floor', 40, 24, 700, 190);
-      if (s.surge) SL.tag(g, 'OLA DE PEDIDOS ×2', 640, 36, SL.STATE.warn);
-      for (let i = 0; i < Math.min(s.q, 160); i++) parcel(48 + (i % 40) * 17 + ((i * 7) % 5), 62 + Math.floor(i / 40) * 17 + ((i * 3) % 4), i % 3, {});
-      s.man.forEach((k, i) => { const x = 90 + i * 112; SL.person(g, x, 290, { dir: i % 2 ? -1 : 1, busy: !!k.it, carry: k.it ? '#c59b6d' : null, walk: k.it ? s.t * 8 + i : 0, shirt: k.off ? '#4a5a6e' : undefined }); SL.led(g, x, 244, 2.6, k.off ? SL.STATE.down : k.it ? SL.STATE.run : SL.STATE.idle, !!k.it || k.off); SL.text(g, k.off ? 'P' + (i + 1) + ' pausa' : 'P' + (i + 1), x, 308, k.off ? '#ef5350' : '#8b9bb0', '11px system-ui', 'center'); SL.hot('man:' + i, x - 18, 236, 36, 76); });
+      g.drawImage(staticBg('hoy', (b) => {
+        SL.cableTray(b, 0, 12, 800, { drop: 10 });
+        SL.zone(b, 30, 50, 740, 80, { color: '#ef5350', hatch: true, fill: 0.04 }); SL.text(b, 'ACOPIO EN PISO · SIN CLASIFICAR', 768, 45, 'rgba(239,83,80,.75)', '600 9.5px system-ui', 'right');
+        SL.zone(b, 30, 136, 740, 186, { color: '#f5b942', fill: 0.025 }); SL.text(b, 'TRÁNSITO MANUAL · IDA Y VUELTA POR BULTO', 764, 316, 'rgba(245,185,66,.7)', '600 9.5px system-ui', 'right');
+        for (const x of [180, 400, 620]) { SL.lightPool(b, x, 230, 120, 0.07); SL.lightPool(b, x, 90, 90, 0.05); }
+        SL.bollard(b, 16, 322); SL.bollard(b, 784, 322); SL.cone(b, 22, 138); SL.cone(b, 778, 138);
+        SL.sign(b, 726, 148, 'CARGA MÁX. 25 kg', { color: '#c0392b' });
+        SL.sign(b, 420, 40, 'USO OBLIGATORIO DE EPP', { color: '#2f6fb0' });
+      }), 0, 0, W, H);
+      SL.text(g, 'Cola de bultos en el piso: ' + s.q, 40, 40, '#ef5350', '600 14px system-ui'); SL.hot('floor', 30, 24, 740, 106);
+      if (s.surge) SL.tag(g, 'OLA DE PEDIDOS ×2', 640, 36, ST.warn);
+      for (let i = 0; i < Math.min(s.q, 160); i++) { const [x, y] = pileXY(i); parcel(x, y, i % 3, {}); }
       DN.slice(0, p.nd).forEach((n, k) => { SL.chute(g, 40 + k * 124, 330, 104, 64, s.ch[k].n / p.cap, '#3ecf8e', `${n} ${s.ch[k].n}`); SL.hot('ch:' + k, 40 + k * 124, 330, 104, 64); });
+      // operarios: caminan al chute con el bulto y regresan vacíos (posición según el avance real del viaje)
+      s.man.map((k, i) => [k, i, manPos(s, i)]).sort((a, b) => a[2].y - b[2].y).forEach(([k, i, q]) => {
+        SL.person(g, q.x, q.y, { dir: q.dir, busy: !!k.it, carry: q.carry ? '#c59b6d' : null, walk: q.mv ? s.t * 9 + i : 0, shirt: k.off ? '#4a5a6e' : undefined });
+        const lc = k.off ? ST.down : k.it ? ST.run : ST.idle;
+        SL.led(g, q.x - 13, q.y + 9, 2.4, lc, !!k.it || k.off);
+        SL.text(g, k.off ? 'P' + (i + 1) + ' pausa' : 'P' + (i + 1), q.x - 8, q.y + 13, k.off ? '#ef5350' : '#c3ccd6', '600 10px system-ui');
+        SL.hot('man:' + i, q.x - 18, q.y - 44, 36, 60);
+      });
       SL.text(g, '6 personas llevan cada bulto a su destino (error ~3 %, sin recirculación)', 40, 432, '#8b9bb0');
       return;
     }
+    const run = s.v > 0.02, stc = s.estop ? ST.down : run ? ST.run : ST.idle, stName = s.estop ? 'down' : run ? 'run' : 'idle';
+    g.drawImage(staticBg('prop', (b) => {
+      SL.zone(b, 116, 116, 568, 168, { color: '#f5b942', hatch: true, fill: 0.03 });
+      SL.text(b, 'ZONA RESTRINGIDA · SORTER EN MARCHA', 124, 278, 'rgba(245,185,66,.7)', '600 9.5px system-ui');
+      SL.zone(b, 6, 118, 86, 80, { color: '#4fc3f7', label: 'Acopio', fill: 0.05 });
+      SL.zone(b, 90, 400, 424, 22, { color: '#3ecf8e', label: 'Pasillo peatonal', fill: 0.05, dash: [14, 6] });
+      for (const [x, y] of [[250, 200], [550, 200], [400, 360], [400, 40], [60, 300]]) SL.lightPool(b, x, y, 120, 0.06);
+      SL.cableTray(b, 130, 264, 680, { drop: 0 });
+      b.strokeStyle = '#3a4a5c'; b.lineWidth = 2; b.beginPath(); b.moveTo(680, 266); b.lineTo(716, 266); b.lineTo(716, 216); b.stroke(); // acometida al motor
+      SL.bollard(b, 786, 326); SL.bollard(b, 786, 380); SL.bollard(b, 522, 430); SL.cone(b, 776, 428);
+      SL.sign(b, 728, 30, 'SORTER S-01 · 30 m', { color: '#2f6fb0' });
+      SL.sign(b, 728, 52, 'NO CRUZAR LA BANDA', { color: '#c0392b' });
+      for (const [x, y] of [[92, 316], [708, 84], [708, 316]]) estopBox(b, x, y);                       // paros de emergencia
+    }), 0, 0, W, H);
+    // acopio de inducción: la cola real
+    for (let i = 0; i < Math.min(s.q, 24); i++) parcel(14 + (i % 6) * 13, 186 - Math.floor(i / 6) * 13, i % 3, {});
+    if (s.q > 24) SL.text(g, '+' + (s.q - 24), 86, 132, '#f5b942', '600 10px system-ui', 'right');
     SL.hot('belt', 88, 88, 624, 24); SL.hot('belt', 88, 288, 624, 24); SL.hot('belt', 688, 88, 24, 224);
-    SL.belt(g, LOOP, 22, s.estop ? '#4a2a2a' : undefined);
-    const rd = at(1); // arco de lectura
-    g.fillStyle = '#26313d'; g.fillRect(rd.x - 3, rd.y - 28, 6, 56); g.fillRect(rd.x - 3, rd.y - 30, 24, 5); SL.led(g, rd.x + 18, rd.y - 27, 2.4, s.rdf ? SL.STATE.down : SL.STATE.info);
-    g.strokeStyle = s.rdf ? 'rgba(239,83,80,.6)' : 'rgba(79,195,247,.45)'; g.beginPath(); g.moveTo(rd.x + 18, rd.y - 24); g.lineTo(rd.x + 6, rd.y + 10); g.lineTo(rd.x + 30, rd.y + 10); g.closePath(); g.stroke();
-    SL.hot('reader', rd.x - 8, rd.y - 34, 36, 64);
-    if (s.rdf) SL.tag(g, 'LECTOR FALLA', rd.x + 12, rd.y - 44, SL.STATE.down);
+    SL.belt(g, LOOP, 22, s.estop ? '#4a2a2a' : undefined, (s.v * PXM) / 30);
+    // arco de lectura (escáner 5 lados) sobre la banda
+    const rd = at(1), scan = !s.estop && run;
+    SL.contact(g, rd.x, rd.y + 26, 18, 3, 0.4);
+    g.fillStyle = SL.metal(g, rd.y - 26, 52, '#4b5b6e'); g.fillRect(rd.x - 9, rd.y - 26, 18, 6); g.fillRect(rd.x - 9, rd.y + 20, 18, 6);
+    g.fillStyle = 'rgba(12,18,26,.82)'; g.fillRect(rd.x - 7, rd.y - 20, 14, 40); g.strokeStyle = '#7b8da3'; g.lineWidth = 1; g.strokeRect(rd.x - 7.5, rd.y - 20.5, 15, 41);
+    if (scan) { const ph = (SL.time * 3) % 1; g.strokeStyle = s.rdf ? 'rgba(239,83,80,.75)' : 'rgba(79,195,247,.75)'; g.lineWidth = 1.2; g.beginPath(); g.moveTo(rd.x - 6, rd.y - 18 + 36 * ph); g.lineTo(rd.x + 6, rd.y - 18 + 36 * ph); g.moveTo(rd.x - 6, rd.y + 18 - 36 * ph); g.lineTo(rd.x + 6, rd.y + 18 - 36 * ph); g.stroke(); }
+    for (const yy of [rd.y - 23, rd.y + 23]) SL.bolt(g, rd.x - 6, yy, 1); SL.led(g, rd.x + 5, rd.y - 23, 2.2, s.rdf ? ST.down : ST.info);
+    SL.hot('reader', rd.x - 12, rd.y - 30, 24, 60);
+    if (s.rdf) SL.tag(g, 'LECTOR FALLA', rd.x + 12, rd.y - 44, ST.down);
+    // desviadores con cilindro neumático, fotoceldas y chutes
+    if (s.t < DV.last) { DV.got = []; DV.t = []; } DV.last = s.t;
     for (let k = 0; k < p.nd; k++) {
       const c = s.ch[k], q = at(DS[k]), top = DS[k] < 15, y0 = top ? 100 : 300, sg = top ? -1 : 1, full = c.n >= p.cap, blk = c.jam || c.off;
-      g.save(); g.translate(q.x, y0); g.rotate(-sg * 0.7); g.fillStyle = c.jam ? '#ef5350' : full || c.off ? '#8b9bb0' : '#f5b942'; g.fillRect(-2.5, 0, 5, sg * 24); g.restore(); // desviador
+      if (DV.got[k] !== c.got) { if (DV.got[k] != null) DV.t[k] = s.t; DV.got[k] = c.got; }
+      const act = c.jam || s.t - (DV.t[k] ?? -9) < 0.7, up = top ? -1 : 1;                 // up: hacia el chute
+      const px = q.x + (top ? 10 : -10), py = y0 - up * 12, a0 = top ? Math.PI : 0, a = a0 + (act ? (top ? 1 : -1) * up * 0.75 : 0);
+      g.fillStyle = SL.metal(g, py - 3, 6, '#9aa6b3'); g.fillRect(px - (top ? -2 : 18), py - up * 3 - 2.5, 16, 5);          // cilindro
+      g.save(); g.translate(px, py); g.rotate(a); g.fillStyle = c.jam ? '#ef5350' : full || c.off ? '#8b9bb0' : '#f5b942'; SL.rr(g, -1, -2.5, 26, 5, 2); g.fill(); g.strokeStyle = 'rgba(0,0,0,.4)'; g.lineWidth = 0.8; g.stroke(); g.restore();
+      SL.bolt(g, px, py, 1.6);
+      const pex = q.x + (top ? -18 : 18), inB = s.it.some((it) => Math.abs((it.s % LM) - DS[k] + 0.35) < 0.18);           // fotocelda antes del brazo
+      g.fillStyle = '#26313d'; g.fillRect(pex - 2.5, y0 - 16, 5, 4); g.fillRect(pex - 2.5, y0 + 12, 5, 4);
+      g.strokeStyle = inB ? 'rgba(239,83,80,.8)' : 'rgba(239,83,80,.25)'; g.lineWidth = 0.8; g.setLineDash([2, 2]); g.beginPath(); g.moveTo(pex, y0 - 12); g.lineTo(pex, y0 + 12); g.stroke(); g.setLineDash([]);
       const cy = top ? y0 - 94 : y0 + 28;
       SL.chute(g, q.x - 46, cy, 92, 62, c.n / p.cap, full || blk ? '#ef5350' : '#3ecf8e', `${DN[k]} ${c.n}/${p.cap}`);
-      SL.hot('ch:' + k, q.x - 46, cy, 92, 62); SL.hot('div:' + k, q.x - 14, top ? y0 - 30 : y0 + 2, 28, 28);
-      if (c.jam) SL.tag(g, 'DESVIADOR ATASCADO', q.x, top ? y0 - 22 : y0 + 22, SL.STATE.down);
-      else if (c.off) SL.tag(g, 'FUERA DE SERVICIO', q.x, top ? y0 - 22 : y0 + 22, SL.STATE.idle);
-      else if (full) SL.tag(g, 'LLENO → recircula', q.x, top ? y0 - 22 : y0 + 22, SL.STATE.warn);
+      SL.hot('ch:' + k, q.x - 46, cy, 92, 62); SL.hot('div:' + k, q.x - 28, y0 - 14, 50, 28);
+      if (c.jam) SL.tag(g, 'DESVIADOR ATASCADO', q.x, top ? y0 - 22 : y0 + 22, ST.down);
+      else if (c.off) SL.tag(g, 'FUERA DE SERVICIO', q.x, top ? y0 - 22 : y0 + 22, ST.idle);
+      else if (full) SL.tag(g, 'LLENO → recircula', q.x, top ? y0 - 22 : y0 + 22, ST.warn);
     }
     const rq = at(RJ); SL.chute(g, rq.x - 96, rq.y - 30, 70, 60, s.rbin / 40, '#ef5350', `Rechazo ${s.rbin}`); SL.hot('rej', rq.x - 96, rq.y - 30, 70, 60);
     s.it.forEach((a) => { const q = at(a.s); parcel(q.x, q.y, a.ty, a); });
-    SL.person(g, 70, 96, { dir: 1, busy: s.q > 0 }); SL.text(g, 'Inducción', 70, 112, '#8b9bb0', '10px system-ui', 'center'); SL.hot('ind', 54, 60, 32, 56);
-    SL.person(g, 40, 380, { dir: 1, busy: s.rbin > 0 }); SL.text(g, 'Excepciones', 40, 396, '#8b9bb0', '10px system-ui', 'center'); SL.hot('exc', 22, 344, 40, 56);
-    SL.tag(g, `Cola de inducción: ${s.q}`, 250, 130, s.q > 20 ? SL.STATE.warn : SL.STATE.info);
-    // Motor de accionamiento (lado derecho) con VFD
-    const mx = 716, my = 176, run = s.v > 0.02;
-    SL.rr(g, mx, my, 50, 40, 5); g.fillStyle = SL.vgrad(g, my, 40, '#5a6f86', '#2e3a48'); g.fill(); g.strokeStyle = '#8b9bb0'; g.lineWidth = 1; g.stroke();
-    for (let k = 0; k < 5; k++) { g.fillStyle = 'rgba(0,0,0,.35)'; g.fillRect(mx + 6 + k * 8, my + 6, 3, 28); }
-    SL.led(g, mx + 44, my + 7, 2.4, s.estop ? SL.STATE.down : run ? SL.STATE.run : SL.STATE.idle);
+    SL.person(g, IND[0], IND[1], { dir: 1, busy: s.q > 0 && run }); SL.text(g, 'Inducción', IND[0], IND[1] + 14, '#8b9bb0', '10px system-ui', 'center'); SL.hot('ind', IND[0] - 16, IND[1] - 40, 32, 56);
+    const exW = s.rbin > 0 ? Math.sin(SL.time * 0.8) : 0;
+    SL.person(g, EXC[0] + exW * 6, EXC[1], { dir: exW >= 0 ? 1 : -1, busy: s.rbin > 0, walk: s.rbin > 0 ? SL.time * 6 : 0 }); SL.text(g, 'Excepciones', EXC[0], EXC[1] + 16, '#8b9bb0', '10px system-ui', 'center'); SL.hot('exc', 22, 344, 40, 56);
+    SL.tag(g, `Cola de inducción: ${s.q}`, 250, 130, s.q > 20 ? ST.warn : ST.info);
+    // M-1: motorreductor + VFD con ventilador de cola
+    const mx = 716, my = 176;
+    SL.contact(g, mx + 25, my + 44, 30, 3.5, 0.5);
+    g.fillStyle = '#2a3440'; g.fillRect(mx - 6, my + 14, 8, 12);                                                 // acople al tambor
+    SL.rr(g, mx, my, 50, 40, 5); g.fillStyle = SL.metal(g, my, 40, '#4f647b'); g.fill(); g.strokeStyle = '#8b9bb0'; g.lineWidth = 1; g.stroke();
+    for (let k = 0; k < 5; k++) { g.fillStyle = 'rgba(0,0,0,.35)'; g.fillRect(mx + 6 + k * 6, my + 6, 3, 28); }
+    SL.fan(g, mx + 41, my + 26, 7, run, s.v / 0.9);
+    for (const [bx, by] of [[mx + 4, my + 4], [mx + 46, my + 4], [mx + 4, my + 36]]) SL.bolt(g, bx, by, 1);
+    SL.led(g, mx + 41, my + 8, 2.4, stc);
+    SL.stackLight(g, mx + 8, my - 2, stName, { s: 0.7 });
     SL.text(g, 'M-1', mx + 25, my + 54, '#8b9bb0', '10px system-ui', 'center'); SL.hot('drive', mx - 4, my - 4, 60, 64);
-    SL.tag(g, `${s.kw.toFixed(2)} kW`, mx + 25, my - 14, s.estop ? SL.STATE.down : SL.STATE.info);
+    SL.tag(g, `${s.kw.toFixed(2)} kW`, mx + 25, my + 72, s.estop ? ST.down : ST.info);
     // Panel del PLC del sorter
-    const px = 286, py = 150, stc = s.estop ? SL.STATE.down : run ? SL.STATE.run : SL.STATE.idle;
-    SL.rr(g, px, py, 290, 96, 6); g.fillStyle = 'rgba(8,12,18,.8)'; g.fill(); g.strokeStyle = s.estop ? '#ef5350' : '#2e3e52'; g.lineWidth = 1.2; g.stroke();
+    const px = 286, py = 150;
+    SL.contact(g, px + 145, py + 100, 150, 5, 0.45);
+    SL.rr(g, px, py, 290, 96, 6); g.fillStyle = 'rgba(8,12,18,.88)'; g.fill(); g.strokeStyle = s.estop ? '#ef5350' : '#2e3e52'; g.lineWidth = 1.2; g.stroke();
+    g.fillStyle = 'rgba(255,255,255,.06)'; g.fillRect(px + 6, py + 1, 278, 1);
     SL.led(g, px + 14, py + 16, 3, stc); SL.text(g, `PLC sorter · ${stTxt(s, p)}`, px + 26, py + 20, stc, '600 12px system-ui');
     SL.text(g, `v ${s.v.toFixed(2)} / SP ${p.v.toFixed(1)} m/s · ${amps(s.kw).toFixed(1)} A`, px + 12, py + 40, '#e6edf3', '11px system-ui');
     SL.text(g, `Lectura ${s.reads ? (100 - (100 * s.noread) / s.reads).toFixed(1) : '—'} % · máx ${p.lap} vueltas · ${s.thr.toFixed(0)} b/h`, px + 12, py + 58, '#8b9bb0', '11px system-ui');
-    SL.gauge(g, px + 12, py + 70, 266, 14, occ(s) / 0.6, occ(s) > 0.45 ? SL.STATE.warn : SL.STATE.info, `Ocupación de banda ${(100 * occ(s)).toFixed(0)} % · ${load(s).toFixed(0)} kg`);
+    SL.gauge(g, px + 12, py + 70, 266, 14, occ(s) / 0.6, occ(s) > 0.45 ? ST.warn : ST.info, `Ocupación de banda ${(100 * occ(s)).toFixed(0)} % · ${load(s).toFixed(0)} kg`);
+    SL.stackLight(g, px + 278, py - 1, s.estop ? 'down' : s.rdf || s.qAl || s.ch.some((c, k) => k < p.nd && (c.jam || c.n >= p.cap)) ? 'warn' : stName, { s: 0.75 });
     SL.hot('plc', px, py, 290, 96);
-    if (s.surge) SL.tag(g, 'OLA DE PEDIDOS ×2', 250, 270, SL.STATE.warn);
-    SL.text(g, 'Aro violeta: recirculando · aro rojo: no leído → rechazo · azul bolsa / cartón caja / amarillo irregular', 30, 436, '#8b9bb0', '11px system-ui');
+    if (s.surge) SL.tag(g, 'OLA DE PEDIDOS ×2', 250, 254, ST.warn);
+    SL.text(g, 'Aro violeta: recirculando · aro rojo: no leído → rechazo · azul bolsa / cartón caja / amarillo irregular', 30, 445, '#8b9bb0', '11px system-ui');
   },
   vars(s, p) {
     const hoy = p.mode === 0, T = Math.max(s.t || 0, 1), m = load(s), rr = s.reads ? 100 - (100 * s.noread) / s.reads : 100;

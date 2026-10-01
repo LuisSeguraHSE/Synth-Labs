@@ -14,6 +14,10 @@ const wipP = (s) => s.ords.reduce((a, o) => a + (o.q - o.pr[3]), 0);
 const tOf = (s, p, i) => [p.t0, p.t1, p.t2, p.t3][i] * (s.cells[i].slow ? 1.6 : 1) * (s.cells[i].help ? 0.65 : 1);
 const waitAt = (s, i) => s.ords.reduce((a, o) => a + (o.av[i] - o.pr[i] - (s.cells[i].o === o && s.cells[i].rem > 0 ? 1 : 0)), 0);
 const cSt = (c) => (c.down ? 'FALLA' : !c.o ? 'Libre' : c.setup > 0 ? 'Setup' : c.rem > 0 ? 'Produciendo' : 'Espera pieza/tope');
+// --- Geometría compartida por draw() y el mapa de calor
+const CX = (i) => 20 + i * 196;
+const BG = {};
+const staticBg = (key, fn) => { let c = BG[key]; if (!c) { c = BG[key] = document.createElement('canvas'); c.width = 1600; c.height = 900; const g = c.getContext('2d'); g.scale(2, 2); fn(g); } return c; };
 SL.app({
   title: 'Demo H · Celdas de ensamble (poca banda)',
   desc: 'Textil y mueble: el valor es el flujo, no el motor. "Hoy" los lotes se mueven completos y el WIP queda en el piso. "Propuesto": tramo corto FIFO pieza a pieza con tope visible. Una orden urgente salta la cola y se ve su costo. Clic en celdas, buffers y órdenes.',
@@ -35,7 +39,7 @@ SL.app({
     { id: 't3', label: 'Tiempo QC', min: 0.5, max: 4, step: 0.1, value: 1.4, unit: 'min/pza' },
     { id: 'kg', label: 'Peso por pieza', min: 1, max: 25, step: 1, value: 8, unit: 'kg' },
   ],
-  init() { return { ords: [], cells: CN.map(() => ({ o: null, rem: 0, setup: 0, busy: 0, st: 0, dn: 0, n: 0, kw: 0, down: false, slow: false, help: false })), nextA: 0, nextU: null, id: 0, ot: 0, n: 0, ln: 0, lu: 0, nu: 0, ls: 0, lost: 0, cnt: 0, pcs: 0, kw: 0, kwh: 0, walk: 0, kgMan: 0, bad: 0, late: 0, lateT: -1e9, wAl: false }; },
+  init() { return { ords: [], cells: CN.map(() => ({ o: null, rem: 0, setup: 0, busy: 0, st: 0, dn: 0, n: 0, kw: 0, down: false, slow: false, help: false })), nextA: 0, nextU: null, id: 0, ot: 0, n: 0, ln: 0, lu: 0, nu: 0, ls: 0, lost: 0, cnt: 0, pcs: 0, kw: 0, kwh: 0, walk: 0, kgMan: 0, kgB: [0, 0, 0], mv: null, bad: 0, late: 0, lateT: -1e9, wAl: false }; },
   step(s, dt, p, r) {
     const hoy = p.mode === 0;
     if (s.nextU === null) s.nextU = p.urg ? p.urg : 1e9;
@@ -60,7 +64,7 @@ SL.app({
           if (r() < (hoy ? 0.02 : 0.004) + (s.bad > 0 ? 0.15 : 0)) { s.lost++; }
           else {
             o.pr[i]++; c.n++; if (i === 3) s.pcs++;
-            if (i < 3) { if (hoy) { if (o.pr[i] === o.q) { o.av[i + 1] = o.q; s.walk += 2 * DM; s.kgMan += o.q * p.kg; } } else o.av[i + 1]++; }
+            if (i < 3) { if (hoy) { if (o.pr[i] === o.q) { o.av[i + 1] = o.q; s.walk += 2 * DM; s.kgMan += o.q * p.kg; s.kgB[i] += o.q * p.kg; s.mv = { i, t: s.t, q: o.q }; } } else o.av[i + 1]++; }
           }
           if (o.pr[i] >= o.q) {
             c.o = null;
@@ -76,46 +80,96 @@ SL.app({
     const w = wipP(s);
     if (!s.wAl && w > 60) { s.wAl = true; SL.log(s, `WIP alto: ${w} piezas en sistema`, 'warn'); } else if (s.wAl && w < 40) { s.wAl = false; SL.log(s, 'WIP normalizado', 'ok'); }
   },
+  heatPos: [500, 418],
+  heat: [
+    { id: 'wip', label: 'WIP acumulado', unit: 'pzas', max: 30, mode: 'max', fn: (s, p) => {
+      const pts = [[44, 214, waitAt(s, 0), 44]];
+      for (let i = 0; i < 3; i++) pts.push([CX(i) + 162, p.mode === 0 ? 222 : 154, waitAt(s, i + 1), p.mode === 0 ? 44 : 34]);
+      return pts;
+    } },
+    { id: 'man', label: 'Traslado manual', unit: 'kg/h', max: 150, mode: 'sum', fn: (s) => {
+      // kg movidos a mano entre celdas por hora (promedio del turno), a lo largo del recorrido del carro
+      const pts = [], hrs = Math.max(s.t, 1) / 60;
+      for (let i = 0; i < 3; i++) { const v = (s.kgB ? s.kgB[i] : 0) / hrs; if (v > 0) for (let k = 0; k <= 4; k++) pts.push([CX(i) + 96 + k * 30, 228, v, 30]); }
+      return pts;
+    } },
+    { id: 'util', label: 'Utilización de celda', unit: '%', max: 100, mode: 'max', fn: (s) => s.cells.map((c, i) => [CX(i) + 64, 139, (100 * c.busy) / Math.max(s.t, 1), 80]) },
+  ],
   draw(g, s, p, W, H) {
-    const hoy = p.mode === 0, y = 96, fy = y + 150, T = Math.max(s.t, 1);
-    g.fillStyle = 'rgba(255,255,255,.05)'; g.fillRect(10, fy, 780, 2);
+    const hoy = p.mode === 0, y = 96, fy = y + 150, T = Math.max(s.t, 1), ST = SL.STATE;
+    g.drawImage(staticBg(hoy ? 'hoy' : 'prop' + p.buf, (b) => {
+      b.fillStyle = SL.vgrad(b, 34, fy - 34, 'rgba(30,40,52,.45)', 'rgba(18,26,35,.25)'); b.fillRect(0, 34, 800, fy - 34);
+      b.strokeStyle = 'rgba(255,255,255,.03)'; b.lineWidth = 1; for (let yy = 48; yy < fy; yy += 14) { b.beginPath(); b.moveTo(0, yy + 0.5); b.lineTo(800, yy + 0.5); b.stroke(); }
+      b.fillStyle = SL.vgrad(b, fy, 40, '#18212b', 'rgba(14,20,27,0)'); b.fillRect(0, fy + 2, 800, 40);
+      SL.cableTray(b, 0, 40, 800, { drop: 6 });
+      CN.forEach((n, i) => {
+        const x = CX(i);
+        b.strokeStyle = '#3a4a5c'; b.lineWidth = 2; b.beginPath(); b.moveTo(x + 12, 40); b.lineTo(x + 12, y); b.stroke();             // bajada de alimentación
+        b.fillStyle = '#2a3440'; b.fillRect(x + 8, 60, 8, 10); b.fillStyle = '#f5c542'; b.fillRect(x + 10, 62, 4, 3);                // seccionador
+        b.save(); b.translate(x + 64, fy + 6); b.scale(1, 0.25); SL.lightPool(b, 0, 0, 110, 0.12); b.restore();
+        SL.zone(b, x - 4, 188, 134, 64, { color: '#4fc3f7', fill: 0.025 });
+        SL.text(b, `CELDA ${i + 1}`, x + 126, 200, 'rgba(79,195,247,.6)', '600 9px system-ui', 'right');
+        if (i < 3 && hoy) SL.zone(b, x + 132, y + 98, 60, 50, { color: '#ef5350', hatch: true, fill: 0.05 });
+        if (i < 3 && !hoy) { SL.sign(b, x + 162, y + 22, `TOPE ${p.buf}`, { color: '#2e7d5b' }); }
+      });
+      SL.zone(b, 10, 268, 780, 16, { color: '#3ecf8e', fill: 0.04, dash: [14, 6] });
+      SL.text(b, 'PASILLO PEATONAL', 784, 280, 'rgba(62,207,142,.7)', '600 9px system-ui', 'right');
+      SL.bollard(b, 6, 266, 16); SL.bollard(b, 794, 266, 16);
+      SL.rr(b, 12, 286, 776, 130, 6); b.fillStyle = 'rgba(8,12,18,.55)'; b.fill(); b.strokeStyle = '#26313d'; b.lineWidth = 1.2; b.stroke();  // tablero de órdenes
+      for (const x of [12, 788]) { b.fillStyle = '#3a4a5c'; b.fillRect(x - 2, 290, 4, 122); }
+      SL.pallet(b, 744, fy - 7, 48);
+    }), 0, 0, W, H);
     const bn = [0, 1, 2, 3].reduce((a, i) => (tOf(s, p, i) > tOf(s, p, a) ? i : a), 0), takt = p.arr / p.q;
     SL.text(g, `Regla: ${p.rule ? 'FIFO estricto' : 'urgente primero'} · takt ${takt.toFixed(1)} min/pza · cuello ${CN[bn]} ${tOf(s, p, bn).toFixed(1)} min/pza · ${s.kw.toFixed(1)} kW`, 20, 24, tOf(s, p, bn) > takt ? '#f5b942' : '#8b9bb0', '12px system-ui');
-    if (s.bad > 0) SL.tag(g, `LOTE DEFECTUOSO · ${s.bad.toFixed(0)} min`, 690, 20, SL.STATE.down);
+    if (s.bad > 0) SL.tag(g, `LOTE DEFECTUOSO · ${s.bad.toFixed(0)} min`, 690, 62, ST.down);
+    // producto terminado sobre tarima
+    const nf = Math.min(12, Math.floor(s.pcs / 2) % 13);
+    for (let j = 0; j < nf; j++) SL.carton(g, 746 + (j % 3) * 15, fy - 20 - Math.floor(j / 3) * 12, 14, 12, '#b98a58');
+    SL.text(g, `${s.pcs} OK`, 766, fy + 16, '#3ecf8e', '600 10px system-ui', 'center');
     CN.forEach((n, i) => {
-      const x = 20 + i * 196, c = s.cells[i];
+      const x = CX(i), c = s.cells[i];
       const state = c.down ? 'down' : !c.o ? 'idle' : c.setup > 0 ? 'setup' : c.rem > 0 ? 'run' : 'block';
-      SL.machine(g, x, y, 128, 86, { label: n, sub: c.down ? 'FALLA' : c.o ? `${c.o.u ? 'URGENTE' : 'Orden'} #${c.o.id}` : 'libre', state, fs: 12, tag: c.down ? 'FALLA' : c.setup > 0 ? 'setup' : c.o && c.rem <= 0 ? 'espera pieza/tope' : c.slow ? 'ausencia' : c.help ? 'apoyo' : null });
+      SL.machine(g, x, y, 128, 86, { label: n, sub: c.down ? 'FALLA' : c.o ? `${c.o.u ? 'URGENTE' : 'Orden'} #${c.o.id}` : 'libre', state, load: c.o ? c.o.pr[i] / c.o.q : 0, fs: 12, tag: c.down ? 'FALLA' : c.setup > 0 ? 'setup' : c.o && c.rem <= 0 ? 'espera pieza/tope' : c.slow ? 'ausencia' : c.help ? 'apoyo' : null });
       SL.hot('cell:' + i, x, y - 20, 128, 106);
       if (c.o && c.o.u) { g.strokeStyle = '#ef5350'; g.lineWidth = 2; g.strokeRect(x - 3, y - 3, 134, 92); }
       SL.person(g, x + 36, fy, { dir: 1, busy: c.rem > 0 && !c.down, shirt: c.slow ? '#4a5a6e' : undefined });
       if (c.help) SL.person(g, x + 70, fy, { dir: -1, busy: c.rem > 0, shirt: '#2e7d5b' });
       SL.text(g, `${c.kw.toFixed(1)} kW · ${((100 * c.busy) / T).toFixed(0)} %`, x + 64, fy + 16, c.down ? '#ef5350' : '#8b9bb0', '11px system-ui', 'center');
       const wait = waitAt(s, i);
-      if (i === 0) SL.tag(g, `Entrada: ${wait} pzas`, x + 64, y - 34, SL.STATE.info);
+      if (i === 0) SL.tag(g, `Entrada: ${wait} pzas`, x + 64, y - 34, ST.info);
       if (i < 3) {
         const nw = waitAt(s, i + 1);
         SL.hot('buf:' + i, x + 130, y + 40, 64, 110);
         if (hoy) {
           const zx = x + 132, zw = 60;
-          g.fillStyle = 'rgba(239,83,80,.06)'; g.fillRect(zx, y + 98, zw, 50); g.strokeStyle = 'rgba(239,83,80,.45)'; g.setLineDash([4, 3]); g.strokeRect(zx + 0.5, y + 98.5, zw - 1, 49); g.setLineDash([]);
           for (let j = 0; j < Math.min(nw, 40); j++) SL.carton(g, zx + 4 + (j % 5) * 11 + ((j * 5) % 3), fy - 12 - Math.floor(j / 5) * 8 + ((j * 3) % 2), 10, 8, '#b98a58');
-          if (nw > 40) SL.tag(g, `+${nw - 40}`, zx + zw / 2, y + 92, SL.STATE.down);
+          if (nw > 40) SL.tag(g, `+${nw - 40}`, zx + zw / 2, y + 92, ST.down);
         } else {
-          SL.belt(g, [[x + 128, y + 58], [x + 196, y + 58]], 12);
-          const m = p.buf, step = 64 / Math.max(m, 1);
+          const m = p.buf, step = 64 / Math.max(m, 1), full = nw >= m;
+          SL.belt(g, [[x + 128, y + 58], [x + 196, y + 58]], 12, undefined, full ? 0 : 0.6);
           for (let j = 0; j < m; j++) { const bx = x + 132 + j * step; if (j < nw) SL.carton(g, bx, y + 50, Math.min(step - 2, 12), 10, '#b98a58'); else { g.strokeStyle = 'rgba(139,155,176,.35)'; g.strokeRect(bx + 0.5, y + 50.5, Math.min(step - 2, 12) - 1, 9); } }
-          if (nw >= m) SL.led(g, x + 190, y + 40, 2.4, SL.STATE.warn);
+          g.strokeStyle = full ? 'rgba(245,185,66,.85)' : 'rgba(239,83,80,.3)'; g.lineWidth = 0.9; g.setLineDash([2, 2]); g.beginPath(); g.moveTo(x + 186, y + 48); g.lineTo(x + 186, y + 68); g.stroke(); g.setLineDash([]);
+          g.fillStyle = '#26313d'; g.fillRect(x + 184, y + 44, 5, 4); g.fillRect(x + 184, y + 68, 5, 4);                                   // fotocelda de tope
+          if (full) SL.led(g, x + 190, y + 40, 2.4, ST.warn);
         }
       }
     });
+    // Hoy: traslado del lote completo en carro (se ve unos minutos tras terminar el lote en la celda)
+    if (hoy && s.mv && s.t - s.mv.t < 3 && s.t >= s.mv.t) {
+      const u = (s.t - s.mv.t) / 3, x0 = CX(s.mv.i) + 96, x1 = CX(s.mv.i + 1) + 6, cx = x0 + (x1 - x0) * u;
+      SL.person(g, cx - 14, fy + 18, { dir: 1, busy: true, walk: s.t * 40 });
+      g.fillStyle = SL.metal(g, fy + 6, 4, '#7d8793'); g.fillRect(cx - 6, fy + 6, 34, 4); g.strokeStyle = '#5b6b80'; g.lineWidth = 2; g.beginPath(); g.moveTo(cx - 6, fy + 6); g.lineTo(cx - 9, fy - 12); g.stroke();
+      for (let j = 0; j < Math.min(s.mv.q, 9); j++) SL.carton(g, cx - 4 + (j % 3) * 10, fy - 3 - Math.floor(j / 3) * 8, 9, 8, '#b98a58');
+      SL.wheel(g, cx - 2, fy + 13, 3, s.t * 6); SL.wheel(g, cx + 24, fy + 13, 3, s.t * 6);
+      SL.tag(g, `lote ${s.mv.q} pzas · ${(s.mv.q * p.kg).toFixed(0)} kg a mano`, cx + 10, fy - 36, ST.warn, '600 10px system-ui');
+    }
     // Tablero de órdenes en sistema
-    SL.text(g, `Órdenes en sistema: ${s.ords.length} · urgentes: ${s.ords.filter((o) => o.u).length} · WIP ${wipP(s)} pzas`, 20, 300, s.wAl ? '#ef5350' : '#e6edf3', '600 13px system-ui');
+    SL.text(g, `Órdenes en sistema: ${s.ords.length} · urgentes: ${s.ords.filter((o) => o.u).length} · WIP ${wipP(s)} pzas`, 20, 304, s.wAl ? '#ef5350' : '#e6edf3', '600 13px system-ui');
     s.ords.slice(0, 16).forEach((o, i) => {
       const x = 20 + (i % 8) * 96, yy = 312 + Math.floor(i / 8) * 54, done = o.pr[3] / o.q, late = s.t - o.t0 > p.due;
       SL.rr(g, x, yy, 88, 44, 5); g.fillStyle = '#121922'; g.fill(); g.strokeStyle = o.u ? '#ef5350' : late ? '#f5b942' : '#2e3e52'; g.lineWidth = 1.5; g.stroke();
-      SL.text(g, `${o.u ? '⚠ ' : ''}#${o.id}`, x + 8, yy + 16, o.u ? '#ef5350' : '#e6edf3', '600 11px system-ui');
-      SL.text(g, `${Math.round((s.t - o.t0))} min`, x + 80, yy + 16, late ? '#f5b942' : '#8b9bb0', '10px system-ui', 'right');
+      SL.text(g, `${o.u ? '⚠' : ''}#${o.id}`, x + 7, yy + 16, o.u ? '#ef5350' : '#e6edf3', '600 11px system-ui');
+      SL.text(g, `${Math.round((s.t - o.t0))} min`, x + 82, yy + 16, late ? '#f5b942' : '#8b9bb0', '9.5px system-ui', 'right');
       SL.gauge(g, x + 6, yy + 26, 76, 9, done, SL.STATE.run);
       SL.hot('ord:' + o.id, x, yy, 88, 44);
     });

@@ -13,6 +13,17 @@ const nSrv = (s, p) => (p.mode === 0 ? 3 : 1) + (s.xtra ? 1 : 0);
 const tcOf = (s, p) => (p.mode === 0 ? 14 : 3.6 * (s.scnF ? 2.5 : 1));
 const detOf = (s, p) => (p.mode === 0 ? 0.72 : s.scnF ? 0.72 : 0.96);
 const bStop = (s, p) => p.mode === 1 && s.bstop;
+// --- Geometría compartida por draw() y el mapa de calor
+const Y = { y: 190, fy: 234 };
+const unloader = (s, p) => { // descargador: lleva cada bulto del camión al piso (Hoy) o a la cabeza de la banda (Propuesto)
+  const d = s.dock, hoy = p.mode === 0, cap = hoy ? 25 : 12, act = !!(d && d.left > 0 && s.buf.length < cap && !bStop(s, p));
+  const x0 = hoy ? 166 : 140, n = s.buf.length, x1 = hoy ? 180 + (n % 13) * 18 : 158, py = hoy ? Y.fy - 4 : Y.fy;
+  if (!act) return { x: hoy ? 172 : 150, py, act: false, carry: false, dir: 1, walk: 0 };
+  const u = SL.clamp(1 - (d.nextU - s.t) / p.tu, 0, 1), go = u < 0.5, f = go ? u * 2 : 2 - u * 2;
+  return { x: x0 + (x1 - x0) * f, py, act: true, carry: go, dir: go ? 1 : -1, walk: hoy ? s.t * 8 : 0 };
+};
+const BG = {};
+const staticBg = (key, fn) => { let c = BG[key]; if (!c) { c = BG[key] = document.createElement('canvas'); c.width = 1600; c.height = 900; const g = c.getContext('2d'); g.scale(2, 2); fn(g); } return c; };
 SL.app({
   title: 'Demo G · Recepción y chequeo',
   desc: 'El inventario no se pierde en el rack; se pierde en la rampa. "Hoy": el camión espera en muelle hasta que se recuenta en piso. "Propuesto": descarga a banda, puesto de control y desvío ok / no ok. Clic en camión, patio, banda, puesto y desvío.',
@@ -60,43 +71,108 @@ SL.app({
       if (fin) { const td = s.t - d.t0; s.tdock += td; s.nleave++; if (td <= p.sla * 60) s.slaOk++; s.dock = null; }
     }
   },
+  heatPos: [336, 414],
+  heat: [
+    { id: 'erg', label: 'Esfuerzo físico', unit: 'kg/h', max: (s, p) => Math.max(3000, p.kg * 900), mode: 'sum', fn: (s, p) => {
+      // kg levantados por hora en la posición de cada persona (descarga y recuento manual)
+      const pts = [], u = unloader(s, p);
+      if (u.act) pts.push([u.x, Y.fy - 20, (p.kg * 3600) / p.tu, 40]);
+      if (p.mode === 0) for (let i = 0; i < nSrv(s, p); i++) { const c = s.ctl[i]; if (c && c.b) pts.push([440 + i * 36, Y.fy - 20, (p.kg * 3600) / tcOf(s, p), 34]); }
+      return pts;                                                                                      // propuesto: el control lee sobre la banda (0 kg)
+    } },
+    { id: 'dock', label: 'Camión detenido', unit: 'min', max: (s, p) => p.sla, mode: 'max', fn: (s) => {
+      const pts = [];
+      if (s.dock) pts.push([84, Y.fy - 22, (s.t - s.dock.t0) / 60, 70]);
+      s.patio.slice(0, 3).forEach((t, i) => pts.push([70 + i * 90, 388, (s.t - t.at) / 60, 50]));
+      return pts;
+    } },
+    { id: 'pend', label: 'Bultos sin chequear', unit: 'bultos', max: (s, p) => Math.max(30, p.nb / 2), mode: 'max', fn: (s, p) => {
+      const pts = [], n = s.buf.length;
+      if (s.dock && s.dock.left) pts.push([92, Y.fy - 24, s.dock.left, 56]);
+      if (n) { if (p.mode === 0) for (let i = 0; i < n; i += 2) pts.push([184 + (i % 13) * 18, Y.y - 54 + Math.floor(i / 13) * 16, n, 30]); else for (let i = 0; i < n; i++) pts.push([428 - i * 24, Y.y, n, 26]); }
+      return pts;
+    } },
+  ],
   draw(g, s, p, W, H) {
-    const hoy = p.mode === 0, y = 190, fy = y + 44, stop = bStop(s, p);
-    g.fillStyle = '#2a3440'; g.fillRect(10, fy, 150, 8); SL.text(g, 'MUELLE', 84, fy + 22, '#8b9bb0', '11px system-ui', 'center');
+    const hoy = p.mode === 0, { y, fy } = Y, stop = bStop(s, p), ST = SL.STATE;
+    g.drawImage(staticBg(hoy ? 'hoy' : 'prop', (b) => {
+      SL.cableTray(b, 0, 10, 620, { drop: 8 });
+      SL.shelf(b, 186, 24, 190, 66, 2, 0.6, 2); SL.shelf(b, 398, 24, 190, 66, 2, 0.45, 7);
+      b.fillStyle = 'rgba(14,20,27,.5)'; b.fillRect(180, 18, 414, 80);                                        // racks del almacén (fondo)
+      // muelle: marco de puerta seccional, sello y luz de muelle
+      b.fillStyle = SL.vgrad(b, 112, 120, '#26313d', '#1a232d'); b.fillRect(14, 112, 146, 122);
+      b.fillStyle = 'rgba(0,0,0,.25)'; for (let yy = 116; yy < 150; yy += 6) b.fillRect(18, yy, 138, 2);       // portón enrollado arriba
+      b.fillStyle = '#0b1016'; b.fillRect(20, 150, 134, 84);
+      SL.hazard(b, 14, 112, 5, 122, 0.9); SL.hazard(b, 155, 112, 5, 122, 0.9);
+      b.fillStyle = '#15191e'; b.fillRect(156, fy - 16, 6, 12);                                               // tope de goma
+      b.strokeStyle = '#5b6b80'; b.lineWidth = 2; b.beginPath(); b.moveTo(160, 132); b.lineTo(172, 132); b.lineTo(178, 142); b.stroke();
+      b.fillStyle = '#e6d9a8'; b.beginPath(); b.arc(179, 144, 3, 0, 7); b.fill(); SL.lightPool(b, 150, 200, 70, 0.08);
+      b.fillStyle = '#2a3440'; b.fillRect(10, fy, 150, 8); b.fillStyle = SL.metal(b, fy - 2, 4, '#7d8793'); b.fillRect(150, fy - 2, 26, 4);   // andén + rampa niveladora
+      SL.sign(b, 84, 104, 'MUELLE 1', { color: '#2f6fb0' });
+      // patio de camiones: asfalto con demarcación
+      b.fillStyle = 'rgba(20,26,33,.75)'; b.fillRect(6, 310, 310, 114); b.strokeStyle = 'rgba(230,237,243,.25)'; b.lineWidth = 2; b.setLineDash([16, 10]);
+      b.beginPath(); b.moveTo(10, 412); b.lineTo(312, 412); b.stroke(); b.setLineDash([]);
+      for (const x of [115, 205]) { b.strokeStyle = 'rgba(245,185,66,.35)'; b.beginPath(); b.moveTo(x, 344); b.lineTo(x, 410); b.stroke(); }
+      SL.cone(b, 300, 406); SL.cone(b, 300, 352);
+      SL.zone(b, 330, 300, 280, 26, { color: '#3ecf8e', label: 'Pasillo peatonal', fill: 0.04, dash: [14, 6] });
+      SL.zone(b, 330, 334, 280, 60, { color: '#f5b942', label: 'Montacargas → ubicación', fill: 0.03, hatch: true });
+      SL.bollard(b, 618, 326); SL.bollard(b, 618, 394); SL.bollard(b, 176, fy + 20, 18);
+      for (const [x, yy] of [[300, 160], [500, 160], [700, 200], [450, 360]]) SL.lightPool(b, x, yy, 120, 0.06);
+      if (hoy) SL.zone(b, 168, y - 70, 250, 120, { color: '#ef5350', hatch: true, fill: 0.04 });
+      else { SL.zone(b, 150, y + 16, 300, 28, { color: '#f5b942', fill: 0.03, hatch: true }); SL.sign(b, 300, y - 60, 'RECEPCIÓN · BANDA 8 m', { color: '#2f6fb0' }); }
+      // jaula de no conformes: malla
+      b.fillStyle = 'rgba(239,83,80,.06)'; b.fillRect(631, y + 71, 149, 69);
+      b.strokeStyle = 'rgba(195,204,214,.18)'; b.lineWidth = 0.7; b.beginPath(); for (let k = 8; k < 150; k += 8) { b.moveTo(630 + k, y + 70); b.lineTo(630 + k, y + 140); } for (let k = 8; k < 70; k += 8) { b.moveTo(630, y + 70 + k); b.lineTo(780, y + 70 + k); } b.stroke();
+      b.fillStyle = '#5b6b80'; for (const x of [630, 680, 730, 779]) b.fillRect(x - 1, y + 68, 3, 74);
+    }), 0, 0, W, H);
+    SL.text(g, 'MUELLE', 84, fy + 22, '#8b9bb0', '11px system-ui', 'center');
     SL.hot('dock', 14, y - 56, 150, 104);
     if (s.dock) {
       const late = s.t - s.dock.t0 > p.sla * 60;
       SL.van(g, 100, fy, { s: 1.4, dir: -1, open: true, body: s.dock.dmg ? '#e0b4a8' : undefined });
-      SL.tag(g, `Camión #${s.dock.id} · ${s.dock.left} por bajar`, 84, y - 46, SL.STATE.info);
-      SL.tag(g, `${((s.t - s.dock.t0) / 60).toFixed(0)}/${p.sla} min`, 84, y - 24, late ? SL.STATE.down : SL.STATE.run);
+      SL.tag(g, `Camión #${s.dock.id} · ${s.dock.left} por bajar`, 84, y - 46, ST.info);
+      SL.tag(g, `${((s.t - s.dock.t0) / 60).toFixed(0)}/${p.sla} min`, 84, y - 24, late ? ST.down : ST.run);
     }
     SL.text(g, `Patio: ${s.patio.length} camión(es) esperando`, 14, 330, s.patio.length ? '#ef5350' : '#3ecf8e', '600 12px system-ui');
     for (let i = 0; i < Math.min(s.patio.length, 3); i++) SL.van(g, 70 + i * 90, 400, { s: 0.8, dir: -1, body: '#c9d1d9', cab: '#5b6b80' });
     SL.hot('patio', 10, 316, 300, 100);
+    // montacargas llevando lo aprobado a ubicación (ambientación)
+    const fk = 0.5 - 0.5 * Math.cos((s.t / 200) * Math.PI * 2), fx = 360 + 220 * fk;
+    SL.forklift(g, fx, 384, { s: 1.15, dir: Math.sin((s.t / 200) * Math.PI * 2) >= 0 ? 1 : -1, dist: fx, load: '#b98a58' });
     const box = (x, yy, bad) => SL.carton(g, x, yy, 16, 13, bad ? '#d4a33a' : '#b98a58');
+    const u = unloader(s, p);
     if (hoy) {
-      g.fillStyle = 'rgba(239,83,80,.05)'; g.fillRect(168, y - 70, 250, 120); g.strokeStyle = 'rgba(239,83,80,.35)'; g.setLineDash([6, 4]); g.strokeRect(168.5, y - 69.5, 249, 119); g.setLineDash([]);
       SL.text(g, 'Bultos en piso (recuento manual)', 172, y - 78, '#ef5350', '600 12px system-ui'); SL.hot('buf', 168, y - 70, 250, 120);
       s.buf.forEach((b, i) => box(176 + (i % 13) * 18, y - 60 + Math.floor(i / 13) * 16, b.bad));
-      for (let i = 0; i < nSrv(s, p); i++) { const c = s.ctl[i], x = 440 + i * 36; SL.person(g, x, fy, { dir: -1, busy: !!(c && c.b), carry: c && c.b ? '#b98a58' : null, shirt: i > 2 ? '#2e7d5b' : undefined }); SL.led(g, x, y - 10, 2.4, c && c.b ? SL.STATE.run : SL.STATE.idle, !!(c && c.b)); SL.hot('chk:' + i, x - 16, y - 16, 32, 64); }
+      for (let i = 0; i < nSrv(s, p); i++) { const c = s.ctl[i], x = 440 + i * 36; SL.person(g, x, fy, { dir: -1, busy: !!(c && c.b), carry: c && c.b ? '#b98a58' : null, shirt: i > 2 ? '#2e7d5b' : undefined }); SL.led(g, x, y - 10, 2.4, c && c.b ? ST.run : ST.idle, !!(c && c.b)); SL.hot('chk:' + i, x - 16, y - 16, 32, 64); }
+      SL.person(g, u.x, u.py, { dir: u.dir, busy: u.act, carry: u.carry ? '#b98a58' : null, walk: u.walk });                 // descargador
     } else {
-      SL.belt(g, [[150, y], [452, y]], 22, stop ? '#4a2a2a' : undefined); SL.hot('buf', 160, y - 14, 290, 28);
+      SL.belt(g, [[150, y], [452, y]], 22, stop ? '#4a2a2a' : undefined, stop ? 0 : (p.vb * 37.75) / 30); SL.hot('buf', 160, y - 14, 290, 28);
       s.buf.forEach((b, i) => box(420 - i * 24, y - 7, b.bad));
-      SL.tag(g, stop ? 'BANDA DETENIDA' : `${p.vb.toFixed(2)} m/s · ${s.kw.toFixed(2)} kW`, 300, y + 26, stop ? SL.STATE.down : SL.STATE.info);
+      const inB = s.buf.length > 0;                                                                                        // fotocelda de entrada al puesto
+      g.fillStyle = '#26313d'; g.fillRect(442, y - 17, 5, 4); g.fillRect(442, y + 13, 5, 4);
+      g.strokeStyle = inB ? 'rgba(239,83,80,.85)' : 'rgba(239,83,80,.3)'; g.lineWidth = 0.9; g.setLineDash([2, 2]); g.beginPath(); g.moveTo(444.5, y - 13); g.lineTo(444.5, y + 13); g.stroke(); g.setLineDash([]);
+      SL.tag(g, stop ? 'BANDA DETENIDA' : `${p.vb.toFixed(2)} m/s · ${s.kw.toFixed(2)} kW`, 300, y + 30, stop ? ST.down : ST.info);
       const busy = s.ctl.some((c) => c && c.b);
       SL.machine(g, 452, y - 58, 84, 74, { label: 'Control', sub: s.scnF ? 'FALLA' : 'conteo·foto', state: s.scnF ? 'down' : busy ? 'run' : 'idle', fs: 12 });
+      if (busy && !s.scnF && Math.floor(SL.time * 2) % 3 === 0) { g.fillStyle = 'rgba(159,227,255,.35)'; g.beginPath(); g.moveTo(462, y - 46); g.lineTo(446, y + 10); g.lineTo(480, y + 10); g.fill(); } // flash de cámara
       SL.hot('ctl', 452, y - 58, 84, 74);
       for (let i = 0; i < nSrv(s, p); i++) SL.person(g, 494 - i * 30, fy + 14, { dir: -1, busy: !!(s.ctl[i] && s.ctl[i].b), shirt: i ? '#2e7d5b' : undefined });
-      SL.person(g, 150, fy, { dir: 1, busy: !!s.dock });
+      SL.person(g, u.x, u.py, { dir: 1, busy: u.act, carry: u.carry ? '#b98a58' : null, walk: u.walk });
     }
-    SL.belt(g, [[536, y], [600, y], [600, y - 76]], 16); SL.belt(g, [[600, y], [600, y + 76]], 16);
-    const fl = s.t - s.lastDt < 3;
-    g.fillStyle = fl ? (s.lastD === 'nc' ? '#ef5350' : '#3ecf8e') : '#f5b942'; g.fillRect(596, y - 4, 8, 8); SL.text(g, 'desvío', 612, y + 4, '#8b9bb0', '10px system-ui');
+    const outS = stop ? 0 : 1.2;
+    SL.belt(g, [[536, y], [600, y], [600, y - 76]], 16, undefined, outS); SL.belt(g, [[600, y], [600, y + 76]], 16, undefined, outS);
+    // desviador de ruedas emergentes: flecha hacia slot (verde) o no conforme (rojo)
+    const fl = s.t - s.lastDt < 3, dc = fl ? (s.lastD === 'nc' ? ST.down : ST.run) : ST.warn;
+    SL.contact(g, 600, y + 8, 12, 2.5); g.fillStyle = SL.metal(g, y - 9, 18, '#5b6b80'); SL.rr(g, 591, y - 9, 18, 18, 3); g.fill();
+    g.save(); g.translate(600, y); g.rotate(fl && s.lastD === 'nc' ? Math.PI / 2 : -Math.PI / 2); g.fillStyle = dc; g.beginPath(); g.moveTo(6, 0); g.lineTo(-3, -5); g.lineTo(-3, 5); g.fill(); g.restore();
+    SL.stackLight(g, 622, y - 10, fl ? (s.lastD === 'nc' ? 'down' : 'run') : 'idle', { s: 0.6 });
+    SL.text(g, 'desvío', 630, y + 4, '#8b9bb0', '10px system-ui');
     SL.hot('div', 584, y - 20, 50, 40);
-    SL.shelf(g, 626, y - 150, 160, 70, 3, Math.min(1, s.ok / 300), 3); SL.tag(g, `Slot / picking: ${s.ok}`, 706, y - 162, SL.STATE.run); SL.hot('slot', 626, y - 170, 160, 90);
-    g.strokeStyle = '#ef5350'; g.lineWidth = 1.5; g.strokeRect(630.5, y + 70.5, 150, 70); g.fillStyle = 'rgba(239,83,80,.06)'; g.fillRect(631, y + 71, 149, 69);
+    SL.shelf(g, 626, y - 150, 160, 70, 3, Math.min(1, s.ok / 300), 3); SL.tag(g, `Slot / picking: ${s.ok}`, 706, y - 162, ST.run); SL.hot('slot', 626, y - 170, 160, 90);
+    g.strokeStyle = '#ef5350'; g.lineWidth = 1.5; g.strokeRect(630.5, y + 70.5, 150, 70);
     for (let i = 0; i < Math.min(s.nc, 20); i++) box(638 + (i % 8) * 17, y + 120 - Math.floor(i / 8) * 14, true);
-    SL.tag(g, `No conforme: ${s.nc}`, 706, y + 156, SL.STATE.down); SL.hot('nc', 630, y + 70, 150, 96);
+    SL.tag(g, `No conforme: ${s.nc}`, 706, y + 156, ST.down); SL.hot('nc', 630, y + 70, 150, 96);
   },
   vars(s, p) {
     const hoy = p.mode === 0, T = Math.max(s.t, 1), hrs = T / 3600, m = s.buf.length * p.kg, uc = s.cBusy / (T * nSrv(s, p));

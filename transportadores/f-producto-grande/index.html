@@ -16,6 +16,16 @@ const fat = (s, p) => 0.0045 * (p.w / 25) * Math.pow(Math.max(0, s.t - s.tf) / 3
 const met = (L, v) => 1.5 * BW + 2 * (BW + L) * Math.pow(L / BW, 2) + 1.5 * (BW + L) * v * v;
 const rwl = (p) => 23 * 0.56 * 0.835 * 0.865 * Math.max(0.45, 0.94 - 0.2 * (p.rate / 60)) * 0.9; // kg (H 45 cm, V 20 cm, D 100 cm, agarre pobre)
 const beltSt = (s) => (s.jam ? 'ATASCO' : s.bst ? 'ACUMULANDO' : 'MARCHA');
+// --- Geometría compartida por draw() y el mapa de calor
+const geo = (p) => { const x0 = 190, x1 = 610, y = 220; return { x0, x1, y, fy: y + 26, PXM: (x1 - x0) / p.dist, path: [[x0, y], [x1 - 30, y], [x1 + 12, y + 30]] }; };
+const teamPos = (s, p) => { // equipo de traslado: ida con la pieza, vuelta vacío (posición según avance real del viaje)
+  const tm = s.team; if (!tm.on) return null;
+  const { x0, x1, PXM } = geo(p), pl = Math.min(p.len * PXM, 64), f = 1 - tm.rem / tm.tot, d = f < 0.5 ? f * 2 : 2 - f * 2, x = x0 + d * (x1 - x0);
+  return { x, xa: x - pl / 2 - 4, xb: x + pl / 2 + 4, carry: f < 0.5, dir: f < 0.5 ? 1 : -1, walk: s.t * 5 };
+};
+const BG = {};
+const staticBg = (key, fn) => { let c = BG[key]; if (!c) { c = BG[key] = document.createElement('canvas'); c.width = 1600; c.height = 900; const g = c.getContext('2d'); g.scale(2, 2); fn(g); } return c; };
+const estop = ((g, x, y) => { g.fillStyle = '#f5c542'; g.beginPath(); g.arc(x, y, 3.6, 0, 7); g.fill(); g.fillStyle = '#c0392b'; g.beginPath(); g.arc(x, y, 2.4, 0, 7); g.fill(); });
 SL.app({
   title: 'Demo F · Producto grande (colchón, rollo, panel)',
   desc: 'Pieza de 1.5–2 m y 15–40 kg. "Hoy": dos personas la cargan 20 m y la fatiga baja el ritmo a las 16:00. "Propuesto": transportador de listones/banda ancha con giro 90° lento hacia mesa de empaque. Clic en producción, equipo, transportador y roll-pack.',
@@ -67,9 +77,62 @@ SL.app({
     if (s.at1h === null && s.t >= 3600) s.at1h = s.n;
     while (s.done.length && s.done[0] < s.t - 3600) s.done.shift();
   },
+  heatPos: [476, 342],
+  heat: [
+    { id: 'met', label: 'Esfuerzo físico', unit: 'W', max: 500, mode: 'sum', fn: (s, p) => {
+      // gasto metabólico por persona (Pandolf) en su posición; empaque ≈ 180 W trabajando / 110 W de pie (estimado)
+      const G = geo(p), pts = [[G.x1 + 172, G.fy - 20, s.pack.busy ? 180 : 110, 34]];
+      if (s.help) pts.push([G.x1 + 20, G.fy - 20, s.pack.busy ? 180 : 110, 34]);
+      if (p.mode === 0) { const t = teamPos(s, p); if (t) for (const x of [t.xa, t.xb]) pts.push([x, G.fy - 20, s.met, 34]); }
+      return pts;
+    } },
+    { id: 'risk', label: 'Riesgo de caída', unit: '% por pieza', max: 6, mode: 'max', fn: (s, p) => {
+      const G = geo(p);
+      if (p.mode === 0) { const t = teamPos(s, p); return t && t.carry ? [[t.x, G.fy - 30, 3 * (1 + fat(s, p)), 46]] : []; }
+      return s.bst || s.jam ? [] : [[G.x0 + 8, G.y, 0.2, 40]];                                       // transferencia a listones (0.2 %)
+    } },
+    { id: 'wait', label: 'Piezas en espera', unit: 'pzas', max: 10, mode: 'max', fn: (s, p) => {
+      const G = geo(p), pts = [];
+      if (s.q) pts.push([150, G.fy - 30, s.q, 50]);
+      if (s.pack.q) pts.push([G.x1 + 84, G.fy - 24, s.pack.q, 50]);
+      if (p.mode === 1 && (s.bst || s.jam)) s.belt.forEach((b) => { const q = SL.along(G.path, b.d * G.PXM); pts.push([q.x, q.y, s.belt.length, 34]); });
+      return pts;
+    } },
+  ],
   draw(g, s, p, W, H) {
-    const hoy = p.mode === 0, x0 = 190, x1 = 610, y = 220, fy = y + 26, PXM = (x1 - x0) / p.dist, pl = Math.min(p.len * PXM, 64);
-    g.fillStyle = 'rgba(255,255,255,.05)'; g.fillRect(10, fy, 780, 2);
+    const hoy = p.mode === 0, { x0, x1, y, fy, PXM, path } = geo(p), pl = Math.min(p.len * PXM, 64), ST = SL.STATE;
+    g.drawImage(staticBg(hoy ? 'hoy' : 'prop', (b) => {
+      b.fillStyle = SL.vgrad(b, 34, fy - 34, 'rgba(30,40,52,.55)', 'rgba(18,26,35,.35)'); b.fillRect(0, 34, 800, fy - 34);           // muro de nave
+      b.strokeStyle = 'rgba(255,255,255,.035)'; b.lineWidth = 1; for (let yy = 50; yy < fy; yy += 16) { b.beginPath(); b.moveTo(0, yy + 0.5); b.lineTo(800, yy + 0.5); b.stroke(); } // panel ondulado
+      for (const cx of [160, 390, 620]) { b.fillStyle = SL.hgrad(b, cx - 5, 10, '#2e3b4a', '#1a232d'); b.fillRect(cx - 5, 34, 10, fy - 34); b.fillStyle = '#3a4a5c'; b.fillRect(cx - 7, 34, 14, 3); b.fillRect(cx - 7, fy - 4, 14, 4); }
+      SL.shelf(b, 236, 66, 130, 84, 3, 0.65, 4); SL.shelf(b, 418, 66, 130, 84, 3, 0.5, 9);
+      b.fillStyle = 'rgba(14,20,27,.45)'; b.fillRect(230, 60, 330, 96);                                                       // racks al fondo (atenuados)
+      SL.cableTray(b, 0, 40, 800, { drop: 8 });
+      b.fillStyle = SL.vgrad(b, fy, 204, '#18212b', 'rgba(14,20,27,.6)'); b.fillRect(0, fy + 2, 800, 204);                                // piso
+      b.strokeStyle = 'rgba(255,255,255,.04)'; for (let k = -6; k <= 14; k++) { b.beginPath(); b.moveTo(400 + k * 60, fy + 2); b.lineTo(400 + k * 95, fy + 92); b.stroke(); }
+      for (const lx of [140, 400, 660]) {                                                                                  // luminarias colgantes
+        b.strokeStyle = '#3a4a5c'; b.beginPath(); b.moveTo(lx, 40); b.lineTo(lx, 56); b.stroke();
+        b.fillStyle = SL.metal(b, 56, 6, '#5b6b80'); b.beginPath(); b.moveTo(lx - 12, 62); b.lineTo(lx - 6, 56); b.lineTo(lx + 6, 56); b.lineTo(lx + 12, 62); b.fill();
+        const cg = b.createLinearGradient(0, 62, 0, fy); cg.addColorStop(0, 'rgba(255,236,200,.07)'); cg.addColorStop(1, 'rgba(255,236,200,0)');
+        b.fillStyle = cg; b.beginPath(); b.moveTo(lx - 12, 62); b.lineTo(lx + 12, 62); b.lineTo(lx + 70, fy); b.lineTo(lx - 70, fy); b.fill();
+        b.save(); b.translate(lx, fy + 10); b.scale(1, 0.22); SL.lightPool(b, 0, 0, 120, 0.14); b.restore();
+      }
+      SL.zone(b, 10, 298, 520, 26, { color: '#3ecf8e', label: 'Pasillo peatonal', fill: 0.04, dash: [14, 6] });
+      SL.zone(b, 10, 372, 520, 48, { color: '#f5b942', label: 'Pasillo de montacargas', fill: 0.03, hatch: true });
+      SL.bollard(b, 538, 324); SL.bollard(b, 538, 420);
+      if (hoy) {
+        SL.zone(b, x0, fy + 2, x1 - x0, 20, { color: '#ef5350', fill: 0.05, hatch: true });
+        SL.cone(b, x0 - 10, fy + 22); SL.cone(b, x1 + 6, fy + 22);
+        SL.sign(b, 400, 166, 'LEVANTAMIENTO EN EQUIPO · 2 PERSONAS', { color: '#c0392b' });
+      } else {
+        SL.sign(b, 400, 160, 'TRANSPORTADOR EN MARCHA · NO SUBIR', { color: '#c0392b' });
+        SL.zone(b, x0 - 6, fy + 2, x1 + 24 - x0, 20, { color: '#f5b942', fill: 0.04, hatch: true });
+      }
+      SL.sign(b, 62, 80, 'LÍNEA 2 · COLCHONES', { color: '#2f6fb0' });
+    }), 0, 0, W, H);
+    // montacargas en su pasillo (ida y vuelta, sólo ambientación)
+    const fk = 0.5 - 0.5 * Math.cos((s.t / 240) * Math.PI * 2), fx = 70 + 400 * fk, fdir = Math.sin((s.t / 240) * Math.PI * 2) >= 0 ? 1 : -1;
+    SL.forklift(g, fx, 414, { s: 1.25, dir: fdir, dist: fx, load: '#cfe3f5' });
     SL.machine(g, 10, y - 84, 100, 110, { label: 'Producción', sub: 'colchones', state: s.q > 6 ? 'block' : 'run', fs: 12, tag: s.q > 6 ? 'acumulando' : s.peak ? 'pico +50 %' : null });
     SL.hot('prod', 10, y - 100, 100, 126);
     for (let i = 0; i < Math.min(s.q, 10); i++) SL.mattress(g, 114 + (i % 2) * 4, fy - 12 - i * 8, 66, 11, hoy ? '#f0d9cc' : '#e4e0d4');
@@ -78,32 +141,49 @@ SL.app({
     SL.hot('pack', x1 + 64, y - 130, 104, 88);
     if (s.pack.busy) SL.mattress(g, x1 + 50, y - 18, 96, 14, '#cfe3f5');
     for (let i = 0; i < Math.min(s.pack.q, 5); i++) SL.mattress(g, x1 + 44, fy - 12 - i * 8, 80, 11);
-    SL.person(g, x1 + 186, fy, { dir: -1, busy: s.pack.busy }); SL.hot('packer', x1 + 170, fy - 52, 30, 56);
+    SL.person(g, x1 + 172, fy, { dir: -1, busy: s.pack.busy }); SL.hot('packer', x1 + 156, fy - 52, 30, 56);
     if (s.help) SL.person(g, x1 + 20, fy, { dir: 1, busy: s.pack.busy, shirt: '#2e7d5b' });
     if (hoy) {
       g.strokeStyle = 'rgba(239,83,80,.5)'; g.setLineDash([6, 6]); g.lineWidth = 2; g.beginPath(); g.moveTo(x0, fy - 1); g.lineTo(x1, fy - 1); g.stroke(); g.setLineDash([]);
-      const tm = s.team;
-      if (tm.on) {
-        const f = 1 - tm.rem / tm.tot, d = f < 0.5 ? f * 2 : 2 - f * 2, x = x0 + d * (x1 - x0), dir = f < 0.5 ? 1 : -1, walk = s.t * 5;
-        if (f < 0.5) SL.mattress(g, x - pl / 2, fy - 40, pl, 12);
-        SL.person(g, x - pl / 2 - 4, fy, { dir, busy: f < 0.5, walk });
-        SL.person(g, x + pl / 2 + 4, fy, { dir, busy: f < 0.5, walk: walk + 1.5 });
-      }
-      SL.hot('team', x0, fy - 70, x1 - x0, 76);
+      const t = teamPos(s, p);
+      if (t) {
+        if (t.carry) SL.mattress(g, t.x - pl / 2, fy - 40, pl, 12);
+        SL.person(g, t.xa, fy, { dir: t.dir, busy: t.carry, walk: t.walk });
+        SL.person(g, t.xb, fy, { dir: t.dir, busy: t.carry, walk: t.walk + 1.5 });
+      } else { SL.person(g, x0 - 2, fy, { dir: 1 }); SL.person(g, x0 + 18, fy, { dir: 1 }); }
+      SL.hot('team', x0 - 14, fy - 70, x1 - x0 + 14, 76);
       const ft = fat(s, p), li = p.w / 2 / rwl(p);
-      SL.gauge(g, x0, fy + 30, 220, 12, Math.min(1, ft / 0.3), ft > 0.2 ? SL.STATE.down : ft > 0.1 ? SL.STATE.warn : SL.STATE.run, `Fatiga del equipo +${(ft * 100).toFixed(0)} %`);
-      SL.tag(g, `NIOSH LI ${li.toFixed(1)}`, x0 + 280, fy + 36, li > 3 ? SL.STATE.down : li > 1 ? SL.STATE.warn : SL.STATE.run);
-      SL.tag(g, `${Math.round(s.met)} W/persona`, x0 + 400, fy + 36, s.met > 300 ? SL.STATE.warn : SL.STATE.info);
-      SL.text(g, 'Traslado manual: 2 personas · ida y vuelta', x0, y - 100, '#ef5350', '600 13px system-ui');
+      SL.gauge(g, x0, fy + 30, 220, 12, Math.min(1, ft / 0.3), ft > 0.2 ? ST.down : ft > 0.1 ? ST.warn : ST.run, `Fatiga del equipo +${(ft * 100).toFixed(0)} %`);
+      SL.tag(g, `NIOSH LI ${li.toFixed(1)}`, x0 + 280, fy + 36, li > 3 ? ST.down : li > 1 ? ST.warn : ST.run);
+      SL.tag(g, `${Math.round(s.met)} W/persona`, x0 + 400, fy + 36, s.met > 300 ? ST.warn : ST.info);
+      SL.text(g, 'Traslado manual: 2 personas · ida y vuelta', x0, 24, '#ef5350', '600 13px system-ui');
     } else {
-      const path = [[x0, y], [x1 - 30, y], [x1 + 12, y + 30]], stop = s.bst || s.jam;
-      SL.belt(g, path, 32, s.jam ? '#4a2a2a' : '#3a4654');
+      const stop = s.bst || s.jam, sc = s.jam ? ST.down : s.bst ? ST.warn : ST.run;
+      // cordón de paro de emergencia a lo largo del tramo
+      g.strokeStyle = '#d8b13a'; g.lineWidth = 1.2; g.beginPath(); g.moveTo(x0 + 6, y - 22); g.lineTo(x1 - 36, y - 22); g.stroke();
+      for (let xx = x0 + 6; xx <= x1 - 36; xx += 70) { g.fillStyle = '#3a4654'; g.fillRect(xx - 1, y - 24, 2, 10); }
+      g.fillStyle = '#f5c542'; g.fillRect(x0 + 2, y - 28, 8, 8); g.fillStyle = '#c0392b'; g.fillRect(x0 + 4, y - 26, 4, 4);
+      SL.belt(g, path, 32, s.jam ? '#4a2a2a' : '#3a4654', stop ? 0 : (p.vb * PXM) / 30);
+      // motorreductor bajo el tambor de cabeza + guarda de malla en el giro
+      const dx = x1 - 64, dy = y + 22;
+      SL.contact(g, dx + 14, dy + 22, 20, 3); g.fillStyle = SL.metal(g, dy, 18, '#4f647b'); SL.rr(g, dx, dy, 28, 18, 3); g.fill();
+      g.fillStyle = 'rgba(0,0,0,.35)'; for (let k = 0; k < 4; k++) g.fillRect(dx + 4 + k * 5, dy + 3, 2, 12); SL.fan(g, dx + 23, dy + 9, 5, !stop, p.vb / 0.3);
+      SL.led(g, dx + 4, dy + 3, 1.8, sc);
+      g.strokeStyle = 'rgba(195,204,214,.35)'; g.lineWidth = 0.7; g.strokeRect(x1 - 26, y - 22, 46, 70);
+      g.beginPath(); for (let k = 6; k < 46; k += 6) { g.moveTo(x1 - 26 + k, y - 22); g.lineTo(x1 - 26 + k, y + 48); } for (let k = 6; k < 70; k += 6) { g.moveTo(x1 - 26, y - 22 + k); g.lineTo(x1 + 20, y - 22 + k); } g.stroke();
+      // tablero de control al inicio del tramo, con baliza
+      g.fillStyle = '#2a3440'; g.fillRect(x0 - 24, y - 6, 3, fy - y + 6); SL.rr(g, x0 - 34, y - 26, 22, 22, 3); g.fillStyle = SL.metal(g, y - 26, 22, '#3d4d61'); g.fill();
+      SL.led(g, x0 - 28, y - 19, 2, sc); estop(g, x0 - 18, y - 11);
+      SL.stackLight(g, x0 - 23, y - 27, s.jam ? 'down' : s.bst ? 'warn' : 'run', { s: 0.7 });
       s.belt.forEach((b) => { const q = SL.along(path, b.d * PXM); SL.mattress(g, q.x - pl / 2, q.y - 12, pl, 12); });
       SL.hot('belt', x0, y - 20, x1 - 30 - x0, 40); SL.hot('turn', x1 - 34, y - 20, 52, 56);
-      SL.tag(g, `${beltSt(s)} · ${stop ? 0 : p.vb.toFixed(2)} m/s · ${s.kw.toFixed(2)} kW`, (x0 + x1) / 2, y - 40, s.jam ? SL.STATE.down : s.bst ? SL.STATE.warn : SL.STATE.run);
-      SL.led(g, x1 + 24, y + 36, 3, s.bst ? SL.STATE.warn : SL.STATE.run); SL.text(g, 'PE', x1 + 32, y + 40, '#8b9bb0', '10px system-ui');
-      if (s.jam) SL.tag(g, 'ATASCO GIRO 90°', x1 - 10, y + 56, SL.STATE.down);
-      SL.text(g, 'Transportador de listones · giro 90° lento · 0 personas en traslado', x0, y - 100, '#3ecf8e', '600 13px system-ui');
+      SL.tag(g, `${beltSt(s)} · ${stop ? 0 : p.vb.toFixed(2)} m/s · ${s.kw.toFixed(2)} kW`, (x0 + x1) / 2, y - 40, sc);
+      // fotocelda de mesa: emisor/reflector con haz
+      g.fillStyle = '#26313d'; g.fillRect(x1 + 30, y + 28, 5, 6); g.fillRect(x1 + 30, y - 2, 5, 6);
+      g.strokeStyle = s.bst ? 'rgba(245,185,66,.85)' : 'rgba(239,83,80,.35)'; g.lineWidth = 0.9; g.setLineDash([2, 2]); g.beginPath(); g.moveTo(x1 + 32.5, y + 4); g.lineTo(x1 + 32.5, y + 28); g.stroke(); g.setLineDash([]);
+      SL.led(g, x1 + 24, y + 36, 3, s.bst ? ST.warn : ST.run); SL.text(g, 'PE', x1 + 32, y + 40, '#8b9bb0', '10px system-ui');
+      if (s.jam) SL.tag(g, 'ATASCO GIRO 90°', x1 - 10, y + 56, ST.down);
+      SL.text(g, 'Transportador de listones · giro 90° lento · 0 personas en traslado', x0, 24, '#3ecf8e', '600 13px system-ui');
     }
     SL.text(g, `Piezas en espera: ${s.q} · en mesa de empaque: ${s.pack.q} · tocaron el piso: ${s.floor}`, 20, H - 14);
   },
