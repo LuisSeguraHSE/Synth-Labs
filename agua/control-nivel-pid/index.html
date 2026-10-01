@@ -155,6 +155,13 @@ SL.app({
     if (id === 'valve') return { title: 'Salida a red · demanda', fis: [['Demanda', s.q.toFixed(0), 'L/s'], ['Fuga', s.leak.toFixed(0), 'L/s']], ctl: [['Escalón cada', 120, 's'], ['Tamaño escalón', p.step, 'L/s']],
       actions: [{ label: 'Demanda +5 L/s', run: (s, p, r, api) => api.set('dem', Math.min(40, p.dem + 5)) }, { label: 'Demanda −5 L/s', run: (s, p, r, api) => api.set('dem', Math.max(0, p.dem - 5)) }] };
   },
+  heat: [
+    { id: 'q', label: 'Caudal', unit: 'L/s', max: QMAX, fn: (s) => {
+      const pts = [], add = (x1, y1, x2, y2, v) => { const n = Math.max(2, Math.round(Math.hypot(x2 - x1, y2 - y1) / 14)); for (let k = 0; k <= n; k++) pts.push([x1 + ((x2 - x1) * k) / n, y1 + ((y2 - y1) * k) / n, v, 26]); };
+      add(122, 318, 122, 36, s.qin); add(122, 36, 410, 36, s.qin); add(410, 36, 410, 56, s.qin); add(490, 338, 770, 338, s.q + s.leak);
+      return pts; } },
+    { id: 'kw', label: 'Potencia', unit: 'kW', max: 25, fn: (s) => [[135, 336, s.pel, 70], [410, 200, s.phyd || 0, 90]] },
+  ],
   kpis(s, p) {
     return [
       { label: 'Nivel (PV)', value: s.pv.toFixed(2) + ' m' },

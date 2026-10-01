@@ -53,3 +53,7 @@ table.vt td { vertical-align:top; } table.vt td small { color:var(--mut); font-w
 .log li { padding:3px 0 3px 8px; border-left:2px solid #4fc3f7; margin-bottom:3px; background:rgba(255,255,255,.02); }
 .log li.warn { border-color:#f5b942; } .log li.crit { border-color:#ef5350; } .log li.ok { border-color:#3ecf8e; } .log li.mut { border-color:var(--line); }
 .log time { font-family:var(--sl-mono); color:var(--mut); margin-right:6px; font-size:11px; }
+.heatbar { display:flex; flex-wrap:wrap; align-items:center; gap:8px; margin:0 0 8px; }
+.heatbar .hb-l { font-size:11px; text-transform:uppercase; letter-spacing:.08em; color:#f39a6b; display:flex; align-items:center; gap:6px; }
+.heatbar .hb-l::before { content:''; width:28px; height:7px; border-radius:2px; background:linear-gradient(90deg,#7a2e10,#d95926,#f39a6b,#fde0cf); }
+#heatSeg button.on { background:linear-gradient(180deg,#f8b48c,#d95926 60%,#7a2e10); color:#1a0a03; box-shadow:0 2px 10px -3px rgba(217,89,38,.9); }

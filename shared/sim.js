@@ -8,6 +8,10 @@
  *  - inspect(s,p,id) -> { title, sub, fis:[fila], ctl:[fila], actions:[{label,run}] }  para zonas SL.hot(id,x,y,w,h)
  *  - SL.log(s, texto, nivel)  registra evento (bitácora + marcador en tendencias) · nivel: info|warn|crit|ok
  *  - api = { set(id,valor), log(texto,nivel), select(id) }
+ *  - heat: [{ id, label, unit, max, mode:'max'|'sum', fn(s,p) -> [[x,y,valor,radio_px], …] }]  capas de mapa de calor
+ *    (instantáneo o promedio en el tiempo; rampa secuencial naranja, transparente en cero)
+ *    heatPos: [x,y] posición de la leyenda del mapa (opcional)
+ *  - SL.time: tiempo simulado actual (para animar bandas, aspas, balizas en gfx.js)
  */
 (function () {
   const SL = (window.SL = {});
@@ -37,24 +41,45 @@
       d -= l;
     }
   };
-  // Transportador: bastidor, guías laterales, banda y rodillos (líneas finas < 10 px se dibujan simples).
-  SL.belt = (g, pts, w, col) => {
+  // Transportador: patas, bastidor, guías laterales, banda con tacos que avanzan (SL.time × spd), rodillos y tambores.
+  SL.belt = (g, pts, w, col, spd = 1) => {
     w = w || 22;
     const path = () => { g.beginPath(); pts.forEach((q, i) => (i ? g.lineTo(q[0], q[1]) : g.moveTo(q[0], q[1]))); };
     g.save(); g.lineJoin = 'round'; g.lineCap = 'butt';
     if (w < 10) { path(); g.strokeStyle = col || '#2a3646'; g.lineWidth = w; g.stroke(); g.restore(); return; }
-    path(); g.strokeStyle = '#070b10'; g.lineWidth = w + 7; g.stroke();
-    g.shadowColor = 'transparent';
-    path(); g.strokeStyle = '#6b7d93'; g.lineWidth = w + 3; g.stroke();
-    path(); g.strokeStyle = col || '#2a3646'; g.lineWidth = w - 1; g.stroke();
-    path(); g.setLineDash([2, 8]); g.strokeStyle = 'rgba(0,0,0,.4)'; g.lineWidth = w - 3; g.stroke();
-    path(); g.setLineDash([]); g.strokeStyle = 'rgba(255,255,255,.06)'; g.lineWidth = Math.max(2, w * 0.25); g.stroke();
+    // patas de soporte en tramos casi horizontales
+    g.strokeStyle = '#2a3644'; g.lineWidth = 2;
+    for (let i = 1; i < pts.length; i++) {
+      const [ax, ay] = pts[i - 1], [bx, by] = pts[i], L = Math.hypot(bx - ax, by - ay);
+      if (Math.abs(by - ay) > L * 0.3) continue;
+      for (let d = 20; d < L - 10; d += 70) { const x = ax + ((bx - ax) * d) / L, y = ay + ((by - ay) * d) / L; g.beginPath(); g.moveTo(x - 3, y + w / 2 + 2); g.lineTo(x - 5, y + w / 2 + 14); g.moveTo(x + 3, y + w / 2 + 2); g.lineTo(x + 5, y + w / 2 + 14); g.stroke(); g.fillStyle = '#10161d'; g.fillRect(x - 7, y + w / 2 + 13, 4, 1.5); g.fillRect(x + 3, y + w / 2 + 13, 4, 1.5); }
+    }
+    path(); g.strokeStyle = '#05080c'; g.lineWidth = w + 8; g.stroke();
+    path(); g.strokeStyle = '#7b8da3'; g.lineWidth = w + 4; g.stroke();
+    path(); g.strokeStyle = '#4b5b6e'; g.lineWidth = w + 1.5; g.stroke();
+    path(); g.strokeStyle = col || '#232e3b'; g.lineWidth = w - 1; g.stroke();
+    path(); g.setLineDash([1.5, 9]); g.lineDashOffset = -(SL.time || 0) * 30 * spd; g.strokeStyle = 'rgba(0,0,0,.5)'; g.lineWidth = w - 3; g.stroke(); // tacos en movimiento
+    path(); g.setLineDash([]); g.strokeStyle = 'rgba(255,255,255,.07)'; g.lineWidth = Math.max(2, w * 0.3); g.stroke();
+    path(); g.setLineDash([2, 14]); g.lineDashOffset = 0; g.strokeStyle = 'rgba(195,204,214,.35)'; g.lineWidth = w + 4; g.stroke(); // pernos del bastidor
+    g.setLineDash([]);
+    for (const q of [pts[0], pts[pts.length - 1]]) { g.fillStyle = '#5b6b80'; g.beginPath(); g.arc(q[0], q[1], w / 2 + 1, 0, 7); g.fill(); g.fillStyle = '#26313d'; g.beginPath(); g.arc(q[0], q[1], w / 5, 0, 7); g.fill(); } // tambores
     g.restore();
   };
   // Zonas interactivas: se registran en cada cuadro dentro de draw().
   let HOTS = [];
   SL.hot = (id, x, y, w, h) => { HOTS.push({ id, x, y, w, h }); };
   SL.log = (s, msg, lvl) => { (s._log || (s._log = [])).push({ t: s.t || 0, msg, lvl: lvl || 'info' }); if (s._log.length > 60) s._log.shift(); };
+  SL.time = 0;
+  // Rampa secuencial de un solo tono (naranja), oscuro = bajo → claro = alto sobre fondo oscuro.
+  const HEAT_STOPS = [[0, [122, 46, 16]], [0.35, [180, 70, 30]], [0.6, [217, 89, 38]], [0.8, [243, 154, 107]], [1, [253, 224, 207]]];
+  SL.heatRGB = (t) => {
+    t = Math.max(0, Math.min(1, t));
+    for (let i = 1; i < HEAT_STOPS.length; i++) if (t <= HEAT_STOPS[i][0]) {
+      const [a, ca] = HEAT_STOPS[i - 1], [b, cb] = HEAT_STOPS[i], f = (t - a) / (b - a);
+      return ca.map((v, k) => Math.round(v + (cb[k] - v) * f));
+    }
+    return HEAT_STOPS[HEAT_STOPS.length - 1][1];
+  };
   SL.fmt = (v, d = 1) => (v == null || !isFinite(v) ? '—' : (+v).toFixed(d));
   SL.text = (g, t, x, y, col, font, al) => { g.fillStyle = col || '#8b9bb0'; g.font = font || '13px system-ui'; g.textAlign = al || 'left'; g.fillText(t, x, y); g.textAlign = 'left'; };
   SL.app = function (cfg) {
@@ -65,6 +90,7 @@
       <header><a href="../../index.html">← Synth-Labs</a><h1>${cfg.title}</h1><p>${cfg.desc || ''}</p>${cfg.pitch ? `<blockquote>${cfg.pitch}</blockquote>` : ''}${cfg.obj ? `<p class="obj"><b>Objeción:</b> ${cfg.obj}</p>` : ''}</header>
       <main>
         <section class="view">
+          ${cfg.heat ? `<div class="heatbar"><span class="hb-l">Mapa de calor</span><span id="heatSeg" class="seg small"><button data-h="-1" class="on">Off</button>${cfg.heat.map((h, i) => `<button data-h="${i}">${h.label}</button>`).join('')}</span><span id="heatMode" class="seg small"><button data-m="inst" class="on">Instantáneo</button><button data-m="avg">Promedio</button></span></div>` : ''}
           <div class="stage"><canvas id="c" width="${W}" height="${H}"></canvas><div id="tip" class="sl-tip" hidden></div>
             <div class="hint">${cfg.inspect ? '🖱 Pasa el cursor y haz clic sobre los equipos para inspeccionar · ' : ''}Espacio = pausa · R = reiniciar</div></div>
           <div class="stage"><canvas id="ch" width="${W}" height="${CH}"></canvas><div id="ctip" class="sl-tip" hidden></div></div>
@@ -217,15 +243,107 @@
       const [x, y, r] = toLogic(ev, cv, H), z = hitAt(x, y);
       hover = z ? z.id : null; cv.style.cursor = z ? 'pointer' : '';
       const d = z && cfg.inspect(state, p, z.id);
-      if (!d) { tip.hidden = true; return; }
+      const hv = heatI >= 0 ? `<div><span>🔥 ${cfg.heat[heatI].label}</span><em>${SL.fmt(heatAt(x, y), 2)} ${cfg.heat[heatI].unit || ''}</em></div>` : '';
+      if (!d && !hv) { tip.hidden = true; return; }
+      if (!d) { tip.innerHTML = `<b>Mapa de calor</b>${hv}`; tip.hidden = false; const px = ev.clientX - r.left, py = ev.clientY - r.top; tip.style.left = Math.min(px + 14, r.width - tip.offsetWidth - 4) + 'px'; tip.style.top = Math.min(py + 14, r.height - tip.offsetHeight - 4) + 'px'; return; }
       const rows = [...(d.fis || []).slice(0, 3), ...(d.ctl || []).slice(0, 2)];
-      tip.innerHTML = `<b>${d.title}</b>${rows.map((q) => `<div><span>${q[0]}</span><em>${q[1]}${q[2] ? ' ' + q[2] : ''}</em></div>`).join('')}<small>clic para inspeccionar</small>`;
+      tip.innerHTML = `<b>${d.title}</b>${rows.map((q) => `<div><span>${q[0]}</span><em>${q[1]}${q[2] ? ' ' + q[2] : ''}</em></div>`).join('')}${hv}<small>clic para inspeccionar</small>`;
       tip.hidden = false;
       const px = ev.clientX - r.left, py = ev.clientY - r.top;
       tip.style.left = Math.min(px + 14, r.width - tip.offsetWidth - 4) + 'px'; tip.style.top = Math.min(py + 14, r.height - tip.offsetHeight - 4) + 'px';
     });
     cv.addEventListener('mouseleave', () => { tip.hidden = true; hover = null; });
     cv.addEventListener('click', (ev) => { if (!cfg.inspect) return; const [x, y] = toLogic(ev, cv, H), z = hitAt(x, y); select(z ? z.id : null); });
+
+    // --- Mapa de calor: rejilla 160×90 (celda 5 px) con núcleo gaussiano, instantáneo o promedio temporal
+    const GW = 160, GH = 90, CS = W / GW;
+    let heatI = -1, heatM = 'inst', heatInst = new Float32Array(GW * GH), heatAcc = [], heatN = [], heatMax = [], heatFrame = 0;
+    const heatCv = document.createElement('canvas'); heatCv.width = GW; heatCv.height = GH;
+    const hctx = heatCv.getContext('2d'), himg = hctx.createImageData(GW, GH);
+    function heatGrid(L, out) {
+      out.fill(0);
+      const pts = L.fn(state, p) || [], sum = L.mode === 'sum';
+      for (const [x, y, v, r0] of pts) {
+        if (!(v > 0)) continue;
+        const r = Math.max(CS, r0 || 30), sig2 = 2 * (r / 2) ** 2, R = Math.ceil(r / CS);
+        const cx = Math.floor(x / CS), cy = Math.floor(y / CS);
+        for (let j = Math.max(0, cy - R); j <= Math.min(GH - 1, cy + R); j++) for (let i = Math.max(0, cx - R); i <= Math.min(GW - 1, cx + R); i++) {
+          const dx = (i + 0.5) * CS - x, dy = (j + 0.5) * CS - y, k = Math.exp(-(dx * dx + dy * dy) / sig2);
+          if (k < 0.02) continue;
+          const o = j * GW + i;
+          if (sum) out[o] += v * k; else if (v * k > out[o]) out[o] = v * k;
+        }
+      }
+      return out;
+    }
+    function heatSample() { // acumula todas las capas para el promedio temporal
+      (cfg.heat || []).forEach((L, k) => {
+        if (!heatAcc[k]) { heatAcc[k] = new Float32Array(GW * GH); heatN[k] = 0; }
+        const g = heatGrid(L, new Float32Array(GW * GH)); for (let o = 0; o < g.length; o++) heatAcc[k][o] += g[o]; heatN[k]++;
+      });
+    }
+    function heatField() {
+      const L = cfg.heat[heatI];
+      if (heatM === 'avg' && heatN[heatI]) { const a = heatAcc[heatI], n = heatN[heatI]; for (let o = 0; o < a.length; o++) heatInst[o] = a[o] / n; }
+      else heatGrid(L, heatInst);
+      return heatInst;
+    }
+    let heatPeak = null, heatScale = 1;
+    function drawHeat(g) {
+      if (heatI < 0) return;
+      const L = cfg.heat[heatI];
+      if ((heatFrame = (heatFrame + 1) % 3) === 1 || !heatPeak) {
+        const f = heatField(); let mx = 0, mo = 0; for (let o = 0; o < f.length; o++) if (f[o] > mx) { mx = f[o]; mo = o; }
+        const fixed = typeof L.max === 'function' ? L.max(state, p) : L.max;
+        heatMax[heatI] = Math.max(heatMax[heatI] || 0, mx);
+        heatScale = fixed || heatMax[heatI] || 1;
+        heatPeak = { x: (mo % GW + 0.5) * CS, y: (Math.floor(mo / GW) + 0.5) * CS, v: mx };
+        const d = himg.data;
+        for (let o = 0; o < f.length; o++) {
+          const t = f[o] / heatScale, q = o * 4;
+          if (t < 0.03) { d[q + 3] = 0; continue; }
+          const c = SL.heatRGB(t); d[q] = c[0]; d[q + 1] = c[1]; d[q + 2] = c[2]; d[q + 3] = Math.round(255 * Math.min(0.72, 0.18 + 0.6 * t));
+        }
+        hctx.putImageData(himg, 0, 0);
+      }
+      g.save(); g.imageSmoothingEnabled = true; g.imageSmoothingQuality = 'high'; g.drawImage(heatCv, 0, 0, W, H);
+      // Isolíneas a 25 / 50 / 75 % de la escala (marching squares con interpolación lineal sobre centros de celda)
+      g.lineWidth = 1; const f = heatInst;
+      for (const lv of [0.25, 0.5, 0.75]) {
+        const th = lv * heatScale; g.strokeStyle = `rgba(253,224,207,${0.2 + 0.4 * lv})`; g.beginPath();
+        for (let j = 0; j < GH - 1; j++) for (let i = 0; i < GW - 1; i++) {
+          const v0 = f[j * GW + i], v1 = f[j * GW + i + 1], v2 = f[(j + 1) * GW + i + 1], v3 = f[(j + 1) * GW + i];
+          const k = (v0 >= th) | ((v1 >= th) << 1) | ((v2 >= th) << 2) | ((v3 >= th) << 3);
+          if (k === 0 || k === 15) continue;
+          const x0 = (i + 0.5) * CS, y0 = (j + 0.5) * CS, it = (a, b) => (th - a) / (b - a || 1e-9);
+          const E = [[x0 + CS * it(v0, v1), y0], [x0 + CS, y0 + CS * it(v1, v2)], [x0 + CS * it(v3, v2), y0 + CS], [x0, y0 + CS * it(v0, v3)]];
+          const seg = (a, b) => { g.moveTo(E[a][0], E[a][1]); g.lineTo(E[b][0], E[b][1]); };
+          switch (k) { case 1: case 14: seg(3, 0); break; case 2: case 13: seg(0, 1); break; case 3: case 12: seg(3, 1); break; case 4: case 11: seg(1, 2); break;
+            case 6: case 9: seg(0, 2); break; case 7: case 8: seg(3, 2); break; case 5: seg(3, 0); seg(1, 2); break; case 10: seg(0, 1); seg(2, 3); break; }
+        }
+        g.stroke();
+      }
+      // Pico
+      if (heatPeak && heatPeak.v > 0.03 * heatScale) {
+        const { x, y, v } = heatPeak; g.strokeStyle = '#fde0cf'; g.lineWidth = 1.5;
+        g.beginPath(); g.arc(x, y, 7, 0, 7); g.moveTo(x - 11, y); g.lineTo(x - 4, y); g.moveTo(x + 4, y); g.lineTo(x + 11, y); g.moveTo(x, y - 11); g.lineTo(x, y - 4); g.moveTo(x, y + 4); g.lineTo(x, y + 11); g.stroke();
+        SL.tag(g, `máx ${SL.fmt(v, v < 10 ? 2 : 0)} ${L.unit || ''}`, SL.clamp(x, 50, W - 50), y > 30 ? y - 20 : y + 20, '#fde0cf');
+      }
+      // Leyenda: barra de gradiente con extremos y unidad
+      const lx = (cfg.heatPos || [12])[0], ly = (cfg.heatPos || [0, 14])[1], lw = 150;
+      g.fillStyle = 'rgba(8,12,18,.88)'; SL.rr ? SL.rr(g, lx - 6, ly - 8, lw + 12, 40, 6) : g.rect(lx - 6, ly - 8, lw + 12, 40); g.fill();
+      const gr = g.createLinearGradient(lx, 0, lx + lw, 0); for (let k = 0; k <= 10; k++) { const c = SL.heatRGB(k / 10); gr.addColorStop(k / 10, `rgb(${c})`); }
+      g.fillStyle = gr; g.fillRect(lx, ly + 6, lw, 7);
+      g.font = '600 10.5px system-ui'; g.fillStyle = '#e6edf3'; g.textAlign = 'left'; g.fillText(`${L.label} · ${heatM === 'avg' ? `promedio (${heatN[heatI] || 0} muestras)` : 'instantáneo'}`, lx, ly + 2);
+      g.font = '10px system-ui'; g.fillStyle = '#8b9bb0'; g.fillText('0', lx, ly + 25); g.textAlign = 'right'; g.fillText(`${SL.fmt(heatScale, heatScale < 10 ? 1 : 0)} ${L.unit || ''}`, lx + lw, ly + 25);
+      g.restore();
+    }
+    const heatAt = (x, y) => { const i = Math.floor(x / CS), j = Math.floor(y / CS); return i >= 0 && j >= 0 && i < GW && j < GH ? heatInst[j * GW + i] : 0; };
+    if (cfg.heat) {
+      const hs = root.querySelector('#heatSeg'), hm = root.querySelector('#heatMode');
+      hs.onclick = (e) => { const b = e.target.closest('button'); if (!b) return; heatI = +b.dataset.h; heatPeak = null; [...hs.children].forEach((x) => x.classList.toggle('on', x === b)); };
+      hm.onclick = (e) => { const b = e.target.closest('button'); if (!b) return; heatM = b.dataset.m; heatPeak = null; [...hm.children].forEach((x) => x.classList.toggle('on', x === b)); };
+    }
 
     // --- Tendencias: leyenda conmutable y cursor con lectura
     const hidden = new Set(); let cx = -1, legX = [];
@@ -242,10 +360,11 @@
       rng = SL.rng(42); // semilla fija => escenarios comparables
       state = cfg.init(p, rng); state.t = 0;
       hist = { names: [], data: {}, n: 0 };
-      nextSample = 0; acc = 0; logSeen = -1;
+      if (typeof heatAcc !== 'undefined') { heatAcc = []; heatN = []; heatMax = []; heatPeak = null; }
+      nextSample = 0; nextHeat = 0; acc = 0; logSeen = -1;
       if (typeof select === 'function' && selId) renderInsp(true);
     }
-    let logSeen = -1;
+    let logSeen = -1, nextHeat = 0;
 
     // --- gráfico de tendencias (cada serie normalizada a su propio máximo)
     const PAL = ['#4fc3f7', '#f5b942', '#3ecf8e', '#ef5350', '#ba68c8'];
@@ -304,6 +423,7 @@
           cfg.step(state, dt, p, rng); acc -= dt;
           if (state._log) for (const e of state._log) if (e.i == null) e.i = hist.n;
           state.t = (state.t || 0) + dt;
+          if (cfg.heat && state.t >= nextHeat) { nextHeat += sample; heatSample(); }
           if (cfg.series && state.t >= nextSample) {
             nextSample += sample;
             const v = cfg.series(state, p);
@@ -318,8 +438,9 @@
       }
       c.setTransform(1, 0, 0, 1, 0, 0); c.drawImage(bg, 0, 0);
       c.setTransform(dpr, 0, 0, dpr, 0, 0);
-      HOTS = [];
-      c.save(); cfg.draw(c, state, p, W, H); c.restore(); // las figuras de gfx.js manejan su propia sombra
+      HOTS = []; SL.time = state.t || 0;
+      c.save(); cfg.draw(c, state, p, W, H); c.restore();
+      if (cfg.heat) drawHeat(c); // las figuras de gfx.js manejan su propia sombra
       if (state._log) for (const e of state._log) if (e.i == null) e.i = hist.n; // eventos disparados en pausa
       // Resalte de zona seleccionada / bajo el cursor
       for (const z of HOTS) {
