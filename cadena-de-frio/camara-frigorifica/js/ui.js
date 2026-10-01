@@ -143,6 +143,10 @@ export function initUI(app) {
     const b = e.target.closest('button'); if (!b) return;
     app.scene.setView(b.dataset.v); [...$('viewSeg').children].forEach((x) => x.classList.toggle('on', x === b));
     $('levelSeg').hidden = b.dataset.v !== 'planta';
+    if (b.dataset.v === 'planta' && app.scene.slice.mode === 'h') { // en planta el corte horizontal se ubica en el nivel mostrado
+      const k = +($('levelSeg').querySelector('.on')?.dataset.v ?? 1);
+      app.scene.setSlice({ h: (k + 0.5) * app.sim.R.dz }); syncSlice();
+    }
   };
   function setQuality(q, why) {
     app.scene.setQuality(q); app.quality = q;
@@ -150,8 +154,28 @@ export function initUI(app) {
     if (why) { $('hints').innerHTML = `<b>Calidad gráfica</b><div>${why}</div>`; $('hints').hidden = false; clearTimeout(ui.hintTimer); ui.hintTimer = setTimeout(() => ($('hints').hidden = true), 7000); }
   }
   $('qualSeg').onclick = (e) => { const b = e.target.closest('button'); if (!b) return; app.userQuality = true; setQuality(b.dataset.v); };
-  $('levelSeg').onclick = (e) => { const b = e.target.closest('button'); if (!b) return; app.scene.setLevel(+b.dataset.v); [...$('levelSeg').children].forEach((x) => x.classList.toggle('on', x === b)); };
-  document.querySelectorAll('[data-layer]').forEach((c) => (c.onchange = () => app.scene.setLayers({ [c.dataset.layer]: c.checked })));
+  $('levelSeg').onclick = (e) => {
+    const b = e.target.closest('button'); if (!b) return; app.scene.setLevel(+b.dataset.v); [...$('levelSeg').children].forEach((x) => x.classList.toggle('on', x === b));
+    if (app.scene.slice.mode === 'h') { app.scene.setSlice({ h: (+b.dataset.v + 0.5) * app.sim.R.dz }); syncSlice(); } // el corte sigue al nivel mostrado en planta
+  };
+  document.querySelectorAll('[data-layer]').forEach((c) => (c.onchange = () => {
+    app.scene.setLayers({ [c.dataset.layer]: c.checked });
+    if (c.dataset.layer === 'slice') $('sliceCtl').hidden = !c.checked;
+    legend();
+  }));
+  // Corte térmico: orientación (horizontal / longitudinal) y posición del plano
+  function syncSlice() {
+    const p = P(), sl = app.scene.slice, hor = sl.mode === 'h', el = $('sliceH');
+    [...$('sliceSeg').children].forEach((x) => x.classList.toggle('on', x.dataset.v === sl.mode));
+    $('sliceLbl').textContent = hor ? 'Altura del corte' : 'Posición transversal';
+    el.min = 0.3; el.max = ((hor ? p.H : p.W) - 0.3).toFixed(1); el.value = (hor ? sl.h : sl.y) ?? el.min;
+    $('oSlice').textContent = `${(+el.value).toFixed(1)} m`;
+    $('sliceCtl').hidden = !app.scene.layers.slice;
+    window.SLControls?.paint(el);
+    legend();
+  }
+  $('sliceSeg').onclick = (e) => { const b = e.target.closest('button'); if (!b) return; app.scene.setSlice({ mode: b.dataset.v }); syncSlice(); };
+  $('sliceH').oninput = () => { const v = +$('sliceH').value; app.scene.setSlice(app.scene.slice.mode === 'h' ? { h: v } : { y: v }); $('oSlice').textContent = `${v.toFixed(1)} m`; };
   $('winSeg').onclick = (e) => { const b = e.target.closest('button'); if (!b) return; app.charts.setWindow(+b.dataset.v); [...$('winSeg').children].forEach((x) => x.classList.toggle('on', x === b)); refresh(true); };
   $('btnTable').onclick = () => { $('tableBox').hidden = !$('tableBox').hidden; renderTable(); };
   $('btnCsv').onclick = () => {
@@ -216,9 +240,13 @@ export function initUI(app) {
   function legend() {
     const p = P(), stops = [-2, -0.5, 0.5, 0.5 + (p.alarmOffset - 0.5) * 0.55, p.alarmOffset];
     const grad = stops.map((d, i) => `${heatCSS(p.sp + d, p.sp, p.alarmOffset)} ${(i / (stops.length - 1)) * 100}%`).join(',');
-    $('heatLegend').innerHTML = `<b>Mapa térmico</b> · aire por zona (°C) · <span id="legTime"></span><div class="ramp" style="background:linear-gradient(90deg,${grad})"></div>` +
+    const lay = app.scene.layers, sl = app.scene.slice;
+    const what = lay.slice ? 'corte térmico interpolado' : 'aire por zona';
+    $('heatLegend').innerHTML = `<b>Mapa térmico</b> · ${what} (°C) · <span id="legTime"></span><div class="ramp" style="background:linear-gradient(90deg,${grad})"></div>` +
       `<div class="ticks"><span>${p.sp - 2}° frío</span><span>${p.sp}° normal</span><span>caliente</span><span>${p.sp + p.alarmOffset}° crítico</span></div>` +
-      `<div class="muted">Pallets: color = temperatura de núcleo</div>`;
+      `<div class="muted">Pallets: color = temperatura de núcleo${lay.heat ? ' · cajas = aire por zona' : ''}</div>` +
+      (lay.slice ? `<div class="lgs"><b>Corte ${sl.mode === 'h' ? 'horizontal' : 'longitudinal'}</b> · <span id="legSlice"></span>` +
+        `<div class="muted" title="Interpolación entre las ${app.sim.R.n} zonas del modelo + chorro del evaporador, puerta abierta y pallets (dentro de la carga: de superficie a núcleo)"><i class="iso"></i>isoterma <i class="iso lim"></i>límite · ▲ máx · cursor = °C</div></div>` : '');
   }
 
   function showHints(key, from, to) {
@@ -247,6 +275,11 @@ export function initUI(app) {
     }
     if (sel.kind === 'cond') return `<b>UNIDAD CONDENSADORA CU-01</b><div><span class="k">Compresor</span>${st.ctrl.on ? (st.ctrl.u * 100).toFixed(0) + ' %' : 'detenido'}</div><div><span class="k">Potencia</span>${kW(st.elec.comp)}</div><div><span class="k">COP</span>${st.evapOut.Q > 0 ? st.evapOut.cop.toFixed(2) : '—'}</div>`;
     if (sel.kind === 'door') return `<b>PUERTA P-01</b><div><span class="k">Estado</span>${st.door.cmd ? 'ABIERTA' : 'cerrada'}</div><div><span class="k">Carga</span>${kW(st.door.Q)}</div><div><span class="k">Cortina</span>${p.curtain ? 'sí' : 'no'}</div>`;
+    if (sel.kind === 'slice') {
+      const T = sel.T ?? app.scene.sampleT(sel.x, sel.y, sel.h), z = R.zones[sel.zone];
+      return `<b>Corte térmico · ${sel.mode === 'h' ? `h = ${sel.h.toFixed(1)} m` : `y = ${sel.y.toFixed(1)} m`}</b><div><span class="k">T interpolada</span>${T.toFixed(1)} °C (${heatBand(T, p.sp, p.alarmOffset)})</div>` +
+        `<div><span class="k">Punto</span>x ${sel.x.toFixed(1)} · y ${sel.y.toFixed(1)} · h ${sel.h.toFixed(1)} m</div><div><span class="k">Zona</span>${z.name.split(' · ').slice(0, 2).join(' · ')} (${st.T[sel.zone].toFixed(1)} °C)</div>`;
+    }
     if (sel.kind === 'zone') {
       const z = R.zones[sel.id];
       return `<b>${z.name}</b><div><span class="k">Aire</span>${st.T[sel.id].toFixed(1)} °C (${heatBand(st.T[sel.id], p.sp, p.alarmOffset)})</div><div><span class="k">Pallets</span>${st.pallets.filter((q) => q.zone === sel.id && q.state === 'stored').length}</div>`;
@@ -287,6 +320,12 @@ export function initUI(app) {
       const d = st.door;
       title = 'Puerta P-01';
       body = kv([['Estado', d.cmd ? '⚠ ABIERTA' : 'cerrada'], ['Apertura', `${(d.frac * 100).toFixed(0)} %`], ['Carga actual', kW(d.Q)], ['Aperturas', d.count], ['Tiempo total abierta', fmtDur(d.totalOpen + (d.cmd ? st.t - d.openedAt : 0))], ['Cortina de aire', p.curtain ? 'sí (−75 %)' : 'no'], ['Tamaño', `${p.doorW} × ${p.doorH} m`]]);
+    } else if (sel.kind === 'slice') {
+      const T = app.scene.sampleT(sel.x, sel.y, sel.h), z = R.zones[sel.zone], si = app.scene.sliceInfo();
+      title = 'Corte térmico · punto';
+      body = kv([['T en el punto', T == null ? '—' : `${T.toFixed(1)} °C (${heatBand(T, p.sp, p.alarmOffset)})`], ['Posición', `x ${sel.x.toFixed(1)} m · y ${sel.y.toFixed(1)} m · h ${sel.h.toFixed(1)} m`], ['Zona', `${z.name} · ${st.T[sel.zone].toFixed(1)} °C`],
+        ['Corte', si ? `${si.mode === 'h' ? 'horizontal' : 'longitudinal'} · ${si.min.toFixed(1)} … ${si.max.toFixed(1)} °C` : '—'], ['Máximo del corte', si ? `${si.max.toFixed(1)} °C en x ${si.maxAt.x.toFixed(1)} · y ${si.maxAt.y.toFixed(1)} · h ${si.maxAt.h.toFixed(1)} m` : '—'], ['Límite de alarma', `${p.sp + p.alarmOffset} °C`]]) +
+        '<p class="muted small">Campo estimado: interpolación entre zonas del modelo más chorro de impulsión, puerta y pallets. Es una visualización, no una medición.</p>';
     } else if (sel.kind === 'zone') {
       const z = R.zones[sel.id];
       title = z.name;
@@ -391,6 +430,8 @@ export function initUI(app) {
     $('btnCut').classList.toggle('on', st.cut); $('btnCut').textContent = st.cut ? `⚡ Sin energía ${fmtDur(st.cutUntil - st.t)}` : '⚡ Corte 10 min';
     $('btnPulse').disabled = d.cmd || !!st.ingress;
     const lt = document.getElementById('legTime'); if (lt) lt.textContent = clock(st.t);
+    const ls = document.getElementById('legSlice'), si = app.scene.sliceInfo();
+    if (ls && si) ls.textContent = `${si.mode === 'h' ? 'h' : 'y'} = ${(si.mode === 'h' ? si.h : si.y).toFixed(1)} m · ${si.min.toFixed(1)} … ${si.max.toFixed(1)} °C · isotermas cada ${si.step} °C`;
     fanNote(); ladder();
   }
 
@@ -572,7 +613,7 @@ export function initUI(app) {
     refresh, setQuality,
     onLoad() {
       ui.sel = null; $('detail').hidden = true; ui.logLen = -1;
-      syncControls(); lessons.reset(); refresh(true);
+      syncControls(); syncSlice(); lessons.reset(); refresh(true);
     },
   };
 }

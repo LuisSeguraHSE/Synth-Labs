@@ -137,6 +137,11 @@
         <label class="chip"><input type="checkbox" data-layer="flow"> Flujo de aire</label>
         <label class="chip"><input type="checkbox" data-layer="sensors"> Sensores</label>
         <label class="chip"><input type="checkbox" data-layer="pallets" checked> Pallets</label>
+        <label class="chip" title="Plano con el campo de temperatura interpolado, isotermas y marcador del máximo"><input type="checkbox" data-layer="slice" checked> Corte térmico</label>
+      </div>
+      <div class="slicectl" id="sliceCtl">
+        <div class="seg small" id="sliceSeg" title="Orientación del corte"><button data-v="h" class="on">Horizontal</button><button data-v="v">Longitudinal</button></div>
+        <label class="slicer" title="Mueve el plano de corte"><span id="sliceLbl">Altura del corte</span><input id="sliceH" type="range" min="0.3" max="5.7" step="0.1" value="1.5"><output id="oSlice">1.5 m</output></label>
       </div>
       <div class="seg small" id="qualSeg" title="Calidad gráfica: Alta = sombras, reflejos y detalle completo"><button data-v="high" class="on">Alta</button><button data-v="medium">Media</button></div>
     </div>

@@ -72,15 +72,37 @@ y perfiles de uso con datos de sensores.
 
 - **Modos:** Operación (temperatura, estado, alarmas, potencia) · Ingeniería (+ carga térmica, balance, refrigeración,
   recuperación, pull-down, condensación, control) · Simulación (+ escenarios, parámetros avanzados, fallas, A/B, +10 min).
-- **Escena 3D:** vistas 3D / planta (por nivel) / sección (gradiente vertical). Capas: mapa térmico, flujo de aire
-  (partículas cuya velocidad sigue al ventilador), sensores, pallets. Hover técnico y clic para el detalle.
-- **Nivel de detalle:** paneles con juntas y zócalo sanitario, piso de concreto con señalización, luminarias LED;
-  racks selectivos con bastidores perforados, arriostres, largueros y protecciones; pallets con tarima de 17 piezas,
-  36 cartones y film (los cartones exteriores muestran la temperatura de superficie y los interiores la de núcleo);
-  puerta con marco, riel, hoja, cortina de tiras y baliza; evaporador con rejillas, 5 aspas por ventilador, bandeja,
-  drenaje y LED de estado; unidad condensadora exterior cuyo ventilador gira con el compresor; montacargas con mástil,
-  horquillas que elevan el pallet, ruedas y baliza. Todo lo repetido va en `InstancedMesh`.
-- **Calidad gráfica:** *Alta* (sombras suaves, reflejos de entorno, film de pallets) o *Media* para equipos modestos.
+- **Escena 3D:** vistas 3D / planta (por nivel) / sección (gradiente vertical). Capas: mapa térmico por zona, flujo de aire
+  (partículas cuya velocidad sigue al ventilador), sensores, pallets y **corte térmico**. Hover técnico y clic para el detalle.
+- **Corte térmico:** plano horizontal (altura ajustable 0,3 m … H − 0,3 m) o longitudinal (posición transversal) con el
+  campo de temperatura continuo: interpolación trilineal entre las zonas del modelo + chorro frío de impulsión del
+  evaporador, penacho de aire caliente por la puerta abierta, capa límite junto a los paneles y pallets (dentro de la carga
+  se ve de la superficie al núcleo). Se recalcula ~4 veces por segundo en un canvas, con la misma escala de color que el
+  resto (`heat.js`), isotermas cada 1 °C (0,5 °C si el rango es pequeño; 2 °C si es grande) por *marching squares*, la
+  isoterma del límite de alarma discontinua y un marcador del máximo (en el plano y en 3D). En PLANTA se dibuja encima de
+  todo como mapa de calor cenital, sigue al nivel elegido y muestra racks, pallets cortados, evaporador y puerta. Al pasar
+  el cursor se lee la temperatura interpolada del punto; al hacer clic, su detalle. Es una visualización del modelo
+  por zonas, no una medición.
+- **Nivel de detalle:** entorno exterior (asfalto con demarcación vial, bahía del camión, cebra, zona achurada, vereda
+  perimetral, bolardos, marquesina con canaleta y foco, cantoneras y remates de panel); paneles con juntas, micro-nervado,
+  tapas de cam-lock y zócalo sanitario; sumideros con rejilla, cintas antideslizantes y flechas; luminarias LED estancas con
+  difusor y colgantes; bandeja portacables con cables y derivación al evaporador; líneas frigoríficas con codos (succión
+  con aislamiento Armaflex, líquido de cobre con filtro deshidratador y visor, pasamuros, soportes con abrazaderas) y drenaje
+  con resistencia; evaporador con venturis, rejillas de aros y radios, curvas de retorno del serpentín, colectores, válvula
+  de expansión, distribuidor, resistencia de bandeja, caja de conexiones y placa; unidad condensadora con serpentín
+  aleteado, rejilla de ventilador, compartimiento con malla (compresor scroll, recibidor, acumulador), válvulas de servicio,
+  tablero eléctrico y seccionador; puerta con tirador, visor enmarcado, burletes, carros, cortina de tiras que oscilan por
+  separado y se apartan al paso del montacargas; racks con etiquetas de ubicación, placas de carga, protectores de columna,
+  pernos de anclaje y protector de cabecera; pallets con tarima, 36 cartones, film con brillo, esquineros, hoja superior y
+  etiqueta (los cartones exteriores muestran la temperatura de superficie y los interiores la de núcleo); sensores con
+  caja ventilada, vaina, cable y LED; seguridad (extintor, pulsador de incendio, salida luminosa, apertura de emergencia,
+  alarma de hombre atrapado, luz de emergencia, estación de EPP); termómetro de pared y registrador circular con datos
+  reales; montacargas con faros, cadenas y punto azul de seguridad; camión con plataforma elevadora, luces, calzas y
+  rotulado. Texturas generadas en canvas (sin archivos externos), señalética en un atlas, repeticiones en `InstancedMesh`
+  y piezas estáticas fusionadas por material.
+- **Calidad gráfica:** *Alta* (sombras suaves, reflejos de entorno, film de pallets y todo el detalle fino) o *Media* para
+  equipos modestos (omite el detalle fino y recalcula el corte 2 veces por segundo); baja sola a Media si no se sostienen
+  ~25 FPS.
 - **Causa → efecto:** banner de puerta (kW, tiempo, kWh), «¿Por qué cambió la temperatura?», diagrama de balance,
   consecuencias al mover un control, «¿Qué está pasando?» por reglas, controles bloqueados según el contexto.
 - **Gráfico temporal:** aire / superficie / núcleo con setpoint y límite de alarma, y un segundo panel de
