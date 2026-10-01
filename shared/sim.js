@@ -331,10 +331,12 @@
       }
       // Leyenda: barra de gradiente con extremos y unidad
       const lx = (cfg.heatPos || [12])[0], ly = (cfg.heatPos || [0, 14])[1], lw = 150;
-      g.fillStyle = 'rgba(8,12,18,.88)'; SL.rr ? SL.rr(g, lx - 6, ly - 8, lw + 12, 40, 6) : g.rect(lx - 6, ly - 8, lw + 12, 40); g.fill();
+      const ttl = `${L.label} · ${heatM === 'avg' ? `promedio (${heatN[heatI] || 0} muestras)` : 'instantáneo'}`;
+      g.font = '600 10.5px system-ui'; const bw = Math.max(lw, g.measureText(ttl).width) + 12;
+      g.fillStyle = 'rgba(8,12,18,.88)'; SL.rr ? SL.rr(g, lx - 6, ly - 8, bw, 40, 6) : g.rect(lx - 6, ly - 8, bw, 40); g.fill();
       const gr = g.createLinearGradient(lx, 0, lx + lw, 0); for (let k = 0; k <= 10; k++) { const c = SL.heatRGB(k / 10); gr.addColorStop(k / 10, `rgb(${c})`); }
       g.fillStyle = gr; g.fillRect(lx, ly + 6, lw, 7);
-      g.font = '600 10.5px system-ui'; g.fillStyle = '#e6edf3'; g.textAlign = 'left'; g.fillText(`${L.label} · ${heatM === 'avg' ? `promedio (${heatN[heatI] || 0} muestras)` : 'instantáneo'}`, lx, ly + 2);
+      g.font = '600 10.5px system-ui'; g.fillStyle = '#e6edf3'; g.textAlign = 'left'; g.fillText(ttl, lx, ly + 2);
       g.font = '10px system-ui'; g.fillStyle = '#8b9bb0'; g.fillText('0', lx, ly + 25); g.textAlign = 'right'; g.fillText(`${SL.fmt(heatScale, heatScale < 10 ? 1 : 0)} ${L.unit || ''}`, lx + lw, ly + 25);
       g.restore();
     }

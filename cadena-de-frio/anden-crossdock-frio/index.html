@@ -10,6 +10,28 @@
 // Pallet = 800 kg de producto (cp 3.5 kJ/kg·K) que se calienta hacia la T° del andén con τ = 120 min.
 // Andén frío: UA = 1.2 kW/K contra el exterior + calor que absorben los pallets; COP 2.8. Montacargas 0.03 kWh por viaje.
 const MP = 800, CPP = 3.5, UA = 1.2, COPD = 2.8, EFK = 0.03, RULE = ['FIFO (orden de llegada)', 'Más caliente primero'];
+const qpos = (i, y) => [142 + (i % 8) * 39, y - 70 + Math.floor(i / 8) * 50]; // posición de dibujo del pallet i de la cola
+// Nave: muro interior, bandeja portacables, patio exterior, piso del andén y de la cámara (pre-renderizado una vez).
+let DOCK = null;
+const dockCache = () => {
+  if (DOCK) return DOCK;
+  DOCK = document.createElement('canvas'); DOCK.width = 1600; DOCK.height = 900; const g = DOCK.getContext('2d'); g.scale(2, 2); const r = SL.rng(9), fy = 274;
+  g.fillStyle = '#121a22'; g.fillRect(0, 0, 800, 450);
+  g.fillStyle = SL.vgrad(g, 0, 70, '#1a232d', '#151d26'); g.fillRect(126, 0, 674, 70); // muro interior alto
+  g.strokeStyle = 'rgba(0,0,0,.3)'; for (let x = 126; x < 800; x += 8) { g.beginPath(); g.moveTo(x + 0.5, 0); g.lineTo(x + 0.5, 70); g.stroke(); }
+  g.fillStyle = '#0f151c'; g.fillRect(0, 0, 126, fy); // exterior (patio de maniobras, noche)
+  for (let i = 0; i < 40; i++) { g.fillStyle = `rgba(230,237,243,${0.2 + r() * 0.4})`; g.fillRect(r() * 120, r() * 90, 1, 1); }
+  g.fillStyle = '#26303a'; g.fillRect(0, 95, 126, 6); g.fillStyle = 'rgba(255,233,168,.12)'; g.beginPath(); g.moveTo(80, 101); g.lineTo(40, fy); g.lineTo(126, fy); g.lineTo(100, 101); g.fill(); // luminaria exterior
+  g.fillStyle = SL.vgrad(g, 40, 62, '#2a3440', '#1e262f'); g.fillRect(0, 40, 126, 62); g.strokeStyle = 'rgba(0,0,0,.3)'; for (let x = 4; x < 126; x += 6) { g.beginPath(); g.moveTo(x, 40); g.lineTo(x, 101); g.stroke(); } // fachada sobre el portón
+  g.fillStyle = '#3a4654'; g.fillRect(122, 40, 8, fy - 40); // jamba del portón
+  SL.cableTray(g, 130, 58, 800, { drop: 12 });
+  const fl = g.createLinearGradient(0, fy, 0, 300); fl.addColorStop(0, '#2a3440'); fl.addColorStop(1, '#141a20'); g.fillStyle = fl; g.fillRect(0, fy, 800, 26); // losa / patio
+  g.fillStyle = '#20262c'; g.fillRect(0, fy, 126, 26); for (let i = 0; i < 300; i++) { g.fillStyle = 'rgba(0,0,0,.25)'; g.fillRect(r() * 126, fy + r() * 26, 1.2, 1.2); }
+  g.fillStyle = 'rgba(245,185,66,.55)'; g.fillRect(140, fy + 1, 320, 1.5); g.fillRect(140, fy + 9, 320, 1.5); // pasillo peatonal
+  g.fillStyle = 'rgba(245,185,66,.25)'; for (let x = 146; x < 460; x += 16) { g.beginPath(); g.moveTo(x, fy + 2.5); g.lineTo(x + 6, fy + 2.5); g.lineTo(x + 2, fy + 9); g.lineTo(x - 4, fy + 9); g.fill(); }
+  g.fillStyle = 'rgba(159,227,255,.12)'; g.fillRect(560, fy, 226, 26); // piso de la cámara
+  return DOCK;
+};
 SL.app({
   title: 'Cadena de frío · Andén y cross-dock refrigerado',
   desc: 'Cada camión llega con pallets que quedan expuestos al ambiente del andén hasta que un operario los mueve a cámara. La cola en andén es cadena de frío rota. Clic en pallets, montacargas, camión o cámara.',
@@ -52,27 +74,55 @@ SL.app({
     const aq = s.q.length > p.np; if (aq && !s.alQ) SL.log(s, `Cola en andén supera un camión (${s.q.length} pallets)`, 'warn'); else if (!aq && s.alQ) SL.log(s, 'Cola en andén normalizada', 'ok'); s.alQ = aq;
   },
   draw(g, s, p, W, H) {
-    const hoy = p.mode === 0, y = 190, fy = y + 84, nsrv = (hoy ? 2 : 1) + p.extra;
+    const hoy = p.mode === 0, y = 190, fy = y + 84, nsrv = (hoy ? 2 : 1) + p.extra, t = s.t || 0, warm = hoy || s.blk;
+    g.drawImage(dockCache(), 0, 0, W, H);
+    // luminarias del andén y de la cámara
+    for (const lx of [200, 330, 440]) { SL.lightPool(g, lx, y + 20, 95, 0.07); g.fillStyle = '#3a4654'; g.fillRect(lx - 12, 64, 24, 4); g.fillStyle = 'rgba(255,240,210,.85)'; g.fillRect(lx - 10, 68, 20, 1.6); }
+    for (const lx of [610, 740]) SL.lightPool(g, lx, y + 10, 80, 0.06, '200,230,255');
+    // aire caliente entrando por el portón (andén ambiente)
+    if (warm) for (let k = 0; k < 3; k++) { const x = 140 + ((t * 18 + k * 40) % 120); g.strokeStyle = `rgba(255,150,90,${0.35 * (1 - (x - 140) / 120)})`; g.lineWidth = 1.4; g.beginPath(); g.moveTo(x - 8, y - 40 + k * 12); g.quadraticCurveTo(x - 4, y - 44 + k * 12, x, y - 40 + k * 12); g.lineTo(x - 3, y - 43 + k * 12); g.stroke(); }
+    // portón del andén con abrigo (sellos), nivelador y semáforo
+    g.fillStyle = SL.metal(g, 108, 20, '#5b6b80'); g.fillRect(118, 108, 22, 14); g.strokeStyle = 'rgba(0,0,0,.4)'; for (let k = 110; k < 122; k += 3) { g.beginPath(); g.moveTo(118, k); g.lineTo(140, k); g.stroke(); } // portón seccional recogido
+    g.fillStyle = '#15191e'; g.fillRect(122, 122, 10, 14); g.fillRect(122, fy - 62, 6, 62 - 8); // sello superior y lateral
+    g.fillStyle = '#2a3038'; g.fillRect(120, fy - 12, 8, 10); SL.bolt(g, 124, fy - 7, 1.2); // tope de goma
+    SL.hazard(g, 126, fy - 2, 26, 4, 0.9); g.fillStyle = SL.metal(g, fy - 4, 3, '#8a96a3'); g.fillRect(126, fy - 5, 26, 3); // nivelador
+    SL.stackLight(g, 146, 132, s.q.length > p.np ? 'down' : 'run', { s: 0.8 });
+    SL.sign(g, 62, 70, 'ANDÉN 1 · RECEPCIÓN', { color: '#2f6fb0' });
+    // camión con calza en la rueda y neblina fría saliendo de la caja
     SL.van(g, 104, fy, { s: 1.5, dir: -1, open: true, reefer: true, body: '#e8eef5', cab: '#1f6f8b' }); SL.hot('truck', 20, fy - 56, 120, 58);
-    g.fillStyle = hoy || s.blk ? 'rgba(245,185,66,.06)' : 'rgba(79,195,247,.08)'; g.fillRect(132, y - 90, 330, 176);
-    g.strokeStyle = hoy || s.blk ? 'rgba(245,185,66,.5)' : 'rgba(79,195,247,.6)'; g.setLineDash([6, 4]); g.strokeRect(132.5, y - 89.5, 329, 175); g.setLineDash([]);
+    g.fillStyle = '#f5c542'; g.beginPath(); g.moveTo(104, fy); g.lineTo(98, fy); g.lineTo(104, fy - 5); g.fill();
+    for (let k = 0; k < 5; k++) { const ph = (t * 0.6 + k / 5) % 1; g.fillStyle = `rgba(220,240,255,${0.3 * (1 - ph)})`; g.beginPath(); g.arc(128 + ph * 26, fy - 10 + ph * 6 - (k % 2) * 6, 3 + ph * 6, 0, 7); g.fill(); }
+    for (let k = 0; k < 3; k++) { const ph = (t * 0.9 + k / 3) % 1; g.fillStyle = `rgba(150,158,168,${0.3 * (1 - ph)})`; g.beginPath(); g.arc(28 - ph * 14, fy - 52 - ph * 16, 2 + ph * 5, 0, 7); g.fill(); } // vapor del equipo de frío del camión
+    // andén: zona de espera
+    SL.zone(g, 132, y - 90, 330, 176, { color: warm ? '#f5b942' : '#4fc3f7', fill: warm ? 0.06 : 0.08, dash: [6, 4] });
     SL.hot('dock', 132, y - 90, 330, 176);
-    SL.tag(g, hoy ? `ANDÉN AMBIENTE ${s.tdock.toFixed(0)} °C` : s.blk ? `ANDÉN SIN FRÍO ${s.tdock.toFixed(1)} °C` : `ANDÉN REFRIGERADO ${s.tdock.toFixed(1)} °C`, 297, y - 102, hoy || s.blk ? SL.STATE.warn : SL.STATE.info);
+    SL.tag(g, hoy ? `ANDÉN AMBIENTE ${s.tdock.toFixed(0)} °C` : s.blk ? `ANDÉN SIN FRÍO ${s.tdock.toFixed(1)} °C` : `ANDÉN REFRIGERADO ${s.tdock.toFixed(1)} °C`, 297, y - 102, warm ? SL.STATE.warn : SL.STATE.info);
+    if (!hoy) { g.fillStyle = SL.metal(g, 62, 12, '#9aa6b3'); g.fillRect(422, 62, 38, 12); SL.fan(g, 433, 68, 4.5, !s.blk, 1.2); SL.fan(g, 449, 68, 4.5, !s.blk, 1.2); } // evaporador del andén
     const col = (T) => SL.color(1 - SL.clamp((T - 2) / (p.rej - 2), 0, 1));
-    const pallet = (x, yy, T, w = 32) => { SL.pallet(g, x, yy + 26, w); for (let r = 0; r < 2; r++) for (let k = 0; k < 2; k++) SL.carton(g, x + 1 + k * (w / 2 - 0.5), yy + 2 + r * 12, w / 2 - 1, 12, col(T)); };
-    s.q.slice(0, 24).forEach((o, i) => { const px = 142 + (i % 8) * 39, py = y - 70 + Math.floor(i / 8) * 50; pallet(px, py, o.T); SL.hot('pal:' + o.id, px, py, 34, 34); });
+    const pallet = (x, yy, T, w = 32) => { SL.contact(g, x + w / 2, yy + 33, w * 0.55, 2.5, 0.4); SL.pallet(g, x, yy + 26, w); for (let r = 0; r < 2; r++) for (let k = 0; k < 2; k++) SL.carton(g, x + 1 + k * (w / 2 - 0.5), yy + 2 + r * 12, w / 2 - 1, 12, col(T)); };
+    s.q.slice(0, 24).forEach((o, i) => { const [px, py] = qpos(i, y); pallet(px, py, o.T); SL.hot('pal:' + o.id, px, py, 34, 34); if (o.T > p.rej) SL.led(g, px + 30, py + 2, 2, SL.STATE.down, Math.floor(t * 3) % 2 === 0); });
     if (s.q.length > 24) SL.tag(g, `+${s.q.length - 24} pallets`, 420, y + 78, SL.STATE.down);
-    g.fillStyle = SL.vgrad(g, y - 90, 176, '#1d3a4f', '#122636'); g.fillRect(560, y - 90, 226, 176); g.strokeStyle = '#4fc3f7'; g.lineWidth = 1.5; g.strokeRect(560.5, y - 89.5, 225, 175);
+    // supervisor caminando por el pasillo peatonal con tablilla
+    const sx = 150 + ((t * 7) % 290); SL.person(g, sx, fy, { s: 0.85, walk: t * 7, dir: 1, shirt: '#2f6fb0', vest: '#f5b942' });
+    // cámara de conservación: paneles aislados, evaporadores, escarcha y cortina de tiras
+    g.fillStyle = SL.vgrad(g, y - 90, 176, '#1d3a4f', '#122636'); g.fillRect(560, y - 90, 226, 176);
+    g.strokeStyle = 'rgba(159,227,255,.12)'; g.lineWidth = 1; for (let x = 590; x < 786; x += 30) { g.beginPath(); g.moveTo(x + 0.5, y - 90); g.lineTo(x + 0.5, y + 86); g.stroke(); }
+    g.strokeStyle = '#4fc3f7'; g.lineWidth = 1.5; g.strokeRect(560.5, y - 89.5, 225, 175);
+    for (const ex of [600, 720]) { g.fillStyle = SL.metal(g, y - 88, 12, '#c3ccd6'); g.fillRect(ex - 22, y - 88, 44, 12); SL.fan(g, ex - 10, y - 82, 4.5, true, 1.4); SL.fan(g, ex + 10, y - 82, 4.5, true, 1.4); g.fillStyle = 'rgba(230,245,255,.5)'; g.fillRect(ex - 22, y - 77, 44, 1.5); }
     SL.hot('cam', 560, y - 90, 226, 176);
     SL.tag(g, `CÁMARA · ${s.n} pallets`, 673, y - 102, SL.STATE.info);
     for (let i = 0; i < Math.min(s.n, 30); i++) pallet(570 + (i % 6) * 36, y + 42 - Math.floor(i / 6) * 32, 2, 30);
+    g.fillStyle = 'rgba(8,12,18,.85)'; SL.rr(g, 742, y - 72, 38, 14, 3); g.fill(); SL.text(g, '2.0 °C', 761, y - 62, '#9fe3ff', '600 9px ui-monospace, monospace', 'center');
+    for (let k = 0; k < 7; k++) { g.fillStyle = `rgba(200,230,255,${0.16 + 0.05 * (k % 2)})`; g.fillRect(556 + k * 1.3, fy - 62 + (k % 2), 1.2, 60); } // cortina de tiras PVC
+    for (let k = 0; k < 4; k++) { const ph = (t * 0.5 + k / 4) % 1; g.fillStyle = `rgba(220,240,255,${0.25 * (1 - ph)})`; g.beginPath(); g.arc(556 - ph * 22, fy - 4 - (k % 2) * 4, 3 + ph * 5, 0, 7); g.fill(); } // aire frío que escapa por abajo
+    SL.bollard(g, 548, fy + 2, 18); SL.bollard(g, 466, fy + 2, 18);
     const dn = (i) => (s.srv[i] && s.srv[i].down) || (i === 0 && s.fk);
     if (hoy) {
       for (let i = 0; i < nsrv; i++) { const k = s.srv[i], busy = !!(k && k.o), f = busy ? SL.clamp(1 - k.rem / 3, 0, 1) : 0, yy = i < 2 ? fy - 30 + i * 30 : fy - 60 - (i - 2) * 30;
-        SL.forklift(g, 470 + f * 70, yy, { s: 1.1, load: busy ? col(k.o.T) : null }); SL.hot('srv:' + i, 450 + f * 70, yy - 32, 44, 34);
-        if (dn(i)) SL.tag(g, 'AVERÍA', 480 + f * 70, yy - 38, SL.STATE.down, '600 9px system-ui'); }
+        SL.forklift(g, 470 + f * 70, yy, { s: 1.1, load: busy ? col(k.o.T) : null, dist: f * 70 + (k ? k.mv * 140 : 0) }); SL.hot('srv:' + i, 450 + f * 70, yy - 32, 44, 34);
+        if (dn(i)) { SL.tag(g, 'AVERÍA', 480 + f * 70, yy - 38, SL.STATE.down, '600 9px system-ui'); SL.cone(g, 456 + f * 70, yy + 1, 0.8); } }
     } else {
-      SL.belt(g, [[462, y], [560, y]], 20);
+      SL.belt(g, [[462, y], [560, y]], 20, null, dn(0) ? 0 : 1.2);
       const k = s.srv[0]; if (k && k.o) pallet(470 + SL.clamp(1 - k.rem / 1.2, 0, 1) * 60, y - 34, k.o.T, 30);
       for (let i = 0; i < nsrv; i++) { const kk = s.srv[i]; SL.person(g, 476 + i * 20, fy, { dir: 1, busy: !!(kk && kk.o) }); SL.hot('srv:' + i, 466 + i * 20, fy - 34, 20, 36); }
       if (dn(0)) SL.tag(g, 'RODILLOS DETENIDOS', 511, y - 22, SL.STATE.down, '600 9px system-ui');
@@ -80,11 +130,30 @@ SL.app({
     SL.text(g, `Cola en andén: ${s.q.length} pallets · color de caja = temperatura del pallet`, 140, y + 108, s.q.length > 10 ? '#ef5350' : '#8b9bb0', '12px system-ui');
     const bins = [0, 0, 0, 0, 0, 0]; s.hist.forEach((T) => { bins[SL.clamp(Math.floor(T - 2), 0, 5)]++; });
     const mx = Math.max(1, ...bins);
-    bins.forEach((v, i) => { const h = (v / mx) * 58; SL.rr(g, 180 + i * 60, 420 - h, 44, Math.max(h, 1), 3); g.fillStyle = SL.color(1 - i / 5); g.fill(); SL.text(g, 2 + i + '°', 202 + i * 60, 436, '#8b9bb0', '11px system-ui', 'center'); });
+    g.fillStyle = 'rgba(8,12,18,.6)'; SL.rr(g, 168, 350, 372, 94, 6); g.fill();
+    g.strokeStyle = 'rgba(139,155,176,.2)'; g.lineWidth = 1; for (const k of [0.5, 1]) { g.beginPath(); g.moveTo(176, 420.5 - 58 * k); g.lineTo(532, 420.5 - 58 * k); g.stroke(); }
+    bins.forEach((v, i) => { const h = (v / mx) * 58; SL.rr(g, 180 + i * 60, 420 - h, 44, Math.max(h, 1), 3); g.fillStyle = SL.color(1 - i / 5); g.fill(); SL.text(g, 2 + i + '°', 202 + i * 60, 436, '#8b9bb0', '11px system-ui', 'center'); if (v) SL.text(g, v, 202 + i * 60, 416 - h, '#c3ccd6', '600 9px system-ui', 'center'); });
     SL.hot('hist', 176, 356, 360, 84);
     SL.text(g, 'Temperatura de ingreso a cámara', 560, 420, '#8b9bb0', '11px system-ui');
     SL.text(g, `Próx. camión ${Math.max(0, s.nextT - (s.t || 0)).toFixed(0)} min · ${p.rule ? 'caliente 1º' : 'FIFO'}`, 560, 384, '#8b9bb0', '11px system-ui');
   },
+  heatPos: [14, 12],
+  heat: [
+    { id: 'tp', label: 'Producto: exceso sobre 2 °C', unit: 'K', max: (s, p) => Math.max(p.rej - 2, p.tamb - 6), fn: (s, p) => {
+      const out = s.q.slice(0, 24).map((o, i) => { const [x, y] = qpos(i, 190); return [x + 17, y + 18, o.T - 2, 34]; }), hoy = p.mode === 0;
+      if (s.q.length > 24) out.push([420, 268, Math.max(...s.q.slice(24).map((o) => o.T)) - 2, 40]);
+      s.srv.forEach((k, i) => { if (!k.o) return; if (hoy) { const f = SL.clamp(1 - k.rem / 3, 0, 1), yy = i < 2 ? 244 + i * 30 : 214 - (i - 2) * 30; out.push([488 + f * 70, yy - 14, k.o.T - 2, 26]); } else out.push([485 + SL.clamp(1 - k.rem / 1.2, 0, 1) * 60, 170, k.o.T - 2, 26]); });
+      return out; } },
+    { id: 'dwell', label: 'Permanencia fuera de frío', unit: 'min', max: 60, fn: (s) => {
+      const out = s.q.slice(0, 24).map((o, i) => { const [x, y] = qpos(i, 190); return [x + 17, y + 18, s.t - o.a, 34]; });
+      if (s.q.length > 24) out.push([420, 268, s.t - Math.min(...s.q.slice(24).map((o) => o.a)), 40]);
+      return out; } },
+    { id: 'cong', label: 'Congestión del andén', unit: 'pallets', max: 8, mode: 'sum', fn: (s) => {
+      const out = s.q.slice(0, 24).map((o, i) => { const [x, y] = qpos(i, 190); return [x + 17, y + 18, 1, 70]; });
+      if (s.q.length > 24) out.push([420, 268, s.q.length - 24, 70]);
+      s.srv.forEach((k) => { if (k.o) out.push([505, 250, 1, 50]); });
+      return out; } },
+  ],
   vars(s, p) {
     const hoy = p.mode === 0, nq = s.q.length, mT = nq ? s.q.reduce((a, o) => a + o.T, 0) / nq : 0, xT = nq ? Math.max(...s.q.map((o) => o.T)) : 0;
     const hrs = Math.max(s.t, 1) / 60, util = s.capT ? s.busyT / s.capT : 0, nsrv = (hoy ? 2 : 1) + p.extra, act = [...Array(nsrv).keys()].filter((i) => !((s.srv[i] && s.srv[i].down) || (i === 0 && s.fk))).length;

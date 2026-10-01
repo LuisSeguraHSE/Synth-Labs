@@ -12,6 +12,36 @@
 const EFF = 0.95, LPKWH = 0.28, CO2L = 2.68, F0 = 60; // η batería, L/kWh diésel, kg CO₂/L, Hz nominal
 const load = (h, pk) => pk * (0.35 + 0.3 * Math.exp(-((h - 8) ** 2) / 8) + 0.6 * Math.exp(-((h - 19) ** 2) / 6) + 0.15 * Math.exp(-((h - 13) ** 2) / 20));
 const POL = ['Seguidor de carga', 'Ciclo de carga'];
+const FUELCAP = 20000; // L, tanque diario del grupo (se repone al vaciarse)
+// Reparto visual de la demanda del sitio por zona (planta, dormitorios A/B, comedor) según la hora.
+const zones = (ld, h) => {
+  const work = h >= 7 && h <= 19 ? 1 : 0.55, dorm = h < 6.5 || h > 19 ? 1 : 0.35, meal = 0.25 + Math.exp(-((h - 7) ** 2)) + Math.exp(-((h - 12.5) ** 2)) + Math.exp(-((h - 19.5) ** 2));
+  const w = [0.62 * work, 0.11 * dorm, 0.11 * dorm, 0.09 * meal], tot = w.reduce((a, b) => a + b, 0);
+  return w.map((v) => (ld * v) / tot);
+};
+const STARS = (() => { const r = SL.rng(7), a = []; for (let i = 0; i < 70; i++) a.push([r() * 800, r() * 110, r() < 0.15 ? 1.6 : 1]); return a; })();
+// Terreno estático (montañas, suelo con grava, plataformas) pre-renderizado una vez.
+let BG = null;
+const bgCache = () => {
+  if (BG) return BG;
+  BG = document.createElement('canvas'); BG.width = 1600; BG.height = 900; const g = BG.getContext('2d'); g.scale(2, 2);
+  const r = SL.rng(11);
+  const ridge = (y0, amp, col, f) => { g.fillStyle = col; g.beginPath(); g.moveTo(0, 130); for (let x = 0; x <= 800; x += 8) g.lineTo(x, y0 - amp * (0.5 + 0.5 * Math.sin(x * f + y0)) - amp * 0.4 * Math.sin(x * f * 2.7)); g.lineTo(800, 130); g.fill(); };
+  ridge(110, 30, 'rgba(58,70,92,.55)', 0.011); ridge(122, 18, 'rgba(46,52,58,.85)', 0.019);
+  const gr = g.createLinearGradient(0, 120, 0, 450); gr.addColorStop(0, '#3b3528'); gr.addColorStop(0.3, '#2e2a21'); gr.addColorStop(1, '#1f1d18');
+  g.fillStyle = gr; g.fillRect(0, 124, 800, 326);
+  for (let i = 0; i < 1400; i++) { const y = 126 + r() * 324, k = r(); g.fillStyle = k < 0.5 ? 'rgba(0,0,0,.22)' : 'rgba(210,190,150,.12)'; g.fillRect(r() * 800, y, 1 + (y - 120) / 260, 1); } // grava
+  for (let i = 0; i < 26; i++) { const x = r() * 800, y = 180 + r() * 260, rr = 2 + r() * 4; g.fillStyle = 'rgba(0,0,0,.3)'; g.beginPath(); g.ellipse(x + 1, y + 1.5, rr * 1.2, rr * 0.5, 0, 0, 7); g.fill(); g.fillStyle = '#5a5244'; g.beginPath(); g.ellipse(x, y, rr, rr * 0.6, 0, Math.PI, 0); g.fill(); } // rocas
+  for (let i = 0; i < 40; i++) { const x = r() * 800, y = 140 + r() * 300; g.strokeStyle = 'rgba(120,130,70,.45)'; g.lineWidth = 0.8; g.beginPath(); for (let k = -2; k <= 2; k++) { g.moveTo(x, y); g.lineTo(x + k * 1.6, y - 3 - r() * 3); } g.stroke(); } // matas
+  const pad = (x, y, w, h, c) => { g.fillStyle = c; g.fillRect(x, y, w, h); g.fillStyle = 'rgba(255,255,255,.08)'; g.fillRect(x, y, w, 1); g.fillStyle = 'rgba(0,0,0,.35)'; g.fillRect(x, y + h, w, 1.5); };
+  pad(22, 148, 236, 20, '#4a4538'); for (let i = 0; i < 300; i++) { g.fillStyle = r() < 0.5 ? 'rgba(0,0,0,.25)' : 'rgba(220,210,190,.15)'; g.fillRect(22 + r() * 236, 148 + r() * 20, 1.2, 1.2); } // grava PV
+  pad(570, 148, 228, 12, '#4f555c'); pad(30, 388, 212, 10, '#4f555c'); pad(340, 262, 120, 6, '#4f555c'); pad(570, 394, 210, 10, '#4f555c');
+  g.fillStyle = 'rgba(160,140,100,.16)'; g.fillRect(250, 420, 330, 18); g.strokeStyle = 'rgba(200,190,160,.25)'; g.setLineDash([6, 6]); g.strokeRect(250, 420, 330, 18); g.setLineDash([]); // vereda
+  // cerco perimetral de la subestación (malla) y del campo PV
+  const fence = (x1, x2, y, hh) => { g.strokeStyle = 'rgba(160,170,180,.35)'; g.lineWidth = 0.6; for (let x = x1; x < x2; x += 4) { g.beginPath(); g.moveTo(x, y); g.lineTo(x + 4, y - hh); g.moveTo(x + 4, y); g.lineTo(x, y - hh); g.stroke(); } g.strokeStyle = '#6a7684'; g.lineWidth = 1.4; g.beginPath(); g.moveTo(x1, y - hh); g.lineTo(x2, y - hh); g.stroke(); g.fillStyle = '#6a7684'; for (let x = x1; x <= x2; x += 30) g.fillRect(x - 1, y - hh - 2, 2, hh + 2); };
+  fence(14, 266, 146, 16);
+  return BG;
+};
 SL.app({
   title: 'Energía · Microrred PV + batería + diésel',
   desc: 'Sitio aislado (campamento/mina/planta). Dimensiona PV y batería, elige la estrategia de despacho y provoca nubes, picos o fallas. Clic en los equipos para inspeccionar.',
@@ -29,7 +59,7 @@ SL.app({
     { id: 'dgmin', label: 'Carga mínima diésel', min: 0, max: 50, step: 5, value: 0, unit: '%' },
     { sec: 'Economía', id: 'price', label: 'Precio diésel', min: 0.5, max: 2.5, step: 0.1, value: 1.1, unit: 'USD/L' },
   ],
-  init(p) { return { soc: 0.5 * p.bat, pvE: 0, ldE: 0, dgE: 0, uns: 0, curt: 0, cl: 1, pv: 0, ld: 0, dg: 0, bp: 0, un: 0, cu: 0, irr: 0, freq: F0, dgOn: false, starts: 0, dgH: 0, thr: 0, fuel: 0, cloudF: false, surge: false, dgTrip: false, batTrip: false, shed: false, dgMan: false, alLow: false, alUn: false }; },
+  init(p) { return { soc: 0.5 * p.bat, pvE: 0, ldE: 0, dgE: 0, uns: 0, curt: 0, cl: 1, pv: 0, ld: 0, dg: 0, bp: 0, un: 0, cu: 0, irr: 0, freq: F0, dgOn: false, starts: 0, dgH: 0, thr: 0, fuel: 0, cloudF: false, surge: false, dgTrip: false, batTrip: false, shed: false, dgMan: false, alLow: false, alUn: false, th: { inv: 0, bat: 0, dg: 0, bus: 0 } }; },
   step(s, dt, p, r) {
     const dh = dt / 10, h = ((s.t || 0) / 10) % 24, sun = Math.max(0, Math.sin((Math.PI * (h - 6)) / 12));
     s.cl = SL.clamp(s.cl + (r() - 0.5) * 0.08 - 0.02 * (s.cl - (1 - p.cloud)), 0.2, 1);
@@ -60,34 +90,115 @@ SL.app({
     s.fuel += LPKWH * dg * dh; s.thr += (ch + dis) * dh; if (s.dgOn) s.dgH += dh;
     const low = p.bat > 0 && s.soc <= smin + 0.01 * p.bat;
     if (low && !s.alLow) SL.log(s, `SOC en mínimo (${p.socmin} %)`, 'warn'); s.alLow = low;
+    // Sobretemperatura de equipos (K sobre ambiente), primer orden: inversor PV, celdas BESS, motor diésel, barra/transformador
+    const th = s.th || (s.th = { inv: 0, bat: 0, dg: 0, bus: 0 }), relax = (k, tgt, tau) => { th[k] += (tgt - th[k]) * Math.min(1, dh / tau); };
+    relax('inv', 25 * (p.pv ? pv / p.pv : 0), 0.2); relax('bat', 3 * (pmax > 0 ? 1 : 0) + 18 * (pmax ? ((ch + dis) / pmax) ** 2 : 0), 1);
+    relax('dg', dg > 0.5 ? 55 * (0.4 + 0.6 * dg / p.dg) : 0, 0.25); relax('bus', 35 * (Math.max(ld, pv + dg) / (p.pk * 1.3)) ** 2, 0.5);
     if (un > 0.5 && !s.alUn) SL.log(s, `Energía no servida: faltan ${un.toFixed(0)} kW`, 'crit'); else if (un <= 0.5 && s.alUn) SL.log(s, 'Servicio restablecido', 'ok'); s.alUn = un > 0.5;
   },
   draw(g, s, p, W, H) {
-    const h = ((s.t || 0) / 10) % 24, day = Math.max(0, Math.sin((Math.PI * (h - 6)) / 12));
-    g.fillStyle = `rgba(56,120,190,${0.1 * day})`; g.fillRect(0, 0, W, H);
+    const t = s.t || 0, h = (t / 10) % 24, day = Math.max(0, Math.sin((Math.PI * (h - 6)) / 12)), night = 1 - Math.min(1, day * 3);
     const bus = [400, 225], bat = s.bp; // > 0: batería descarga
+    const Z = zones(s.ld, h);
+    // --- Cielo (día/noche/crepúsculo), estrellas, luna, nubes
+    const mix = (a, b, k) => `rgb(${a.map((v, i) => Math.round(v + (b[i] - v) * k)).join(',')})`, dk = Math.min(1, day * 2.2), dusk = day > 0 && day < 0.35 ? 1 - day / 0.35 : 0;
+    const sky = g.createLinearGradient(0, 0, 0, 130);
+    const hz = [18, 28, 46].map((v, i) => v + ([120, 160, 196][i] - v) * dk);
+    sky.addColorStop(0, mix([8, 14, 28], [38, 82, 128], dk)); sky.addColorStop(1, mix(hz, [214, 132, 74], dusk * 0.7));
+    g.fillStyle = sky; g.fillRect(0, 0, W, 130);
+    if (night > 0.05) { g.fillStyle = `rgba(230,237,243,${0.7 * night})`; for (const [x, y, r] of STARS) { g.globalAlpha = 0.4 + 0.6 * Math.abs(Math.sin(t * 0.7 + x)); g.fillRect(x, y, r, r); } g.globalAlpha = 1;
+      g.fillStyle = `rgba(236,240,226,${0.9 * night})`; g.beginPath(); g.arc(610, 30, 9, 0, 7); g.fill(); g.fillStyle = mix([8, 14, 28], [38, 82, 128], dk); g.beginPath(); g.arc(614, 27, 8, 0, 7); g.fill(); }
+    g.drawImage(bgCache(), 0, 0, W, H);
+    if (night > 0.02) { g.fillStyle = `rgba(4,8,18,${0.42 * night})`; g.fillRect(0, 118, W, H - 118); }
+    const cloudA = s.cloudF ? 0.85 : SL.clamp((1 - s.cl) * 1.3, 0, 0.7);
+    if (cloudA > 0.05) for (let k = 0; k < 4; k++) {
+      const cx = ((t * 5 + k * 230) % 960) - 80, cy = 22 + (k % 2) * 16, c = s.cloudF ? 150 : 205 - 40 * night;
+      g.fillStyle = `rgba(${c},${c + 6},${c + 14},${cloudA * (0.55 + 0.1 * k)})`;
+      for (const [dx, dy, r] of [[0, 4, 14], [16, -2, 18], [34, 4, 13], [-14, 7, 9]]) { g.beginPath(); g.arc(cx + dx, cy + dy, r, 0, 7); g.fill(); }
+    }
+    // --- Alumbrado nocturno del campamento
+    if (night > 0.05) for (const lx of [256, 532]) SL.lightPool(g, lx, 405, 70, 0.16 * night, '255,214,150');
+    if (night > 0.05) SL.lightPool(g, 675, 404, 110, 0.12 * night * (s.ld / Math.max(1, p.pk)), '255,214,150');
+    // --- Líneas de potencia (cable en canaleta + flechas ∝ kW)
     const line = (a, b, kw, col) => { SL.pipe(g, [a, b], 5, '#8fa3b8'); const n = Math.min(6, Math.round(Math.abs(kw) / 60)); if (n) (kw >= 0 ? SL.flow(g, a[0], a[1], b[0], b[1], n, col) : SL.flow(g, b[0], b[1], a[0], a[1], n, col)); };
     line([240, 120], bus, s.pv, '#ffd666');
     line([230, 335], bus, bat, bat >= 0 ? '#4fc3f7' : '#3ecf8e');
     line([580, 115], bus, s.dg, '#f5b942');
-    line(bus, [580, 345], s.ld, '#e6edf3');
+    line(bus, [580, 345], Z[0], '#e6edf3');
+    SL.pipe(g, [[400, 262], [400, 336], [298, 336], [298, 348]], 3.5, '#8fa3b8'); SL.pipe(g, [[400, 336], [482, 336], [482, 348]], 3.5, '#8fa3b8'); SL.pipe(g, [[392, 336], [392, 348]], 3.5, '#8fa3b8');
+    const camp = Z[1] + Z[2] + Z[3]; if (camp > 1) { SL.flow(g, 400, 300, 400, 334, Math.min(3, 1 + Math.round(camp / 60)), '#e6edf3'); }
+    for (const [x, y] of [[320, 172], [490, 170], [312, 280], [490, 282]]) { g.fillStyle = '#c9a227'; g.fillRect(x - 1, y - 9, 2, 9); g.fillStyle = '#ef5350'; g.fillRect(x - 3, y - 11, 6, 3); } // hitos de cable enterrado
+    // --- Subestación (bus AC)
+    SL.zone(g, 334, 168, 132, 108, { color: '#4fc3f7', fill: 0.04, hatch: true });
+    SL.sign(g, 400, 160, '⚡ PELIGRO 480 V', { color: '#c0392b' });
+    // --- Campo PV + estación meteorológica
     SL.solar(g, 30, 60, 210, 100, p.pv > 0 ? s.pv / p.pv : 0); SL.hot('pv', 30, 40, 210, 120);
+    if (s.cloudF && day > 0.05) { g.fillStyle = `rgba(5,10,20,${0.4 * Math.min(1, day * 3)})`; g.beginPath(); g.ellipse(80 + ((t * 5) % 120), 112, 90, 34, 0, 0, 7); g.fill(); }
+    g.fillStyle = '#56616d'; g.fillRect(259, 96, 2, 66); g.fillRect(253, 104, 14, 1.6); SL.contact(g, 260, 162, 8, 2);
+    g.fillStyle = '#e6edf3'; g.beginPath(); g.arc(254, 101, 3, Math.PI, 0); g.fill(); g.fillStyle = '#20282f'; g.fillRect(250.5, 101, 7, 2); // piranómetro
+    g.strokeStyle = '#9aa6b3'; g.lineWidth = 0.8; for (let k = 0; k < 3; k++) { const a = t * 6 + k * 2.09; g.beginPath(); g.moveTo(266, 98); g.lineTo(266 + Math.cos(a) * 5, 98 + Math.sin(a) * 2); g.stroke(); } // anemómetro
     SL.tag(g, `Solar ${s.pv.toFixed(0)} kW · ${s.irr.toFixed(0)} W/m²`, 135, 176, '#ffd666');
     if (s.cloudF) SL.tag(g, 'NUBE', 60, 44, SL.STATE.warn);
     if (s.cu > 1) SL.tag(g, `Recorte ${s.cu.toFixed(0)} kW`, 135, 198, SL.STATE.block);
+    // --- BESS
+    SL.sign(g, 105, 266, `BESS ${p.bat} kWh`, { color: '#2f6fb0' });
     SL.battery(g, 40, 280, 190, 112, s.soc / Math.max(1, p.bat), { flow: -bat }); SL.hot('bat', 40, 280, 190, 112);
+    if (s.batTrip) SL.stackLight(g, 222, 279, 'down', { s: 0.8 });
+    SL.bollard(g, 30, 396, 18);
     SL.tag(g, s.batTrip ? 'Inversor BESS · FALLA' : `Batería ${bat > 1 ? 'descarga' : bat < -1 ? 'carga' : 'reposo'} ${Math.abs(bat).toFixed(0)} kW`, 135, 410, s.batTrip ? SL.STATE.down : '#4fc3f7');
-    SL.genset(g, 580, 80, 170, 70, s.dg > 0.5, (s.t || 0) / 10); SL.hot('dg', 580, 60, 170, 90);
+    // --- Grupo diésel + tanque de combustible
+    const fuelF = SL.clamp(1 - (s.fuel % FUELCAP) / FUELCAP, 0, 1);
+    SL.pipe(g, [[752, 142], [766, 142], [766, 150]], 3, '#5b6b80');
+    SL.tank(g, 757, 104, 24, 40, fuelF, { liquid: '#c98500', ticks: 2 }); SL.hot('dg', 756, 98, 40, 60);
+    SL.genset(g, 580, 80, 170, 70, s.dg > 0.5, t / 10); SL.hot('dg', 580, 60, 170, 90);
+    if (s.dg > 0.5) { const hz = s.dg / p.dg; for (let k = 0; k < 3; k++) { const ph = (t * 1.6 + k / 3) % 1; g.strokeStyle = `rgba(255,190,120,${0.18 * (1 - ph) * hz})`; g.lineWidth = 1.2; g.beginPath(); g.moveTo(588 + k * 6, 92 - ph * 18); g.quadraticCurveTo(592 + k * 6, 86 - ph * 18, 588 + k * 6, 80 - ph * 18); g.stroke(); } } // aire caliente del radiador
+    SL.stackLight(g, 576, 148, s.dgTrip ? 'down' : s.dg > 0.5 ? 'run' : 'idle', { s: 0.8 });
     SL.tag(g, s.dgTrip ? 'Diésel · TRIP' : `Diésel ${s.dg.toFixed(0)} kW · ${(100 * s.dg / p.dg).toFixed(0)} %`, 665, 168, s.dgTrip ? SL.STATE.down : s.dg > 0.5 ? SL.STATE.warn : SL.STATE.idle);
-    SL.building(g, 580, 310, 190, 86, { load: s.ld / Math.max(1, p.pk * 1.2) }); SL.hot('load', 580, 296, 190, 100);
-    SL.tag(g, `Carga ${s.ld.toFixed(0)} kW${s.surge ? ' · PICO' : ''}${s.shed ? ' · DESLASTRE' : ''}`, 675, 412, s.un > 0.5 ? SL.STATE.down : s.surge || s.shed ? SL.STATE.warn : '#e6edf3');
+    // --- Planta (carga principal)
+    SL.building(g, 580, 310, 190, 86, { load: s.ld / Math.max(1, p.pk * 1.2), label: `Planta ${Z[0].toFixed(0)} kW` }); SL.hot('load', 580, 296, 190, 100);
+    SL.cone(g, 640, 400); SL.cone(g, 712, 400);
+    SL.tag(g, `Carga ${s.ld.toFixed(0)} kW${s.surge ? ' · PICO' : ''}${s.shed ? ' · DESLASTRE' : ''}`, 675, 416, s.un > 0.5 ? SL.STATE.down : s.surge || s.shed ? SL.STATE.warn : '#e6edf3');
+    // --- Campamento: módulos habitacionales y comedor
+    const mods = [[262, 'Dorm. A', Z[1]], [352, 'Dorm. B', Z[2]], [442, 'Comedor', Z[3]]];
+    for (const [mx, lb, kw] of mods) {
+      const my = 350, mw = 78, mh = 40, lit = s.un > 0.5 ? 0.15 : SL.clamp(kw / 45, 0.15, 1);
+      SL.contact(g, mx + mw / 2, my + mh + 2, mw * 0.6, 3.5, 0.5);
+      g.fillStyle = '#20282f'; g.fillRect(mx + 4, my + mh, 6, 4); g.fillRect(mx + mw - 10, my + mh, 6, 4);
+      g.fillStyle = SL.metal(g, my, mh, lb === 'Comedor' ? '#7d8f6a' : '#c9b48a'); g.fillRect(mx, my, mw, mh);
+      g.strokeStyle = 'rgba(0,0,0,.18)'; g.lineWidth = 1; for (let k = mx + 4; k < mx + mw; k += 4) { g.beginPath(); g.moveTo(k, my + 3); g.lineTo(k, my + mh - 2); g.stroke(); }
+      g.fillStyle = '#3a4654'; g.fillRect(mx - 2, my - 3, mw + 4, 4);
+      g.fillStyle = SL.metal(g, my - 8, 6, '#9aa6b3'); g.fillRect(mx + mw - 22, my - 9, 16, 6); SL.fan(g, mx + mw - 14, my - 6, 2.6, kw > 5, 0.8); // split A/C
+      for (let k = 0; k < 2; k++) { const wx = mx + 8 + k * 22; g.fillStyle = '#15191e'; g.fillRect(wx - 1, my + 9, 14, 11); g.fillStyle = (k ? lit > 0.5 : lit > 0.25) ? SL.vgrad(g, my + 10, 9, 'rgba(255,230,150,.95)', 'rgba(230,170,70,.85)') : '#1a2430'; g.fillRect(wx, my + 10, 12, 9); }
+      g.fillStyle = '#5b6b80'; g.fillRect(mx + mw - 18, my + 12, 11, mh - 12); g.fillStyle = '#c3ccd6'; g.fillRect(mx + mw - 10, my + 26, 1.6, 3);
+      g.fillStyle = '#3a4654'; g.fillRect(mx + mw - 21, my + mh - 1, 17, 3); // peldaño
+      SL.text(g, `${lb} · ${kw.toFixed(0)} kW`, mx + mw / 2, my + mh + 13, '#c3ccd6', '600 9px system-ui', 'center');
+    }
+    SL.hot('camp', 258, 340, 268, 66);
+    for (const lx of [256, 532]) { g.fillStyle = '#4a5562'; g.fillRect(lx - 1, 336, 2, 70); g.fillRect(lx - 1, 336, 8, 1.6); g.fillStyle = night > 0.05 ? '#ffe9a8' : '#6a7684'; g.fillRect(lx + 4, 337, 5, 2); SL.contact(g, lx, 406, 5, 1.5); }
+    // --- Personal: técnico caminando por la vereda y otro revisando la batería
+    const wx = 270 + ((t * 9) % 300); SL.person(g, wx, 436, { s: 0.75, walk: t * 7, dir: 1, shirt: '#2f6fb0' });
+    SL.person(g, 252, 392, { s: 0.7, dir: -1, busy: true, shirt: '#8a4b2a', helmet: '#f5c542' });
+    // --- Tablero
     SL.machine(g, bus[0] - 46, bus[1] - 40, 92, 80, { state: s.un > 0.5 ? 'down' : 'run' }); SL.hot('bus', bus[0] - 46, bus[1] - 40, 92, 80);
     SL.text(g, 'Tablero', bus[0] - 12, bus[1] - 10, '#e6edf3', '600 12px system-ui', 'center');
     SL.text(g, `${s.freq.toFixed(2)} Hz`, bus[0] - 12, bus[1] + 8, Math.abs(s.freq - F0) > 0.3 ? '#ef5350' : '#3ecf8e', '600 12px ui-monospace, monospace', 'center');
     SL.led(g, bus[0] - 34, bus[1] - 24, 3, s.un > 0.5 ? SL.STATE.down : SL.STATE.run);
     SL.tag(g, `EMS · ${POL[p.pol]} · SOC mín ${p.socmin} %`, 400, 290, SL.STATE.info); SL.hot('ems', 310, 280, 180, 20);
-    SL.text(g, day > 0 ? '☀ día' : '☾ noche', 400, 30, '#8b9bb0', '12px system-ui', 'center');
+    SL.text(g, day > 0 ? '☀ día' : '☾ noche', 670, 24, '#c3ccd6', '12px system-ui', 'center');
   },
+  heatPos: [300, 14],
+  heat: [
+    { id: 'flow', label: 'Flujo de potencia', unit: 'kW', max: (s, p) => Math.max(100, p.pk * 1.3, p.pv), fn: (s) => {
+      const pts = [], Z = zones(s.ld, ((s.t || 0) / 10) % 24), add = (a, b, v) => { const n = Math.max(2, Math.round(Math.hypot(b[0] - a[0], b[1] - a[1]) / 12)); for (let k = 0; k <= n; k++) pts.push([a[0] + ((b[0] - a[0]) * k) / n, a[1] + ((b[1] - a[1]) * k) / n, Math.abs(v), 22]); };
+      add([240, 120], [400, 225], s.pv); add([230, 335], [400, 225], s.bp); add([580, 115], [400, 225], s.dg); add([400, 225], [580, 345], Z[0]);
+      add([400, 262], [400, 336], Z[1] + Z[2] + Z[3]); add([298, 336], [400, 336], Z[1] + Z[2]); add([298, 336], [298, 348], Z[1]); add([392, 336], [392, 348], Z[2]); add([400, 336], [482, 348], Z[3]);
+      return pts; } },
+    { id: 'temp', label: 'Sobretemp. equipos', unit: 'K', max: 60, fn: (s) => {
+      const th = s.th || {}, mod = 0.03 * s.irr; // módulos PV: NOCT ≈ +30 K a 1000 W/m²
+      return [[70, 110, mod, 60], [140, 110, mod, 60], [205, 110, mod, 60], [225, 150, th.inv, 34], [135, 336, th.bat, 80], [665, 115, th.dg, 80], [735, 100, th.dg * 0.8, 40], [400, 225, th.bus, 55]]; } },
+    { id: 'zone', label: 'Demanda por zona', unit: 'kW', max: (s, p) => Math.max(40, p.pk * 0.5), fn: (s) => {
+      const Z = zones(s.ld, ((s.t || 0) / 10) % 24); return [[675, 352, Z[0], 95], [301, 370, Z[1], 44], [391, 370, Z[2], 44], [481, 370, Z[3], 44]]; } },
+  ],
   vars(s, p) {
     const socf = s.soc / Math.max(1, p.bat), ren = s.ld > 0 ? SL.clamp((s.ld - s.dg - s.un) / s.ld, 0, 1) : 0;
     return {
@@ -140,19 +251,23 @@ SL.app({
       ctl: [['Limitación de potencia', s.cu > 1 ? 'ACTIVA' : 'no', ''], ['Evento nube', s.cloudF ? 'sí' : 'no', '']],
       actions: [{ label: s.cloudF ? 'Despejar' : 'Nublar', run: (s) => { s.cloudF = !s.cloudF; } }, { label: 'PV +100 kWp', run: (s, p, r, api) => api.set('pv', Math.min(1500, p.pv + 100)) }] };
     if (id === 'bat') return { title: 'BESS · Batería de litio', sub: `${p.bat} kWh · C/2 = ${(p.bat / 2).toFixed(0)} kW · η ${EFF * 100} %`,
-      fis: [['SOC', (100 * socf).toFixed(1), '%', socf, SL.color(socf)], ['Energía', s.soc.toFixed(0), 'kWh'], ['Potencia (+desc)', s.bp.toFixed(0), 'kW'], ['Tasa C', p.bat ? (Math.abs(s.bp) / p.bat).toFixed(2) : '—', 'C'], ['Energía procesada', s.thr.toFixed(0), 'kWh'], ['Ciclos equivalentes', p.bat ? (s.thr / 2 / p.bat).toFixed(2) : '—', ''], ['Autonomía a demanda actual', s.ld > 0 ? (Math.max(0, s.soc - p.socmin / 100 * p.bat) / s.ld).toFixed(1) : '—', 'h']],
+      fis: [['SOC', (100 * socf).toFixed(1), '%', socf, SL.color(socf)], ['Energía', s.soc.toFixed(0), 'kWh'], ['Potencia (+desc)', s.bp.toFixed(0), 'kW'], ['Tasa C', p.bat ? (Math.abs(s.bp) / p.bat).toFixed(2) : '—', 'C'], ['Energía procesada', s.thr.toFixed(0), 'kWh'], ['Ciclos equivalentes', p.bat ? (s.thr / 2 / p.bat).toFixed(2) : '—', ''], ['Sobretemp. celdas', (s.th ? s.th.bat : 0).toFixed(1), 'K'], ['Autonomía a demanda actual', s.ld > 0 ? (Math.max(0, s.soc - p.socmin / 100 * p.bat) / s.ld).toFixed(1) : '—', 'h']],
       ctl: [['Estado inversor', s.batTrip ? 'FALLA' : 'en línea', '', null, s.batTrip ? '#ef5350' : '#3ecf8e'], ['SOC mínimo', p.socmin, '%'], ['Alarma SOC bajo', s.alLow ? 'ACTIVA' : 'no', '']],
       actions: [{ label: s.batTrip ? 'Rearmar inversor' : 'Forzar falla', run: (s) => { s.batTrip = !s.batTrip; } }, { label: 'SOC mín +10 %', run: (s, p, r, api) => api.set('socmin', Math.min(50, p.socmin + 10)) }, { label: 'SOC mín −10 %', run: (s, p, r, api) => api.set('socmin', Math.max(5, p.socmin - 10)) }] };
     if (id === 'dg') return { title: 'Grupo electrógeno diésel', sub: `${p.dg} kW · consumo ${LPKWH} L/kWh · ${p.price} USD/L`,
-      fis: [['Potencia', s.dg.toFixed(0), 'kW', s.dg / p.dg], ['Consumo', (LPKWH * s.dg).toFixed(1), 'L/h'], ['Combustible acumulado', s.fuel.toFixed(0), 'L'], ['Energía generada', s.dgE.toFixed(0), 'kWh'], ['Horas de marcha', s.dgH.toFixed(1), 'h'], ['CO₂', (s.fuel * CO2L).toFixed(0), 'kg']],
+      fis: [['Potencia', s.dg.toFixed(0), 'kW', s.dg / p.dg], ['Consumo', (LPKWH * s.dg).toFixed(1), 'L/h'], ['Combustible acumulado', s.fuel.toFixed(0), 'L'], ['Energía generada', s.dgE.toFixed(0), 'kWh'], ['Horas de marcha', s.dgH.toFixed(1), 'h'], ['CO₂', (s.fuel * CO2L).toFixed(0), 'kg'], ['Sobretemp. motor', (s.th ? s.th.dg : 0).toFixed(1), 'K', (s.th ? s.th.dg : 0) / 60], ['Tanque diario', (FUELCAP - (s.fuel % FUELCAP)).toFixed(0), 'L']],
       ctl: [['Estado', s.dgTrip ? 'TRIP' : s.dgOn ? 'MARCHA' : 'PARADA', '', null, s.dgTrip ? '#ef5350' : s.dgOn ? '#f5b942' : '#8b9bb0'], ['Modo', s.dgMan ? 'MANUAL' : 'AUTO (EMS)', ''], ['Carga mínima', p.dgmin, '%'], ['Arranques', s.starts, '']],
       actions: [{ label: s.dgTrip ? 'Rearmar' : 'Forzar trip', run: (s) => { s.dgTrip = !s.dgTrip; } }, { label: s.dgMan ? 'Volver a AUTO' : 'Arranque manual', run: (s) => { s.dgMan = !s.dgMan; } }] };
     if (id === 'load') return { title: 'Carga del sitio', sub: `Perfil diario con picos 08:00 y 19:00 · pico ${p.pk} kW`,
       fis: [['Demanda', s.ld.toFixed(0), 'kW', s.ld / (p.pk * 1.3)], ['No servida', s.un.toFixed(0), 'kW'], ['Energía demandada', s.ldE.toFixed(0), 'kWh'], ['Energía no servida', s.uns.toFixed(1), 'kWh']],
       ctl: [['Pico +30 %', s.surge ? 'sí' : 'no', ''], ['Deslastre', s.shed ? 'ACTIVO' : 'no', ''], ['Alarma de corte', s.alUn ? 'CORTE' : 'normal', '', null, s.alUn ? '#ef5350' : undefined]],
       actions: [{ label: s.shed ? 'Reconectar cargas' : 'Deslastrar 25 %', run: (s) => { s.shed = !s.shed; } }, { label: s.surge ? 'Quitar pico' : 'Provocar pico', run: (s) => { s.surge = !s.surge; } }] };
+    if (id === 'camp') { const Z = zones(s.ld, ((s.t || 0) / 10) % 24); return { title: 'Campamento · reparto de demanda', sub: 'Perfil horario: planta en turno diurno, dormitorios de noche, comedor en horas de comida.',
+      fis: [['Planta', Z[0].toFixed(0), 'kW', Z[0] / Math.max(1, s.ld)], ['Dormitorio A', Z[1].toFixed(0), 'kW', Z[1] / Math.max(1, s.ld)], ['Dormitorio B', Z[2].toFixed(0), 'kW', Z[2] / Math.max(1, s.ld)], ['Comedor', Z[3].toFixed(0), 'kW', Z[3] / Math.max(1, s.ld)], ['Total sitio', s.ld.toFixed(0), 'kW']],
+      ctl: [['Deslastre', s.shed ? 'ACTIVO' : 'no', ''], ['Servicio', s.un > 0.5 ? 'CORTE' : 'normal', '', null, s.un > 0.5 ? '#ef5350' : '#3ecf8e']],
+      actions: [{ label: s.shed ? 'Reconectar cargas' : 'Deslastrar 25 %', run: (s) => { s.shed = !s.shed; } }] }; }
     if (id === 'bus') return { title: 'Tablero · bus AC', sub: 'Balance: PV + diésel ± batería = demanda − no servida',
-      fis: [['PV', s.pv.toFixed(0), 'kW'], ['Diésel', s.dg.toFixed(0), 'kW'], ['Batería', s.bp.toFixed(0), 'kW'], ['Demanda', s.ld.toFixed(0), 'kW'], ['Recorte', s.cu.toFixed(0), 'kW'], ['Frecuencia', s.freq.toFixed(2), 'Hz']], ctl: [['Alarma servicio', s.alUn ? 'CORTE' : 'normal', '']] };
+      fis: [['PV', s.pv.toFixed(0), 'kW'], ['Diésel', s.dg.toFixed(0), 'kW'], ['Batería', s.bp.toFixed(0), 'kW'], ['Demanda', s.ld.toFixed(0), 'kW'], ['Recorte', s.cu.toFixed(0), 'kW'], ['Frecuencia', s.freq.toFixed(2), 'Hz'], ['Sobretemp. barra', (s.th ? s.th.bus : 0).toFixed(1), 'K']], ctl: [['Alarma servicio', s.alUn ? 'CORTE' : 'normal', '']] };
     if (id === 'ems') return { title: 'EMS · controlador de despacho', sub: 'Seguidor de carga: diésel solo cubre lo que la batería no puede. Ciclo de carga: diésel a plena carga hasta SOC fin.',
       fis: [], ctl: this.vars(s, p).ctl,
       actions: [{ label: 'Cambiar estrategia', run: (s, p, r, api) => api.set('pol', p.pol ? 0 : 1) }] };

@@ -14,6 +14,19 @@ const spd = (h) => (h >= 50 ? 1 : 0.7 + 0.6 * (h / 100));                     //
 const scrap = (h) => 0.01 + 0.12 * (1 - SL.clamp(h, 0, 100) / 100) ** 3;      // fracción defectuosa
 const kw = (h) => 15 * (0.85 + 0.35 * (1 - SL.clamp(h, 0, 100) / 100));       // kW por máquina (desgaste = más fricción)
 const PRI = ['Correctivos primero', 'FIFO', 'Menor salud primero'], VALARM = 7.1;
+const haz = (h) => 0.0015 * (1 + ((100 - h) / 25) ** 2);                    // prob. de falla por día
+// Piso de planta (losa de concreto con juntas, manchas y marcas) pre-renderizado una vez.
+let FLOOR = null;
+const floorCache = () => {
+  if (FLOOR) return FLOOR;
+  FLOOR = document.createElement('canvas'); FLOOR.width = 1600; FLOOR.height = 900; const g = FLOOR.getContext('2d'); g.scale(2, 2); const r = SL.rng(5);
+  const gr = g.createLinearGradient(0, 0, 0, 450); gr.addColorStop(0, '#1a2129'); gr.addColorStop(1, '#141a20'); g.fillStyle = gr; g.fillRect(0, 0, 800, 450);
+  for (let i = 0; i < 1800; i++) { g.fillStyle = r() < 0.5 ? 'rgba(0,0,0,.18)' : 'rgba(255,255,255,.035)'; g.fillRect(r() * 800, r() * 450, 1.2, 1.2); }
+  for (let i = 0; i < 14; i++) { const x = r() * 800, y = 30 + r() * 400, rr = 6 + r() * 16; const sg = g.createRadialGradient(x, y, 0, x, y, rr); sg.addColorStop(0, 'rgba(0,0,0,.22)'); sg.addColorStop(1, 'rgba(0,0,0,0)'); g.fillStyle = sg; g.fillRect(x - rr, y - rr, 2 * rr, 2 * rr); } // manchas de aceite
+  g.strokeStyle = 'rgba(0,0,0,.35)'; g.lineWidth = 1; for (let x = 0; x <= 800; x += 160) { g.beginPath(); g.moveTo(x + 0.5, 26); g.lineTo(x + 0.5, 450); g.stroke(); } for (let y = 26; y <= 450; y += 106) { g.beginPath(); g.moveTo(0, y + 0.5); g.lineTo(800, y + 0.5); g.stroke(); }
+  g.fillStyle = 'rgba(8,12,18,.85)'; g.fillRect(0, 0, 800, 26); g.fillStyle = 'rgba(79,195,247,.25)'; g.fillRect(0, 26, 800, 1);
+  return FLOOR;
+};
 SL.app({
   title: 'Mantenimiento · Correctivo vs preventivo',
   desc: 'Compara run-to-failure (umbral 0) con mantenimiento preventivo por condición. Busca el umbral que minimiza el costo total. Clic en una máquina para ver su vibración, temperatura y vida remanente.',
@@ -46,8 +59,9 @@ SL.app({
         if (k.h <= 0 || r() < haz) { k.st = 'wait'; k.type = 'C'; k.nf++; s.fail++; s.q.push(k); SL.log(s, `M${i + 1} falla en servicio (salud ${Math.max(0, k.h).toFixed(0)} %)`, 'crit'); }
         else if (p.thr > 0 && k.h < p.thr) { k.st = 'wait'; k.type = 'P'; s.q.push(k); }
         else { const v = spd(k.h) * (s.over ? 1.1 : 1), u = p.rph * 24 * v * dt; U += u; G += u * (1 - scrap(k.h)); s.perf += Math.min(1, v) * dt; P += kw(k.h) * (s.over ? 1.15 : 1); }
-      } else if (k.st === 'fix' && (k.rem -= dt * fixF) <= 0) {
-        k.st = 'run'; k.h = 100; k.rate = 100 / (p.life * (0.6 + 0.8 * r()));
+      } else {
+        k.dn = (k.dn || 0) + dt; // tiempo parado acumulado (espera + reparación)
+        if (k.st === 'fix' && (k.rem -= dt * fixF) <= 0) { k.st = 'run'; k.h = 100; k.rate = 100 / (p.life * (0.6 + 0.8 * r())); }
       }
     });
     if (p.pri === 0) s.q.sort((a, b) => (a.type === 'C' ? 0 : 1) - (b.type === 'C' ? 0 : 1)); // correctivos primero
@@ -55,7 +69,7 @@ SL.app({
     s.q.sort((a, b) => (b.urg ? 1 : 0) - (a.urg ? 1 : 0)); // priorizadas por el operador primero
     while (busy < p.crew && s.q.length) {
       const k = s.q.shift(); k.st = 'fix'; k.urg = false; busy++;
-      if (k.type === 'C') { k.rem = 2 + 3 * r(); s.cost += p.cc; s.mttrS += k.rem / fixF; s.nC++; } else { k.rem = 0.5 + r(); s.cost += p.cp; s.pm++; k.np++; }
+      if (k.type === 'C') { k.rem = 2 + 3 * r(); k.rem0 = k.rem; s.cost += p.cc; s.mttrS += k.rem / fixF; s.nC++; } else { k.rem = 0.5 + r(); k.rem0 = k.rem; s.cost += p.cp; s.pm++; k.np++; }
     }
     const down = s.m.filter((k) => k.st !== 'run').length;
     s.cost += down * p.lost * dt; s.up += (s.m.length - down) * dt; s.tot += s.m.length * dt;
@@ -64,7 +78,46 @@ SL.app({
     const av = (s.m.length - down) / s.m.length, aa = av < 0.8; if (aa && !s.alA) SL.log(s, `Disponibilidad instantánea bajo 80 % (${(100 * av).toFixed(0)} %)`, 'crit'); else if (!aa && s.alA) SL.log(s, 'Disponibilidad recuperada ≥ 80 %', 'ok'); s.alA = aa;
   },
   draw(g, s, p, W, H) {
-    const cols = Math.min(10, s.m.length), cw = 77;
+    const cols = Math.min(10, s.m.length), cw = 77, t = s.t || 0, rows = Math.ceil(s.m.length / cols);
+    const pos = (i) => [16 + (i % cols) * cw, 40 + Math.floor(i / cols) * 100];
+    g.drawImage(floorCache(), 0, 0, W, H);
+    // Taller / almacén / tablero de OT bajo las líneas (si hay espacio)
+    const y0 = 40 + rows * 100 + 4, th = 412 - y0, shop = th >= 56;
+    const shopDoor = shop ? [190, y0 + th - 12] : [8, 30];
+    for (let r = 0; r < rows; r++) { const yy = 40 + r * 100; g.fillStyle = 'rgba(79,195,247,.035)'; g.fillRect(8, yy - 20, 784, 92); g.fillStyle = 'rgba(245,185,66,.35)'; g.fillRect(8, yy - 21, 784, 1.5); for (const lx of [150, 400, 650]) SL.lightPool(g, lx, yy + 40, 120, 0.05); }
+    if (shop) {
+      SL.zone(g, 12, y0, 360, th, { color: '#b39ddb', fill: 0.05, hatch: true, label: 'Taller de mantenimiento' });
+      SL.zone(g, 382, y0, 208, th, { color: '#f5b942', fill: 0.04, label: 'Almacén de repuestos' });
+      SL.zone(g, 600, y0, 188, th, { color: '#4fc3f7', fill: 0.04, label: 'Planificación · OT' });
+      const fy = y0 + th - 10; // línea de piso
+      SL.table(g, 26, fy - 24, 78);
+      g.fillStyle = '#3a4654'; g.fillRect(36, fy - 30, 12, 6); g.fillStyle = '#9aa6b3'; g.fillRect(60, fy - 27, 18, 3); // tornillo de banco, caja de herramientas, piezas
+      if (th > 80) { g.fillStyle = '#26313d'; g.fillRect(26, y0 + 22, 100, Math.min(40, th - 66)); g.strokeStyle = '#9aa6b3'; g.lineWidth = 1.2; for (let k = 0; k < 8; k++) { g.beginPath(); g.moveTo(34 + k * 12, y0 + 28); g.lineTo(34 + k * 12, y0 + 28 + 8 + (k % 3) * 4); g.stroke(); } } // panel de herramientas
+      SL.sign(g, 300, Math.min(y0 + 100, y0 + th - 50), 'EPP OBLIGATORIO', { color: '#2f6fb0' }); SL.sign(g, 160, y0 + 30, 'EXTINTOR', { color: '#c0392b' });
+      SL.pallet(g, 120, fy - 7, 34); g.fillStyle = SL.metal(g, fy - 21, 14, '#3d6f9e'); g.fillRect(124, fy - 21, 22, 14); g.fillStyle = '#20282f'; for (let k = 0; k < 5; k++) g.fillRect(126 + k * 4, fy - 20, 1.5, 12); g.fillRect(146, fy - 16, 5, 4); // motor de recambio
+      g.fillStyle = '#c0392b'; SL.rr(g, 160, fy - 26, 14, 26, 2); g.fill(); g.fillStyle = 'rgba(0,0,0,.35)'; for (let k = 0; k < 4; k++) g.fillRect(161, fy - 22 + k * 6, 12, 1); SL.contact(g, 167, fy, 9, 2); // carro de herramientas
+      const idle = p.crew - (s.busy || 0);
+      for (let c = 0; c < idle; c++) SL.person(g, 200 + c * 20, fy, { s: 0.8, dir: c % 2 ? -1 : 1, helmet: '#f5b942', shirt: '#6b4fa0' });
+      SL.text(g, `${idle} libre${idle === 1 ? '' : 's'} · ${s.busy || 0} en campo`, 290, y0 + 20, '#b39ddb', '600 10px system-ui', 'center');
+      SL.bollard(g, 176, fy + 6, 16); SL.bollard(g, 360, fy + 6, 16);
+      SL.hot('crew', 12, y0, 360, th);
+      SL.shelf(g, 394, y0 + 18, 120, th - 30, Math.max(2, Math.min(4, Math.floor((th - 30) / 22))), s.spares ? 0.12 : 0.8, 3);
+      SL.forklift(g, 556, fy, { dir: -1, s: 0.9, load: s.spares ? null : '#b98a58', dist: 0 });
+      if (s.spares) SL.sign(g, 486, y0 + 34, 'SIN STOCK', { color: '#c0392b' });
+      SL.hot('spares', 382, y0, 208, th);
+      // tablero kanban de órdenes de trabajo
+      const bx = 612, by = y0 + 18, bw = 164, bh = th - 26;
+      g.fillStyle = '#e6edf3'; g.fillRect(bx - 2, by - 2, bw + 4, bh + 4); g.fillStyle = '#f7f9fb'; g.fillRect(bx, by, bw, bh);
+      g.fillStyle = '#26313d'; g.font = '700 8px system-ui'; g.fillText('COLA', bx + 4, by + 9); g.fillText('EN EJECUCIÓN', bx + 84, by + 9);
+      g.fillStyle = '#c3ccd6'; g.fillRect(bx + 80, by + 2, 1, bh - 4);
+      const card = (k, cx, cy) => { const i = s.m.indexOf(k); g.fillStyle = k.type === 'C' ? '#ef9a9a' : '#ffe08a'; g.fillRect(cx, cy, 22, 11); g.fillStyle = '#26313d'; g.font = '700 7.5px system-ui'; g.fillText(`M${i + 1}`, cx + 2, cy + 8); if (k.urg) { g.fillStyle = '#c0392b'; g.fillRect(cx + 18, cy, 4, 4); } };
+      const per = Math.max(1, Math.floor((bh - 14) / 13));
+      s.q.slice(0, per * 3).forEach((k, j) => card(k, bx + 4 + Math.floor(j / per) * 25, by + 13 + (j % per) * 13));
+      if (s.q.length > per * 3) SL.text(g, `+${s.q.length - per * 3}`, bx + 70, by + bh - 3, '#c0392b', '700 8px system-ui', 'center');
+      if (!s.q.length) SL.text(g, 'sin OT pendientes', bx + 40, by + 26, '#8b9bb0', '9px system-ui', 'center');
+      s.m.filter((k) => k.st === 'fix').slice(0, per * 3).forEach((k, j) => card(k, bx + 84 + Math.floor(j / per) * 25, by + 13 + (j % per) * 13));
+      SL.hot('crew', 600, y0, 188, th);
+    }
     // Tablero de cuadrillas y estado
     SL.text(g, 'Cuadrillas', 16, 17, '#8b9bb0', '600 11px system-ui');
     for (let c = 0; c < p.crew; c++) SL.led(g, 90 + c * 14, 13, 3.5, c < (s.busy || 0) ? SL.STATE.setup : SL.STATE.run);
@@ -73,20 +126,45 @@ SL.app({
     SL.tag(g, `OEE ${(100 * oee.o).toFixed(0)} % = A ${(100 * oee.a).toFixed(0)} × P ${(100 * oee.p).toFixed(0)} × Q ${(100 * oee.q).toFixed(0)}`, 430, 13, SL.color(oee.o / 0.85)); SL.hot('oee', 300, 2, 260, 22);
     if (s.spares) SL.tag(g, 'SIN REPUESTOS', 628, 13, SL.STATE.down);
     if (s.over) SL.tag(g, 'SOBRECARGA', 736, 13, SL.STATE.warn);
+    // Transportador de cada línea (detrás de las máquinas) con piezas en tránsito
+    for (let r = 0; r < rows; r++) {
+      const yy = 40 + r * 100, on = s.m.slice(r * cols, (r + 1) * cols).filter((k) => k.st === 'run').length / cols;
+      SL.belt(g, [[10, yy + 24], [790, yy + 24]], 12, null, on * (s.over ? 1.1 : 1));
+    }
     s.m.forEach((k, i) => {
-      const x = 16 + (i % cols) * cw, y = 40 + Math.floor(i / cols) * 100, f = SL.clamp(k.h / 100, 0, 1), v = vib(k.h);
+      const [x, y] = pos(i);
+      if (k.st === 'run' && (i % cols) < cols - 1 && i + 1 < s.m.length) { const px = x + 54 + ((t * 14 * spd(k.h) + i * 7) % 16); SL.carton(g, px, y + 22, 6, 5, '#b98a58'); }
+    });
+    s.m.forEach((k, i) => {
+      const [x, y] = pos(i), f = SL.clamp(k.h / 100, 0, 1), v = vib(k.h);
       const st = k.st === 'run' ? (f < 0.3 ? 'block' : 'run') : k.st === 'fix' ? 'setup' : 'down';
       SL.machine(g, x, y, 54, 52, { label: `M${i + 1}`, state: st, fs: 10, load: f });
+      if (k.st === 'run' && v > 4.5) { const a = 0.35 + 0.35 * Math.abs(Math.sin(t * 30 + i)); g.strokeStyle = v > VALARM ? `rgba(239,83,80,${a})` : `rgba(245,185,66,${a})`; g.lineWidth = 1.2; for (const r0 of [4, 8]) { g.beginPath(); g.arc(x + 54, y + 34, r0, -0.7, 0.7); g.stroke(); g.beginPath(); g.arc(x, y + 34, r0, Math.PI - 0.7, Math.PI + 0.7); g.stroke(); } } // vibración
+      if (k.st === 'wait' && k.type === 'C') for (let j = 0; j < 4; j++) { const ph = (t * 0.8 + j / 4 + i * 0.13) % 1; g.fillStyle = `rgba(120,128,138,${0.45 * (1 - ph)})`; g.beginPath(); g.arc(x + 12 + Math.sin(ph * 5 + j) * 3, y + 6 - ph * 22, 2.5 + ph * 5, 0, 7); g.fill(); } // humo de falla
+      if (k.st === 'fix') { g.fillStyle = '#c0392b'; g.fillRect(x + 6, y + 40, 12, 8); g.strokeStyle = '#e6edf3'; g.lineWidth = 1.2; g.beginPath(); g.arc(x + 12, y + 40, 3, Math.PI, 0); g.stroke(); g.fillStyle = '#fff'; g.font = '700 4.5px system-ui'; g.fillText('LOTO', x + 7, y + 46); } // bloqueo y etiquetado
       SL.gauge(g, x, y + 58, 54, 9, f, SL.color(f));
       SL.text(g, k.st === 'run' ? `${v.toFixed(1)} mm/s` : k.st === 'fix' ? `${k.rem.toFixed(1)} d` : 'parada', x + 27, y + 80, k.st !== 'run' ? '#8b9bb0' : v > VALARM ? '#ef5350' : v > 4.5 ? '#f5b942' : '#8b9bb0', '9px system-ui', 'center');
       SL.hot('m:' + i, x - 2, y - 14, 60, 98);
-      if (k.st === 'fix') { SL.person(g, x + 64, y + 56, { dir: -1, busy: true, s: 0.8, helmet: '#f5b942', shirt: '#6b4fa0' }); SL.tag(g, k.type === 'C' ? 'CORR' : 'PREV', x + 27, y - 6, SL.STATE.setup, '600 9px system-ui'); }
+      if (k.st === 'fix') {
+        const wk = SL.clamp(((k.rem0 ?? k.rem) - k.rem) / 0.25, 0, 1), tx = x + 64, ty = y + 56;
+        if (wk < 1) SL.person(g, SL.lerp(shopDoor[0], tx, wk), SL.lerp(shopDoor[1], ty, wk), { dir: tx > shopDoor[0] ? 1 : -1, walk: t * 9, s: 0.8, helmet: '#f5b942', shirt: '#6b4fa0', carry: '#5b6b80' });
+        else { SL.person(g, tx, ty, { dir: -1, busy: true, s: 0.8, helmet: '#f5b942', shirt: '#6b4fa0' }); if (Math.floor(t * 6 + i) % 3 === 0) { g.fillStyle = '#ffe9a8'; for (let j = 0; j < 3; j++) g.fillRect(x + 54 + ((j * 7 + Math.floor(t * 20)) % 6), y + 30 + j * 2, 1.4, 1.4); } }
+        SL.tag(g, k.type === 'C' ? 'CORR' : 'PREV', x + 27, y - 6, SL.STATE.setup, '600 9px system-ui');
+      }
       if (k.st === 'wait') SL.tag(g, 'espera', x + 27, y - 6, SL.STATE.down, '600 9px system-ui');
       if (k.st === 'run' && v > VALARM) SL.led(g, x + 8, y + 22, 3, SL.STATE.down);
     });
     SL.text(g, 'Barra = salud · texto = vibración · franja: verde opera · amarillo salud baja · violeta en mantenimiento · rojo parada', 12, H - 28, '#8b9bb0', '11px system-ui');
   },
   oee(s) { const a = s.up / Math.max(s.tot, 1e-9), pp = s.perf / Math.max(s.up, 1e-9), q = s.units > 0 ? s.good / s.units : 1; return { a, p: pp, q, o: a * pp * q }; },
+  heatPos: [200, 300],
+  heat: [
+    { id: 'risk', label: 'Riesgo de falla', unit: 'USD/d', max: (s, p) => haz(0) * (p.cc + 3.5 * p.lost), fn: (s, p) => s.m.map((k, i) => { const c = Math.min(10, s.m.length), x = 16 + (i % c) * 77 + 27, y = 40 + Math.floor(i / c) * 100 + 30;
+      return [x, y, k.st === 'run' ? haz(Math.max(0, k.h)) * (p.cc + 3.5 * p.lost) * (s.over ? 1.5 : 1) : 0, 46]; }) },
+    { id: 'down', label: 'Tiempo parado acum.', unit: 'd', max: (s) => Math.max(5, ...s.m.map((k) => k.dn || 0)), fn: (s) => s.m.map((k, i) => { const c = Math.min(10, s.m.length); return [16 + (i % c) * 77 + 27, 40 + Math.floor(i / c) * 100 + 30, k.dn || 0, 46]; }) },
+    { id: 'crew', label: 'Carga de cuadrillas', unit: 'd·cuadr.', max: (s) => (s.spares ? 15 : 5), fn: (s) => s.m.map((k, i) => { const c = Math.min(10, s.m.length), f = s.spares ? 3 : 1;
+      return [16 + (i % c) * 77 + 27, 40 + Math.floor(i / c) * 100 + 30, k.st === 'fix' ? k.rem * f : k.st === 'wait' ? (k.type === 'C' ? 3.5 : 1) * f : 0, 46]; }) },
+  ],
   vars(s, p) {
     const run = s.m.filter((k) => k.st === 'run'), n = s.m.length, o = this.oee(s);
     const hv = run.length ? run.reduce((a, k) => a + vib(k.h), 0) / run.length : 0, ht = run.length ? Math.max(...run.map((k) => tbrg(k.h))) : 0;
@@ -135,12 +213,15 @@ SL.app({
     if (id === 'crew' || id === 'oee') return { title: id === 'crew' ? 'Cuadrillas de mantenimiento' : 'OEE de la flota', sub: 'OEE = Disponibilidad × Rendimiento × Calidad (acumulado)',
       fis: [], ctl: this.vars(s, p).ctl,
       actions: [{ label: 'Sumar cuadrilla', run: (s, p, r, api) => api.set('crew', Math.min(8, p.crew + 1)) }, { label: 'Cambiar regla de cola', run: (s, p, r, api) => api.set('pri', (p.pri + 1) % 3) }] };
+    if (id === 'spares') return { title: 'Almacén de repuestos', sub: 'Con quiebre de stock cada reparación avanza a 1/3 de la velocidad normal.',
+      fis: [['Stock crítico', s.spares ? 'QUIEBRE' : 'disponible', '', null, s.spares ? '#ef5350' : '#3ecf8e'], ['OT en ejecución', s.busy || 0, ''], ['OT en cola', s.q.length, '']], ctl: [['Factor de reparación', s.spares ? '×1/3' : '×1', '']],
+      actions: [{ label: s.spares ? 'Reponer stock' : 'Provocar quiebre', run: (s) => { s.spares = !s.spares; SL.log(s, s.spares ? 'Quiebre de stock de repuestos' : 'Repuestos repuestos en almacén', s.spares ? 'warn' : 'ok'); } }] };
     const i = +id.split(':')[1], k = s.m[i]; if (!k) return null;
     const run = k.st === 'run', rate = k.rate * (s.over ? 1.5 : 1), qi = s.q.indexOf(k), haz = 0.0015 * (1 + ((100 - k.h) / 25) ** 2), v = vib(k.h);
     return { title: `M${i + 1} · máquina de producción`, sub: `Degradación ${rate.toFixed(2)} %/día · riesgo de falla crece con (100 − salud)²`,
       fis: [['Salud', Math.max(0, k.h).toFixed(1), '%', k.h / 100, SL.color(k.h / 100)], ['Vibración RMS', run ? v.toFixed(2) : '—', 'mm/s', run ? v / 11 : null, v > VALARM ? '#ef5350' : undefined], ['T° rodamiento', run ? tbrg(k.h).toFixed(0) : '—', '°C'],
         ['Velocidad', run ? (100 * spd(k.h)).toFixed(0) : '0', '%'], ['Producción', run ? (p.rph * spd(k.h)).toFixed(0) : '0', 'u/h'], ['Scrap', (100 * scrap(k.h)).toFixed(1), '%'], ['Potencia', run ? kw(k.h).toFixed(1) : '0', 'kW'],
-        ['Vida remanente est.', run ? (Math.max(0, k.h) / rate).toFixed(0) : '—', 'días'], ['Prob. falla / día', (100 * haz).toFixed(2), '%']],
+        ['Vida remanente est.', run ? (Math.max(0, k.h) / rate).toFixed(0) : '—', 'días'], ['Prob. falla / día', (100 * haz).toFixed(2), '%'], ['Riesgo económico', run ? (haz * (p.cc + 3.5 * p.lost)).toFixed(0) : '0', 'USD/d'], ['Tiempo parado acum.', (k.dn || 0).toFixed(1), 'días']],
       ctl: [['Estado', { run: 'OPERANDO', wait: 'ESPERA CUADRILLA', fix: 'EN MANTENIMIENTO' }[k.st], '', null, run ? '#3ecf8e' : k.st === 'fix' ? '#b39ddb' : '#ef5350'], ['Orden', k.type === 'C' ? 'Correctiva' : k.type === 'P' ? 'Preventiva' : '—', ''],
         ['Posición en cola', qi >= 0 ? qi + 1 + (k.urg ? ' (prioritaria)' : '') : '—', ''], ['Reparación restante', k.st === 'fix' ? k.rem.toFixed(1) : '—', 'días'], ['Umbral PM', p.thr, '%'], ['Fallas / PM', `${k.nf} / ${k.np}`, '']],
       actions: [

@@ -17,6 +17,31 @@ const sched = (t, p) => { // en ruta / descargando en parada i
   for (let i = 0; i <= p.n; i++) { if (tt < p.drive) break; tt -= p.drive; if (i < p.n) { if (tt < p.dwell) { open = true; stop = i + 1; break; } tt -= p.dwell; } }
   return { open, stop };
 };
+// Corte de la caja: 8 posiciones de pallet de la puerta (u = 0) al frente/evaporador (u = 1).
+const NSLOT = 8, BX0 = 58, BX1 = 370, BY0 = 324, BY1 = 396, SW = (BX1 - BX0) / NSLOT;
+// Perfil de aire a lo largo de la caja: el evaporador sopla aire frío por el frente (caída ∝ frío entregado, caudal ≈ 2.5 kg/s);
+// cerca de la puerta pesa la infiltración (abierta) y la conducción de paredes.
+const prof = (s, u) => s.ta + (1 - u) * ((s.open ? s.qi : 0) + 0.2 * s.qc) / 2.5 - u * (0.5 * s.qf) / 2.5;
+const airCol = (dT) => { const k = SL.clamp(dT / 12, 0, 1); return '#' + [Math.round(30 + 90 * k), Math.round(70 + 30 * k), Math.round(110 - 60 * k)].map((v) => v.toString(16).padStart(2, '0')).join(''); };
+const palletsLeft = (s, p) => { const per = p.drive + p.dwell; let done = 0; for (let i = 1; i <= p.n; i++) { const a = i * p.drive + (i - 1) * p.dwell; done += SL.clamp((s.rt - a) / p.dwell, 0, 1); } return Math.max(0, Math.ceil(NSLOT * (1 - done / p.n) - 1e-6)); };
+// Ciudad de fondo (manzanas, árboles junto al camino) pre-renderizada por número de paradas.
+const CITY = {};
+const cityCache = (n) => {
+  if (CITY[n]) return CITY[n];
+  const c = (CITY[n] = document.createElement('canvas')); c.width = 1600; c.height = 900; const g = c.getContext('2d'); g.scale(2, 2); const r = SL.rng(21 + n);
+  const gr = g.createLinearGradient(0, 0, 0, 290); gr.addColorStop(0, '#121b24'); gr.addColorStop(1, '#17221c'); g.fillStyle = gr; g.fillRect(0, 0, 800, 290);
+  for (let x = 0; x < 800; x += 26 + r() * 20) { const h = 20 + r() * 50, w = 18 + r() * 16; g.fillStyle = `rgba(40,52,66,${0.5 + r() * 0.3})`; g.fillRect(x, 70 - h, w, h); g.fillStyle = 'rgba(255,220,150,.12)'; for (let yy = 74 - h; yy < 66; yy += 7) for (let xx = x + 3; xx < x + w - 3; xx += 5) if (r() < 0.35) g.fillRect(xx, yy, 2, 3); } // skyline
+  g.fillStyle = 'rgba(30,44,36,.9)'; g.fillRect(0, 70, 800, 220);
+  for (let i = 0; i < 1200; i++) { g.fillStyle = r() < 0.5 ? 'rgba(0,0,0,.18)' : 'rgba(120,160,110,.07)'; g.fillRect(r() * 800, 70 + r() * 220, 1.4, 1.4); }
+  g.strokeStyle = 'rgba(80,96,110,.35)'; g.lineWidth = 6; for (const x of [150, 330, 520, 690]) { g.beginPath(); g.moveTo(x, 70); g.lineTo(x + 30, 290); g.stroke(); } // calles transversales
+  const pts = PTS(n), L = SL.len(pts);
+  for (let dd = 20; dd < L; dd += 34) { const q = SL.along(pts, dd), side = (Math.floor(dd / 34) % 2 ? 1 : -1), ox = q.x - Math.sin(q.a) * 22 * side, oy = q.y + Math.cos(q.a) * 22 * side + (side > 0 ? 6 : 0);
+    if (pts.some((pp, i) => i && i <= n && Math.abs(pp[0] - ox) < 30 && oy < pp[1] - 10 && oy > pp[1] - 90)) continue;
+    g.fillStyle = 'rgba(0,0,0,.35)'; g.beginPath(); g.ellipse(ox + 2, oy + 2, 7, 2.5, 0, 0, 7); g.fill(); g.fillStyle = '#4a3a2a'; g.fillRect(ox - 1, oy - 7, 2, 7);
+    const tg = g.createRadialGradient(ox - 2, oy - 12, 1, ox, oy - 10, 8); tg.addColorStop(0, '#5e8a4e'); tg.addColorStop(1, '#2c4a2a'); g.fillStyle = tg; g.beginPath(); g.arc(ox, oy - 10, 6.5, 0, 7); g.fill(); }
+  g.fillStyle = '#0e141b'; g.fillRect(0, 290, 800, 160);
+  return c;
+};
 SL.app({
   title: 'Cadena de frío · Transporte refrigerado (última milla)',
   desc: 'Ruta con paradas: en cada parada se abre la puerta y entra aire ambiente. Compara salir sin prefrío ni cortinas contra prefrío + cortina de tiras + monitoreo. Clic en el camión, las tiendas o el registrador.',
@@ -36,7 +61,7 @@ SL.app({
     { id: 'cap', label: 'Equipo de frío', min: 4, max: 14, step: 1, value: 10, unit: 'kW' },
   ],
   init(p) { const hoy = p.mode === 0; return { ta: hoy ? p.sp + 6 : p.sp, tp: hoy ? p.sp + 2 : p.sp, on: false, runMin: 0, bad: 0, peak: hoy ? p.sp + 2 : p.sp, tEnd: 0, alarm: 0, al: false, done: false, leg: 0, kwh: 0,
-    rt: 0, stop: 0, open: false, qc: 0, qi: 0, qf: 0, pel: 0, v: 0, km: 0, fuel: 0, defr: 0, lastDef: 0, fail: false, doorF: false, jam: false, heat: false, doorMin: 0, doorAl: false, mkt: 0, mktN: 0, qprod: 0 }; },
+    rt: 0, stop: 0, open: false, qc: 0, qi: 0, qf: 0, pel: 0, v: 0, km: 0, fuel: 0, defr: 0, lastDef: 0, fail: false, doorF: false, jam: false, heat: false, doorMin: 0, doorAl: false, mkt: 0, mktN: 0, qprod: 0, pz: Array(NSLOT).fill(hoy ? p.sp + 2 : p.sp) }; },
   step(s, dt, p) {
     if (s.done) return;
     const hoy = p.mode === 0, total = (p.n + 1) * p.drive + p.n * p.dwell;
@@ -57,6 +82,8 @@ SL.app({
     const qh = s.defr ? 1.5 : 0;
     s.ta += (dt * (s.qc + s.qi + qh - s.qf)) / CAP;
     const dtp = (dt * (s.ta - s.tp)) / 60;
+    if (!s.pz) s.pz = Array(NSLOT).fill(s.tp);
+    for (let i = 0; i < NSLOT; i++) s.pz[i] += (dt * (prof(s, (i + 0.5) / NSLOT) - s.pz[i])) / 60; // temperatura por posición de pallet (τ = 60 min)
     s.tp += dtp; s.qprod += (dtp * MASS * 1000 * CPP) / 1000; // MJ absorbidos por el producto
     s.pel = run ? p.cap / cop(amb, p.sp) : s.defr ? 1.5 : 0;
     if (run) s.runMin += dt;
@@ -68,35 +95,83 @@ SL.app({
     const da = s.doorMin > 15; if (da && !s.doorAl) SL.log(s, `Puerta abierta > 15 min${p.mode ? ' · alerta de telemetría al chofer' : ''}`, 'warn'); s.doorAl = da;
   },
   draw(g, s, p, W, H) {
-    const pts = PTS(p.n), L = SL.len(pts), t = s.t || 0;
+    const pts = PTS(p.n), L = SL.len(pts), t = s.t || 0, amb = p.tamb + (s.heat ? 6 : 0), run = s.on && !s.fail && !s.defr, dist = s.km * 600;
+    g.drawImage(cityCache(p.n), 0, 0, W, H);
+    if (s.heat) { g.fillStyle = 'rgba(255,140,60,.06)'; g.fillRect(0, 0, W, 290); }
     SL.road(g, pts, 18);
     SL.building(g, pts[0][0] - 50, pts[0][1] - 66, 76, 52, { load: 0.8 }); SL.text(g, 'CD', pts[0][0] - 12, pts[0][1] - 72, '#8b9bb0', '600 11px system-ui', 'center'); SL.hot('cd', pts[0][0] - 50, pts[0][1] - 80, 76, 66);
-    pts.forEach((q, i) => { if (i && i <= p.n) {
-      SL.store(g, q[0] - 22, q[1] - 74, 44, 38, 'P' + i); SL.hot('stop:' + i, q[0] - 22, q[1] - 80, 44, 44);
-      if (s.stop === i) SL.tag(g, 'descargando', q[0], q[1] - 88, SL.STATE.warn); else if (s.rt >= i * (p.drive + p.dwell)) SL.led(g, q[0] + 18, q[1] - 82, 2.5, SL.STATE.run);
-    } });
     const total = (p.n + 1) * p.drive + p.n * p.dwell, d = SL.clamp(s.rt / total, 0, 1) * L, q = SL.along(pts, d), q2 = SL.along(pts, Math.min(L, d + 3));
     const dir = q2.x >= q.x ? 1 : -1;
-    SL.van(g, q.x - 14 * dir, q.y + 8, { s: 0.85, dir, reefer: true, open: s.open, body: s.fail ? '#f1d5d5' : '#e8eef5', cab: '#1f6f8b' });
+    pts.forEach((qq, i) => { if (i && i <= p.n) {
+      SL.store(g, qq[0] - 22, qq[1] - 74, 44, 38, 'P' + i); SL.hot('stop:' + i, qq[0] - 22, qq[1] - 80, 44, 44);
+      g.fillStyle = '#3a4654'; g.fillRect(qq[0] - 3, qq[1] - 36, 6, 14); // vereda de acceso
+      if (s.stop === i) {
+        SL.tag(g, 'descargando', qq[0], qq[1] - 88, SL.STATE.warn);
+        const ph = (t * 0.35) % 2, f = ph < 1 ? ph : 2 - ph; // operario lleva cajas del camión a la tienda
+        SL.person(g, SL.lerp(q.x - 10 * dir, qq[0] + 8, f), SL.lerp(q.y - 2, qq[1] - 36, f), { s: 0.55, walk: t * 8, dir: ph < 1 ? (qq[0] > q.x ? 1 : -1) : (qq[0] > q.x ? -1 : 1), carry: ph < 1 ? '#b98a58' : null, shirt: '#1f6f8b' });
+      } else if (s.rt >= i * (p.drive + p.dwell)) SL.led(g, qq[0] + 18, qq[1] - 82, 2.5, SL.STATE.run);
+    } });
+    if (s.jam) for (const [k, col] of [[34, '#8a4b2a'], [62, '#4a6a8a']]) { const c = SL.along(pts, Math.min(L, d + k)); g.save(); g.translate(c.x, c.y + 6); SL.contact(g, 0, 0, 12, 2); g.fillStyle = SL.metal(g, -10, 7, col); SL.rr(g, -11, -10, 22, 7, 3); g.fill(); g.fillStyle = SL.metal(g, -15, 6, col); SL.rr(g, -6, -15, 12, 6, 2.5); g.fill(); g.fillStyle = '#9fd3ff'; g.fillRect(-4, -14, 8, 3.5); SL.wheel(g, -6, -2.5, 2.6, 0); SL.wheel(g, 6, -2.5, 2.6, 0); SL.led(g, -dir * 11, -7, 1.4, '#ef5350', Math.floor(t * 2) % 2 === 0); g.restore(); }
+    // escape del camión y neblina fría en la puerta abierta
+    if (s.v > 0 || s.jam) for (let k = 0; k < 4; k++) { const ph = (t * 1.3 + k / 4) % 1; g.fillStyle = `rgba(150,158,168,${0.35 * (1 - ph)})`; g.beginPath(); g.arc(q.x - dir * (26 + ph * 18), q.y + 2 - ph * 10, 1.5 + ph * 4, 0, 7); g.fill(); }
+    if (s.open) for (let k = 0; k < 6; k++) { const ph = (t * 0.9 + k / 6) % 1; g.fillStyle = `rgba(220,240,255,${0.4 * (1 - ph)})`; g.beginPath(); g.arc(q.x - dir * (28 + ph * 10), q.y - 8 + ph * 8 + (k % 3) * 3, 2 + ph * 4, 0, 7); g.fill(); }
+    SL.van(g, q.x - 14 * dir, q.y + 8, { s: 0.85, dir, reefer: true, open: s.open, body: s.fail ? '#f1d5d5' : '#e8eef5', cab: '#1f6f8b', dist });
     SL.hot('truck', q.x - 42, q.y - 26, 84, 38);
     if (s.open) SL.led(g, q.x, q.y - 34, 3, SL.STATE.warn);
     const stt = s.fail ? ['FALLA FRÍO', SL.STATE.down] : s.defr ? ['DESHIELO', SL.STATE.setup] : s.jam ? ['TRÁFICO', SL.STATE.warn] : null;
     SL.tag(g, stt ? stt[0] : `${s.v.toFixed(0)} km/h · ${s.ta.toFixed(1)} °C`, q.x, q.y + 26, stt ? stt[1] : SL.STATE.info);
-    // Registrador de temperatura (data logger)
+    SL.tag(g, s.heat ? `OLA DE CALOR ${amb} °C` : `☀ Ambiente ${amb} °C`, 720, 30, s.heat ? SL.STATE.down : '#f5b942');
+    // --- Corte de la caja refrigerada (vista lateral seccionada)
+    SL.rr(g, 30, 296, 410, 124, 8); g.fillStyle = '#0b1117'; g.fill(); g.strokeStyle = '#2e3e52'; g.lineWidth = 1; g.stroke();
+    SL.text(g, `CORTE DE LA CAJA · ${p.mode ? 'prefrío + cortina de tiras + telemetría' : 'sin prefrío ni cortina'}`, 42, 312, p.mode ? '#4fc3f7' : '#8b9bb0', '600 10px system-ui');
+    const X0 = BX0, X1 = BX1, Y0 = BY0, Y1 = BY1;
+    g.strokeStyle = 'rgba(139,155,176,.35)'; g.setLineDash([8, 8]); g.lineDashOffset = dist % 16; g.beginPath(); g.moveTo(36, 415.5); g.lineTo(434, 415.5); g.stroke(); g.setLineDash([]);
+    SL.contact(g, 250, 413, 200, 3, 0.5);
+    g.fillStyle = '#1b2026'; g.fillRect(X0, Y1 + 4, 380, 5); // chasis
+    g.fillStyle = SL.metal(g, Y0 - 4, Y1 - Y0 + 8, '#d4dbe3'); g.fillRect(X0 - 4, Y0 - 4, X1 - X0 + 8, Y1 - Y0 + 8); // piel exterior
+    g.fillStyle = '#c9b46a'; g.fillRect(X0 - 1, Y0 - 1, X1 - X0 + 2, Y1 - Y0 + 2); // espuma PUR
+    const sb = g.createLinearGradient(X0, 0, X1, 0); sb.addColorStop(0, SL.alpha(airCol(prof(s, 0) - p.sp), 1)); sb.addColorStop(1, SL.alpha(airCol(prof(s, 1) - p.sp), 1));
+    g.fillStyle = sb; g.fillRect(X0 + 2, Y0 + 2, X1 - X0 - 4, Y1 - Y0 - 4); // aire interior (azul = frío)
+    g.strokeStyle = 'rgba(0,0,0,.25)'; for (let x = X0 + 30; x < X1; x += 30) { g.beginPath(); g.moveTo(x, Y0 - 4); g.lineTo(x, Y0 - 1); g.moveTo(x, Y1 + 1); g.lineTo(x, Y1 + 4); g.stroke(); } // juntas de panel
+    const kept = palletsLeft(s, p);
+    for (let i = 0; i < NSLOT; i++) { if (i < NSLOT - kept) continue; const px = X0 + 4 + i * SW; SL.pallet(g, px, Y1 - 9, SW - 5); for (let r = 0; r < 2; r++) SL.carton(g, px + 1, Y1 - 27 - r * 18, SW - 8, 17, s.pz && s.pz[i] > p.lim ? '#c98a6a' : '#b98a58'); }
+    if (run) { g.strokeStyle = 'rgba(159,227,255,.7)'; g.lineWidth = 1.4; for (let k = 0; k < 6; k++) { const x = X1 - 24 - (((t * 60) + k * 50) % (X1 - X0 - 40)); g.beginPath(); g.moveTo(x + 6, Y0 + 5); g.lineTo(x, Y0 + 5); g.lineTo(x + 3, Y0 + 2.5); g.stroke(); } } // descarga de aire por el techo
+    g.fillStyle = SL.metal(g, Y0 + 2, 12, '#9aa6b3'); g.fillRect(X1 - 22, Y0 + 2, 20, 12); SL.fan(g, X1 - 12, Y0 + 8, 5, run, 1.4); // evaporador
+    g.fillStyle = SL.metal(g, Y0 - 2, 30, '#7d8fa3'); SL.rr(g, X1 + 4, Y0 - 2, 22, 32, 3); g.fill(); SL.fan(g, X1 + 15, Y0 + 12, 8, run, 1.2); SL.led(g, X1 + 22, Y0 + 26, 1.6, run ? SL.STATE.run : s.fail ? SL.STATE.down : SL.STATE.off); // unidad condensadora
+    if (run) for (let k = 0; k < 3; k++) { const ph = (t * 1.5 + k / 3) % 1; g.strokeStyle = `rgba(255,170,110,${0.35 * (1 - ph)})`; g.lineWidth = 1.2; g.beginPath(); g.moveTo(X1 + 10 + k * 5, Y0 - 4 - ph * 14); g.quadraticCurveTo(X1 + 14 + k * 5, Y0 - 9 - ph * 14, X1 + 10 + k * 5, Y0 - 14 - ph * 14); g.stroke(); } // calor rechazado
+    // cabina
+    g.fillStyle = SL.metal(g, Y0 + 18, 58, '#1f6f8b'); g.beginPath(); g.moveTo(X1 + 6, Y1 + 4); g.lineTo(X1 + 6, Y0 + 34); g.lineTo(X1 + 38, Y0 + 34); g.lineTo(X1 + 54, Y0 + 54); g.lineTo(X1 + 54, Y1 + 4); g.fill();
+    g.fillStyle = SL.vgrad(g, Y0 + 37, 16, '#cdeeff', '#3f77a0'); g.beginPath(); g.moveTo(X1 + 24, Y0 + 37); g.lineTo(X1 + 37, Y0 + 37); g.lineTo(X1 + 49, Y0 + 53); g.lineTo(X1 + 24, Y0 + 53); g.fill();
+    g.fillStyle = '#ffe9a8'; g.fillRect(X1 + 51, Y1 - 6, 3, 3);
+    for (const wx of [X0 + 30, X0 + 50, X1 + 38]) SL.wheel(g, wx, Y1 + 12, 7, dist / 7);
+    // puerta trasera: cerrada / abierta con neblina y aire caliente entrante; cortina de tiras en el escenario propuesto
+    if (s.open) {
+      g.fillStyle = SL.metal(g, Y0 - 4, Y1 - Y0 + 8, '#c3ccd6'); g.beginPath(); g.moveTo(X0 - 4, Y0 - 4); g.lineTo(X0 - 20, Y0 + 2); g.lineTo(X0 - 20, Y1 - 2); g.lineTo(X0 - 4, Y1 + 4); g.fill();
+      for (let k = 0; k < 6; k++) { const ph = (t * 0.8 + k / 6) % 1; g.fillStyle = `rgba(220,240,255,${0.45 * (1 - ph)})`; g.beginPath(); g.arc(X0 - 4 - ph * 24, Y1 - 6 + ph * 4 - (k % 2) * 4, 3 + ph * 6, 0, 7); g.fill(); } // aire frío se derrama por abajo
+      g.strokeStyle = 'rgba(255,150,90,.8)'; g.lineWidth = 1.6; const nI = p.mode ? 1 : 3; for (let k = 0; k < nI; k++) { const x = X0 - 14 + ((t * 30 + k * 12) % 34); g.beginPath(); g.moveTo(x - 6, Y0 + 10 + k * 6); g.lineTo(x, Y0 + 10 + k * 6); g.lineTo(x - 3, Y0 + 7.5 + k * 6); g.stroke(); } // aire caliente entra por arriba
+    } else { g.fillStyle = SL.metal(g, Y0 - 4, Y1 - Y0 + 8, '#c3ccd6'); g.fillRect(X0 - 6, Y0 - 4, 5, Y1 - Y0 + 8); g.fillStyle = '#2a3440'; g.fillRect(X0 - 6, Y0 + 26, 5, 2); g.fillRect(X0 - 6, Y1 - 24, 5, 2); }
+    if (p.mode === 1) { g.fillStyle = 'rgba(200,230,255,.28)'; for (let k = 0; k < 4; k++) g.fillRect(X0 + 2 + k * 3, Y0 + 2, 2, Y1 - Y0 - 6); }
+    // sondas de aire (puerta · centro · frente)
+    for (const u of [0.08, 0.5, 0.86]) { const x = X0 + u * (X1 - X0), v = prof(s, u); g.fillStyle = 'rgba(8,12,18,.8)'; SL.rr(g, x - 17, Y0 + 9, 34, 12, 3); g.fill(); SL.text(g, `${v.toFixed(1)}°`, x, Y0 + 18.5, v > p.lim ? '#ef5350' : '#9fe3ff', '600 9px ui-monospace, monospace', 'center'); }
+    SL.hot('truck', 30, 296, 410, 124);
+    // --- Registrador de temperatura (data logger)
     const over = s.tp > p.lim, f = SL.clamp((s.tp - p.sp) / Math.max(p.lim - p.sp, 1), 0, 1.4);
-    SL.rr(g, 30, 296, 740, 124, 8); g.fillStyle = '#0b1117'; g.fill(); g.strokeStyle = '#2e3e52'; g.stroke(); SL.hot('logger', 30, 296, 740, 124);
-    SL.text(g, 'REGISTRADOR DE TEMPERATURA', 48, 318, '#8b9bb0', '600 11px system-ui');
-    SL.text(g, `${s.ta.toFixed(1)} °C`, 48, 356, '#9fe3ff', '600 26px ui-monospace, monospace'); SL.text(g, 'aire', 48, 372, '#8b9bb0', '11px system-ui');
-    SL.text(g, `${s.tp.toFixed(1)} °C`, 190, 356, over ? '#ef5350' : '#3ecf8e', '600 26px ui-monospace, monospace'); SL.text(g, `producto (umbral ${p.lim} °C)`, 190, 372, '#8b9bb0', '11px system-ui');
-    SL.gauge(g, 380, 336, 360, 14, Math.min(1, f / 1.4), SL.color(1 - Math.min(1, f)), over ? '⚠ SOBRE UMBRAL' : 'dentro de rango');
-    SL.text(g, s.done ? 'Ruta completada' : s.open ? `${s.doorF && !s.stop ? 'PUERTA ABIERTA (olvido)' : `Descargando en P${s.stop}: PUERTA ABIERTA`} · ${s.doorMin.toFixed(0)} min` : s.jam ? 'Detenido en tráfico' : 'En ruta: puerta cerrada', 380, 376, s.open ? '#f5b942' : '#8b9bb0', '12px system-ui');
-    const run = s.on && !s.fail && !s.defr;
-    SL.led(g, 390, 396, 3, run ? SL.STATE.run : s.fail ? SL.STATE.down : SL.STATE.off, true);
-    SL.text(g, `Equipo ${s.fail ? 'FALLA' : s.defr ? 'DESHIELO' : run ? 'ON' : 'OFF'} · ${s.pel.toFixed(1)} kW eléc · frío ${s.qf.toFixed(0)} kW vs carga ${(s.qc + s.qi).toFixed(1)} kW`, 400, 400, '#8b9bb0', '11px system-ui');
-    SL.led(g, 740, 318, 3, over ? SL.STATE.down : SL.STATE.run);
-    if (p.mode === 1) SL.text(g, 'Prefrío + cortina de tiras + alerta por telemetría', 48, 404, '#4fc3f7', '12px system-ui');
-    if (s.heat) SL.tag(g, `OLA DE CALOR ${p.tamb + 6} °C`, 720, 30, SL.STATE.down);
+    SL.rr(g, 450, 296, 320, 124, 8); g.fillStyle = '#0b1117'; g.fill(); g.strokeStyle = '#2e3e52'; g.stroke(); SL.hot('logger', 450, 296, 320, 124);
+    SL.text(g, 'REGISTRADOR DE TEMPERATURA', 464, 312, '#8b9bb0', '600 10px system-ui');
+    SL.text(g, `${s.ta.toFixed(1)} °C`, 464, 340, '#9fe3ff', '600 22px ui-monospace, monospace'); SL.text(g, 'aire', 464, 354, '#8b9bb0', '10px system-ui');
+    SL.text(g, `${s.tp.toFixed(1)} °C`, 600, 340, over ? '#ef5350' : '#3ecf8e', '600 22px ui-monospace, monospace'); SL.text(g, `producto (umbral ${p.lim} °C)`, 600, 354, '#8b9bb0', '10px system-ui');
+    SL.gauge(g, 464, 362, 292, 12, Math.min(1, f / 1.4), SL.color(1 - Math.min(1, f)), over ? '⚠ SOBRE UMBRAL' : 'dentro de rango');
+    SL.text(g, s.done ? 'Ruta completada' : s.open ? `${s.doorF && !s.stop ? 'PUERTA ABIERTA (olvido)' : `Descargando en P${s.stop}: PUERTA ABIERTA`} · ${s.doorMin.toFixed(0)} min` : s.jam ? 'Detenido en tráfico' : 'En ruta: puerta cerrada', 464, 392, s.open ? '#f5b942' : '#8b9bb0', '11.5px system-ui');
+    SL.led(g, 470, 407, 3, run ? SL.STATE.run : s.fail ? SL.STATE.down : SL.STATE.off, true);
+    SL.text(g, `Equipo ${s.fail ? 'FALLA' : s.defr ? 'DESHIELO' : run ? 'ON' : 'OFF'} · ${s.pel.toFixed(1)} kW eléc · frío ${s.qf.toFixed(0)} vs carga ${(s.qc + s.qi).toFixed(1)} kW`, 480, 411, '#8b9bb0', '10.5px system-ui');
+    SL.led(g, 756, 309, 3, over ? SL.STATE.down : SL.STATE.run);
   },
+  heatPos: [16, 14],
+  heat: [
+    { id: 'air', label: 'Aire: exceso sobre SP', unit: 'K', max: 15, fn: (s, p) => { const out = []; for (let i = 0; i <= 12; i++) { const u = i / 12; for (const y of [BY0 + 14, BY0 + 36, BY0 + 58]) out.push([BX0 + u * (BX1 - BX0), y, prof(s, u) - p.sp, 26]); } return out; } },
+    { id: 'prod', label: 'Producto: exceso sobre SP', unit: 'K', max: 10, fn: (s, p) => { const k = palletsLeft(s, p), out = []; for (let i = NSLOT - k; i < NSLOT; i++) { const x = BX0 + (i + 0.5) * SW; out.push([x, BY1 - 26, (s.pz ? s.pz[i] : s.tp) - p.sp, 30]); } return out; } },
+    { id: 'gain', label: 'Ganancia de calor', unit: 'kW', max: 14, fn: (s) => { const out = [[BX0 - 6, (BY0 + BY1) / 2, s.qi, 60]]; for (let x = BX0; x <= BX1; x += 26) { out.push([x, BY0 - 2, s.qc, 16]); out.push([x, BY1 + 2, s.qc * 0.6, 14]); } return out; } },
+  ],
   vars(s, p) {
     const amb = p.tamb + (s.heat ? 6 : 0), mkt = s.mktN ? 10000 / -Math.log(s.mkt / s.mktN) - 273.15 : s.tp, total = (p.n + 1) * p.drive + p.n * p.dwell;
     return {
