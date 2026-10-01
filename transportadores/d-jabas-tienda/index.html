@@ -10,6 +10,30 @@
 // Física: rampa de desnivel hr; operario 75 kg: trabajo m·g·h por viaje ⇒ gasto metabólico (η muscular 25 %).
 // Propuesto: bajador (elevador) P = P0 + m·g·h/(cadencia·η) ; bandas F = g·μ·(m_banda·L + m_jabas), P = F·v/η.
 const PATH = [[170, 110], [360, 110], [460, 250], [640, 250]], PL = SL.len(PATH), PXM = 20, LM = PL / PXM, G = 9.81, MP = 75, TARE = 1.5, MU = 0.04, MB = 5, TB = 40, NIOSH = 23, QAL = 60;
+// ---- Escenografía (LOD) ----
+const peye = (g, x, y1, y2, hit) => { // fotocelda retro-reflectiva: emisor arriba, reflector abajo y haz
+  g.save(); g.strokeStyle = hit ? 'rgba(239,83,80,.9)' : 'rgba(62,207,142,.45)'; g.lineWidth = 1; g.setLineDash([2, 2]); g.beginPath(); g.moveTo(x, y1 + 3); g.lineTo(x, y2 - 2); g.stroke(); g.setLineDash([]);
+  g.fillStyle = '#5b6b80'; g.fillRect(x - 1, y1 - 9, 2, 7); g.fillStyle = SL.metal(g, y1 - 3, 6, '#2b3746'); g.fillRect(x - 4, y1 - 3, 8, 6); g.fillStyle = '#c3ccd6'; g.fillRect(x - 3, y2 - 2, 6, 2.5);
+  SL.led(g, x + 2, y1, 1.1, hit ? '#f5b942' : '#3ecf8e', true); g.restore();
+};
+const fence = (g, x1, x2, yb, h, gate) => { // cerco perimetral de malla con postes y puerta
+  g.save(); g.fillStyle = 'rgba(30,40,52,.4)'; g.fillRect(x1, yb - h, x2 - x1, h);
+  g.beginPath(); g.rect(x1, yb - h, x2 - x1, h); g.clip(); g.strokeStyle = 'rgba(160,175,190,.16)'; g.lineWidth = 0.8; g.beginPath();
+  for (let k = -h; k < x2 - x1; k += 6) { g.moveTo(x1 + k, yb); g.lineTo(x1 + k + h, yb - h); g.moveTo(x1 + k, yb - h); g.lineTo(x1 + k + h, yb); } g.stroke(); g.restore(); g.save();
+  g.fillStyle = '#c99a18'; g.fillRect(x1, yb - h, x2 - x1, 2.5); g.fillRect(x1, yb - 6, x2 - x1, 2);
+  for (let x = x1; x <= x2 + 0.1; x += (x2 - x1) / Math.max(1, Math.round((x2 - x1) / 45))) { g.fillStyle = SL.hgrad(g, x - 2, 4, '#f5c542', '#a97f12'); g.fillRect(x - 2, yb - h - 2, 4, h + 2); g.fillStyle = '#20282f'; g.fillRect(x - 3.5, yb - 1.5, 7, 2); }
+  if (gate != null) { g.strokeStyle = '#3ecf8e'; g.lineWidth = 1.2; g.strokeRect(gate, yb - h + 4, 22, h - 10); g.fillStyle = '#9aa6b3'; g.fillRect(gate + 17, yb - h / 2 - 3, 2, 6); SL.led(g, gate + 11, yb - h - 4, 1.6, '#3ecf8e', true); }
+  g.restore();
+};
+const wall = (g, h) => { // muro del fondo con paneles, zócalo y bandeja portacables
+  g.save(); g.fillStyle = SL.vgrad(g, 0, h, '#18212c', '#111820'); g.fillRect(0, 0, 800, h);
+  g.strokeStyle = 'rgba(255,255,255,.035)'; g.lineWidth = 1; g.beginPath(); for (let x = 60; x < 800; x += 80) { g.moveTo(x + 0.5, 0); g.lineTo(x + 0.5, h); } g.stroke();
+  g.fillStyle = '#0a0f14'; g.fillRect(0, h, 800, 3); g.fillStyle = 'rgba(245,185,66,.25)'; g.fillRect(0, h - 4, 800, 2); g.restore();
+  SL.cableTray(g, 0, 12, 800, { drop: 10 });
+};
+// Posición de cada acarreador en la rampa (hoy): baja cargado la primera mitad del viaje y sube con vacías la segunda.
+const walkerD = (s, p, i) => { const k = s.pers[i]; if (k.rem <= 0) return null; const f = 1 - k.rem / k.tot, q = SL.along(PATH, (f < 0.5 ? f * 2 : 2 - f * 2) * PL); return { x: q.x, y: q.y, f, load: f < 0.5 }; };
+const pFall = (s, p) => (p.mode === 0 ? 1000 * 0.006 * ((p.n * p.w) / 20) ** 2 * (s.wet ? 3 : 1) : 1000 * 0.0008 * ((p.n * p.w) / 20));
 SL.app({
   title: 'Demo D · Jabas a tienda',
   desc: 'Supermercado y CD de frescos viven de jabas. "Hoy": personas suben y bajan la rampa con torres de jabas (y la jaba toca el piso). "Propuesto": banda modular + elevador, sin piso. Clic en el CD, operarios, elevador, bandas o tienda para inspeccionar.',
@@ -64,23 +88,54 @@ SL.app({
     if (!qa && s.qA) SL.log(s, 'Backlog normalizado', 'ok');
     s.qA = qa;
   },
+  heatPos: [20, 342],
+  heat: [
+    { id: 'kg', label: 'Carga en manos', unit: 'kg', mode: 'max', max: 30,
+      fn(s, p) { // hoy: torre completa por la rampa; propuesto: el operario solo toma 1 jaba al final de la banda
+        if (p.mode !== 0) return s.abs ? [] : [[640, 280, p.w, 36]];
+        return s.pers.map((k, i) => walkerD(s, p, i)).filter(Boolean).map((q) => [q.x, q.y - 14, q.load ? p.n * p.w : p.n * TARE, 40]); } },
+    { id: 'fall', label: 'Riesgo de caída', unit: '‰/viaje', mode: 'max', max: 10,
+      fn(s, p) { // probabilidad de caída de torre por viaje (modelo: ∝ carga², ×3 con rampa mojada)
+        const v = pFall(s, p), pts = [];
+        if (p.mode !== 0) return s.abs ? [] : [[640, 282, v, 30]];
+        for (let d = 0; d <= PL; d += 16) { const q = SL.along(PATH, d), slope = q.x > 360 && q.x < 460; pts.push([q.x, q.y, v * (slope ? 0.7 : 0.25), 26]); }
+        s.pers.forEach((k, i) => { const q = walkerD(s, p, i); if (q) pts.push([q.x, q.y - 12, v, 34]); });
+        return pts; } },
+    { id: 'acc', label: 'Jabas acumuladas', unit: 'jabas', mode: 'max', max: QAL,
+      fn(s, p) { const pts = []; const nq = Math.min(s.q.length, 48);
+        for (let i = 0; i < nq; i += 2) pts.push([26 + Math.floor(i / 6) * 19, 116 - (i % 6) * 9, s.q.length, 26]);
+        if (p.mode === 0) { const nf = Math.min(s.floor % 30, 12); for (let i = 0; i < nf; i++) pts.push([608 + (i % 6) * 18, 312 - Math.floor(i / 6) * 9, s.floor % 30, 24]); }
+        else if (s.abs) for (let i = 0; i < Math.min(s.belt.length, 40); i += 3) { const q = SL.along(PATH, PL - i * 7); pts.push([q.x, q.y - 4, s.belt.length, 22]); }
+        return pts; } },
+  ],
   draw(g, s, p, W, H) {
     const hoy = p.mode === 0;
-    // CD con segundo piso y tienda
+    // --- edificio: muro interior, losa de calle, columnas, luminarias
+    wall(g, 306);
+    g.fillStyle = SL.vgrad(g, 306, 14, '#3a4654', '#1b232d'); g.fillRect(0, 306, 800, 12); SL.hazard(g, 170, 306, 470, 2, 0.5);
+    for (const [x, y0] of [[230, 128], [310, 128], [520, 268], [600, 268]]) { g.fillStyle = SL.hgrad(g, x - 4, 8, '#5b6b80', '#2a3440'); g.fillRect(x - 4, y0, 8, 306 - y0); SL.contact(g, x, 306, 10, 2); }
+    for (const [lx, ly] of [[260, 110], [540, 250], [720, 300]]) SL.lightPool(g, lx, ly, 110, 0.07);
+    // CD con segundo piso, rack y tienda
     g.fillStyle = SL.vgrad(g, 50, 210, '#3a4a5e', '#1f2833'); g.fillRect(10, 50, 160, 210);
     g.fillStyle = '#2a3440'; g.fillRect(10, 128, 160, 6); g.fillRect(10, 254, 160, 6);
+    SL.shelf(g, 22, 176, 136, 74, 2, 0.75, 6);
     SL.text(g, 'CD · 2º piso', 90, 68, '#e6edf3', '600 13px system-ui', 'center');
     SL.hot('cd', 10, 50, 160, 210);
     SL.store(g, 648, 196, 140, 110, 'Tienda'); SL.hot('store', 648, 190, 140, 116);
+    SL.bollard(g, 652, 318, 18); SL.bollard(g, 784, 318, 18); SL.sign(g, 718, 182, 'RECEPCIÓN', { color: '#2f6fb0' });
     const nq = Math.min(s.q.length, 48);
     for (let i = 0; i < nq; i++) SL.crate(g, 18 + Math.floor(i / 6) * 19, 120 - (i % 6) * 9, 17, 8);
     SL.tag(g, `En espera: ${s.q.length}`, 90, 150, s.q.length > QAL ? SL.STATE.down : SL.STATE.run);
     if (hoy) {
-      // rampa / escalera
+      // rampa / escalera con baranda
       g.fillStyle = s.wet ? '#2f4a66' : '#3a4654'; g.beginPath(); g.moveTo(170, 116); g.lineTo(360, 116); g.lineTo(460, 256); g.lineTo(648, 256); g.lineTo(648, 266); g.lineTo(455, 266); g.lineTo(355, 126); g.lineTo(170, 126); g.fill();
       g.strokeStyle = 'rgba(245,185,66,.5)'; g.lineWidth = 1; for (let i = 0; i < 12; i++) { const t = i / 12; g.beginPath(); g.moveTo(360 + 100 * t, 116 + 140 * t); g.lineTo(368 + 100 * t, 116 + 140 * t); g.stroke(); }
+      if (s.wet) { g.fillStyle = 'rgba(79,195,247,.25)'; for (let i = 0; i < 5; i++) { g.beginPath(); g.ellipse(380 + i * 18, 145 + i * 25, 9, 2.5, 0.9, 0, 7); g.fill(); } }
+      g.strokeStyle = '#8b9bb0'; g.lineWidth = 1.4; g.beginPath(); g.moveTo(170, 82); g.lineTo(360, 82); g.lineTo(460, 222); g.lineTo(648, 222); g.stroke(); // pasamanos
+      g.lineWidth = 1; for (let d = 10; d < PL; d += 30) { const q = SL.along(PATH, d); g.beginPath(); g.moveTo(q.x, q.y + 6); g.lineTo(q.x, q.y - 28); g.stroke(); }
+      SL.sign(g, 270, 170, `CARGA MÁX ${NIOSH} kg`, { color: '#f5b942', ink: '#15191e' });
       SL.hot('ramp', 360, 116, 100, 140);
-      if (s.wet) SL.tag(g, 'RAMPA MOJADA', 270, 150, SL.STATE.down);
+      if (s.wet) { SL.tag(g, 'RAMPA MOJADA', 270, 150, SL.STATE.down); SL.cone(g, 352, 116, 0.8); SL.cone(g, 470, 256, 0.8); }
       s.pers.forEach((k, i) => {
         const off = s.abs && i === 2 && k.rem <= 0;
         if (k.rem <= 0) { if (!off) { SL.person(g, 140 + i * 12, 128, { dir: 1, s: 0.9 }); SL.hot('op:' + i, 134 + i * 12, 92, 12, 38); } return; }
@@ -92,24 +147,34 @@ SL.app({
       });
       SL.tag(g, `Jabas que tocan el piso: ${s.floor}`, 560, 350, SL.STATE.down);
       for (let i = 0; i < Math.min(s.floor % 30, 12); i++) SL.crate(g, 600 + (i % 6) * 18, 312 - Math.floor(i / 6) * 9, 16, 8);
+      if (s.floor % 30) SL.cone(g, 592, 314, 0.7);
       const L = p.n * p.w, li = L / NIOSH;
       SL.tag(g, `Carga ${L.toFixed(0)} kg/viaje · LI ${li.toFixed(2)}`, 130, 395, li > 1 ? SL.STATE.down : li > 0.8 ? SL.STATE.block : SL.STATE.run);
       SL.tag(g, `Gasto metabólico ${s.pmet.toFixed(0)} W/pers`, 340, 395, s.pmet > 400 ? SL.STATE.block : SL.STATE.info);
       SL.tag(g, `Personas ${s.abs ? 2 : 3}/3 · viajes ${s.trips}`, 540, 395, s.abs ? SL.STATE.down : SL.STATE.info);
     } else {
-      SL.belt(g, PATH, 22, s.bF ? '#4a3a1a' : null); SL.hot('belt', 170, 98, 190, 24); SL.hot('belt', 460, 238, 180, 24);
-      g.fillStyle = '#26313d'; g.fillRect(348, 60, 26, 70); SL.text(g, 'Elevador', 361, 54, '#8b9bb0', '10px system-ui', 'center');
-      SL.led(g, 361, 70, 3, s.efail ? SL.STATE.down : s.eOn ? SL.STATE.run : SL.STATE.idle); SL.hot('elev', 344, 44, 34, 90);
+      const run = !(s.efail && !s.belt.length);
+      g.strokeStyle = '#8b9bb0'; g.lineWidth = 1.2; g.beginPath(); g.moveTo(170, 84); g.lineTo(340, 84); g.stroke(); for (let x = 180; x < 340; x += 32) { g.beginPath(); g.moveTo(x, 84); g.lineTo(x, 98); g.stroke(); } // baranda pasarela
+      SL.belt(g, PATH, 22, s.bF ? '#4a3a1a' : null, run ? 1 : 0); SL.hot('belt', 170, 98, 190, 24); SL.hot('belt', 460, 238, 180, 24);
+      // Elevador: torre con mástil, carro que sube/baja según cadencia, baliza
+      const ph = s.eOn ? SL.clamp((s.nextE - (s.t || 0)) / p.cad, 0, 1) : 0;
+      g.fillStyle = SL.metal(g, 60, 70, '#3d4d61'); g.fillRect(348, 60, 26, 70); g.fillStyle = '#1a222b'; g.fillRect(352, 64, 18, 62);
+      g.strokeStyle = '#5b6b80'; g.lineWidth = 1; for (let yy = 66; yy < 126; yy += 8) { g.beginPath(); g.moveTo(352, yy); g.lineTo(370, yy + 8); g.stroke(); }
+      const cy = 70 + 46 * ph; g.fillStyle = SL.metal(g, cy, 10, '#e0aa1e'); g.fillRect(353, cy, 16, 10); if (s.eOn) SL.crate(g, 354, cy - 6, 14, 6);
+      SL.stackLight(g, 361, 58, s.efail ? 'down' : s.bF ? 'block' : s.eOn ? 'run' : 'idle', { s: 0.75 });
+      SL.text(g, 'Elevador', 395, 54, '#8b9bb0', '10px system-ui', 'center');
+      SL.led(g, 361, 134, 2.4, s.efail ? SL.STATE.down : s.eOn ? SL.STATE.run : SL.STATE.idle); SL.hot('elev', 344, 44, 34, 90);
       s.belt.forEach((b) => { const q = SL.along(PATH, Math.min(1, (s.t - b.tin) / 40) * PL); SL.crate(g, q.x - 8, q.y - 9, 16, 8); });
-      const back = PATH.map((q) => [q[0], q[1] + 40]); SL.belt(g, back, 12, '#243040'); SL.hot('ret', 170, 142, 190, 16); SL.hot('ret', 460, 282, 180, 16);
+      const endQ = s.belt.length && s.t - s.belt[0].tin >= 38; peye(g, 628, 236, 262, endQ); peye(g, 200, 96, 122, s.belt.some((b) => s.t - b.tin < 3));
+      const back = PATH.map((q) => [q[0], q[1] + 40]); SL.belt(g, back, 12, '#243040', 1); SL.hot('ret', 170, 142, 190, 16); SL.hot('ret', 460, 282, 180, 16);
       for (let i = 0; i < 8; i++) { const q = SL.along(back, ((s.t / 6 + i / 8) % 1) * PL); SL.crate(g, q.x - 7, q.y - 7, 14, 6.5, '#6b7d93'); }
       if (!s.abs) { SL.person(g, 640, 300, { dir: -1, busy: true }); SL.hot('op:0', 630, 262, 20, 40); } else SL.tag(g, 'Descarga sin operario', 640, 330, SL.STATE.down);
-      SL.text(g, 'Sin contacto con el piso · retorno de vacías en banda inferior', 20, 350, '#3ecf8e', '13px system-ui');
+      SL.text(g, 'Sin contacto con el piso · retorno de vacías en banda inferior', 20, 432, '#3ecf8e', '13px system-ui');
       SL.tag(g, s.efail ? 'Elevador en FALLA' : `Elevador ${s.pe.toFixed(2)} kW · ${p.cad} s/jaba`, 130, 395, s.efail ? SL.STATE.down : SL.STATE.info);
       SL.tag(g, `Banda ${(LM / 40).toFixed(2)} m/s · ${(s.pb + s.pr).toFixed(2)} kW`, 340, 395, SL.STATE.info);
       SL.tag(g, `Ocupación banda ${s.belt.length}/${TB}`, 540, 395, s.bF ? SL.STATE.down : SL.STATE.run);
     }
-    SL.text(g, hoy ? 'Personas subiendo y bajando la rampa con torres de jabas' : 'Elevador + banda modular lavable', 20, 26, '#e6edf3', '600 14px system-ui');
+    SL.text(g, hoy ? 'Personas subiendo y bajando la rampa con torres de jabas' : 'Elevador + banda modular lavable', 20, 36, '#e6edf3', '600 14px system-ui');
   },
   vars(s, p) {
     const hoy = p.mode === 0, T = Math.max(s.t || 0, 1), hrs = T / 3600, L = p.n * p.w, li = L / NIOSH, cap = hoy ? ((s.abs ? 2 : 3) * p.n * 3600) / (p.trip * (s.wet ? 1.4 : 1)) : 3600 / p.cad;

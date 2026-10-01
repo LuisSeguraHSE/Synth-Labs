@@ -13,6 +13,37 @@ const G = 9.81, LB = 34, MB = 7, MU = 0.035, VAN = 10, DST = ['Lima', 'Norte', '
 const KG = (ty) => (ty > 80 ? 4 : ty < 50 ? 0.4 : 2.5), M3 = (ty) => (ty > 80 ? 0.03 : ty < 50 ? 0.002 : 0.02), TYN = (ty) => (ty > 80 ? 'frágil' : ty < 50 ? 'sobre' : 'caja');
 const crowd_ = (p) => (p.mode === 0 ? 1 + 0.07 * Math.max(0, p.n - 4) : 1);
 const capH = (p, s) => { if (s.blk) return 0; const f = p.frag / 100, m = f * 90 + (1 - f) * (0.3 * 45 + 0.7 * 65) + (p.mode === 0 ? 14 : 3) + (s.prn ? 40 : 0), n = s.st.slice(0, p.n).filter((k) => !k.off).length; return (3600 * n) / (m * crowd_(p)); };
+// ---- Escenografía (LOD) ----
+const peye = (g, x, y1, y2, hit) => { // fotocelda retro-reflectiva: emisor arriba, reflector abajo y haz
+  g.save(); g.strokeStyle = hit ? 'rgba(239,83,80,.9)' : 'rgba(62,207,142,.45)'; g.lineWidth = 1; g.setLineDash([2, 2]); g.beginPath(); g.moveTo(x, y1 + 3); g.lineTo(x, y2 - 2); g.stroke(); g.setLineDash([]);
+  g.fillStyle = '#5b6b80'; g.fillRect(x - 1, y1 - 9, 2, 7); g.fillStyle = SL.metal(g, y1 - 3, 6, '#2b3746'); g.fillRect(x - 4, y1 - 3, 8, 6); g.fillStyle = '#c3ccd6'; g.fillRect(x - 3, y2 - 2, 6, 2.5);
+  SL.led(g, x + 2, y1, 1.1, hit ? '#f5b942' : '#3ecf8e', true); g.restore();
+};
+const fence = (g, x1, x2, yb, h, gate) => { // cerco perimetral de malla con postes y puerta
+  g.save(); g.fillStyle = 'rgba(30,40,52,.4)'; g.fillRect(x1, yb - h, x2 - x1, h);
+  g.beginPath(); g.rect(x1, yb - h, x2 - x1, h); g.clip(); g.strokeStyle = 'rgba(160,175,190,.16)'; g.lineWidth = 0.8; g.beginPath();
+  for (let k = -h; k < x2 - x1; k += 6) { g.moveTo(x1 + k, yb); g.lineTo(x1 + k + h, yb - h); g.moveTo(x1 + k, yb - h); g.lineTo(x1 + k + h, yb); } g.stroke(); g.restore(); g.save();
+  g.fillStyle = '#c99a18'; g.fillRect(x1, yb - h, x2 - x1, 2.5); g.fillRect(x1, yb - 6, x2 - x1, 2);
+  for (let x = x1; x <= x2 + 0.1; x += (x2 - x1) / Math.max(1, Math.round((x2 - x1) / 45))) { g.fillStyle = SL.hgrad(g, x - 2, 4, '#f5c542', '#a97f12'); g.fillRect(x - 2, yb - h - 2, 4, h + 2); g.fillStyle = '#20282f'; g.fillRect(x - 3.5, yb - 1.5, 7, 2); }
+  if (gate != null) { g.strokeStyle = '#3ecf8e'; g.lineWidth = 1.2; g.strokeRect(gate, yb - h + 4, 22, h - 10); g.fillStyle = '#9aa6b3'; g.fillRect(gate + 17, yb - h / 2 - 3, 2, 6); SL.led(g, gate + 11, yb - h - 4, 1.6, '#3ecf8e', true); }
+  g.restore();
+};
+const wall = (g, h) => { // muro del fondo con paneles, zócalo y bandeja portacables
+  g.save(); g.fillStyle = SL.vgrad(g, 0, h, '#18212c', '#111820'); g.fillRect(0, 0, 800, h);
+  g.strokeStyle = 'rgba(255,255,255,.035)'; g.lineWidth = 1; g.beginPath(); for (let x = 60; x < 800; x += 80) { g.moveTo(x + 0.5, 0); g.lineTo(x + 0.5, h); } g.stroke();
+  g.fillStyle = '#0a0f14'; g.fillRect(0, h, 800, 3); g.fillStyle = 'rgba(245,185,66,.25)'; g.fillRect(0, h - 4, 800, 2); g.restore();
+  SL.cableTray(g, 0, 12, 800, { drop: 10 });
+};
+// Geometría de puestos (vista en planta) y posición del operario: hoy sale al pasillo a buscar el pedido (+14 s).
+const Y0 = 225, stG = (p, i) => { const c = i >> 1, side = i % 2 ? 1 : -1, x = 70 + c * 138; return { x, side, yy: Y0 + side * (p.mode === 0 ? 104 : 86) }; };
+const opPos = (s, p, i) => {
+  const { x, side, yy } = stG(p, i), k = s.st[i], home = { x: x + 78, y: yy + 14, f: 0, walk: 0, carry: false };
+  if (p.mode !== 0 || !k.o || k.off || s.blk) return home;
+  const fetch = 14 * crowd_(p), el = (k.tot || 0) - k.rem; if (el >= fetch || el < 0) return home;
+  const f = el / fetch, u = Math.sin(Math.PI * f);
+  return { x: SL.lerp(x + 78, x + 46, u), y: SL.lerp(yy + 14, Y0 + side * 52, u), f, walk: (s.t || 0) * 8, carry: f > 0.5, dir: f < 0.5 ? -1 : 1 };
+};
+const floorC = (i) => [48 + (i % 40) * 13.6 + ((i * 7) % 3), Y0 - 36 + Math.floor(i / 40) * 14];
 SL.app({
   title: 'Demo C · Packing e-commerce / courier',
   desc: 'Los pedidos no se atrasan en la calle: se atrasan en la mesa. Olas de pedidos hacia 4–8 puestos; en "hoy" la cola vive en el piso, en "propuesto" vive en la banda. Clic en puestos, cola, chutes o camión para inspeccionar.',
@@ -69,33 +100,64 @@ SL.app({
     if (!br && s.slaB) SL.log(s, 'Cola dentro del SLA', 'ok');
     s.slaB = br;
   },
+  heatPos: [436, 422],
+  heat: [
+    { id: 'wip', label: 'Pedidos en el piso', unit: 'pedidos', mode: 'max', max: 80,
+      fn(s, p) { // WIP fuera de la banda: hoy toda la cola; propuesto solo el desborde > 30
+        const hoy = p.mode === 0, n = hoy ? s.q.length : Math.max(0, s.q.length - 30), pts = [];
+        for (let i = 0; i < Math.min(n, hoy ? 200 : 80); i += 2) pts.push(hoy ? [floorC(i)[0] + 5, floorC(i)[1] + 5, n, 26] : [54 + (i % 40) * 13.6, Y0 + 129 + Math.floor(i / 40) * 12, n, 26]);
+        return pts; } },
+    { id: 'walk', label: 'Caminata de operarios', unit: 'm/h', mode: 'max', max: 250,
+      fn(s, p) { // pedidos/h del puesto × metros por pedido (hoy 6 m buscando en el piso, propuesto 0.5 m)
+        const hrs = Math.max(s.t || 0, 60) / 3600, hoy = p.mode === 0, pts = [];
+        for (let i = 0; i < p.n; i++) { const { x, side, yy } = stG(p, i), v = (s.st[i].n / hrs) * (hoy ? 6 : 0.5);
+          if (hoy) for (let k = 0; k <= 3; k++) pts.push([SL.lerp(x + 78, x + 46, k / 3), SL.lerp(yy + 4, Y0 + side * 46, k / 3), v, 30]); else pts.push([x + 78, yy + 4, v, 26]); }
+        return pts; } },
+    { id: 'age', label: 'Espera del pedido en cola', unit: 'min', mode: 'max', max: (s, p) => p.sla,
+      fn(s, p) { const hoy = p.mode === 0, t = s.t || 0, pts = [];
+        for (let i = 0; i < Math.min(s.q.length, hoy ? 200 : 30); i++) { const a = (t - s.q[i].t0) / 60; pts.push(hoy ? [floorC(i)[0] + 5, floorC(i)[1] + 5, a, 22] : [51 + i * 18, Y0 - 1, a, 22]); }
+        if (!hoy) for (let i = 30; i < Math.min(s.q.length, 110); i++) pts.push([54 + ((i - 30) % 40) * 13.6, Y0 + 129 + Math.floor((i - 30) / 40) * 12, (t - s.q[i].t0) / 60, 22]);
+        return pts; } },
+  ],
   draw(g, s, p, W, H) {
-    const hoy = p.mode === 0, y = 225, cap = 30, h = 15 + (s.t || 0) / 3600;
+    const hoy = p.mode === 0, y = Y0, cap = 30, h = 15 + (s.t || 0) / 3600, run = !s.blk;
     const col = (o) => (o.ty > 80 ? '#c0504d' : o.ty < 50 ? '#d9c7a3' : '#b98a58');
+    // --- fondo: muro norte, bandeja portacables, luminarias, zonas de piso
+    wall(g, 36); SL.sign(g, 400, 10, 'ÁREA DE PACKING · EPP: CALZADO DE SEGURIDAD', { color: '#2f6fb0' });
+    for (const lx of [110, 300, 490]) for (const ly of [120, 330]) SL.lightPool(g, lx, ly, 110, 0.06);
+    SL.zone(g, 650, 50, 146, 400, { color: '#38bdf8', fill: 0.03, label: 'despacho' });
+    if (!hoy) { SL.zone(g, 30, y + 112, 600, 40, { color: '#f5b942', fill: 0.03, label: 'desborde al piso' }); SL.zone(g, 30, 50, 600, 22, { color: '#3ecf8e', fill: 0.05, label: 'pasillo peatonal' }); }
+    else SL.zone(g, 30, 50, 600, 22, { color: '#ef5350', fill: 0.04, label: 'pasillo bloqueado por cajas' });
     if (!hoy) {
-      const bc = s.blk ? '#3a2323' : null;
-      SL.belt(g, [[40, y], [640, y], [640, 110], [660, 110]], 22, bc); SL.belt(g, [[640, y], [660, y]], 22, bc); SL.belt(g, [[640, y], [640, 340], [660, 340]], 22, bc);
+      const bc = s.blk ? '#3a2323' : null, sp = run ? p.vb / 0.4 : 0;
+      SL.contact(g, 340, y + 14, 300, 4, 0.35);
+      SL.belt(g, [[40, y], [640, y], [640, 110], [660, 110]], 22, bc, sp); SL.belt(g, [[640, y], [660, y]], 22, bc, sp); SL.belt(g, [[640, y], [640, 340], [660, 340]], 22, bc, sp);
       s.q.slice(0, cap).forEach((o, i) => SL.carton(g, 44 + i * 18, y - 8, 15, 15, col(o)));
+      peye(g, 44 + cap * 18, y - 18, y + 14, s.q.length >= cap); peye(g, 620, y - 18, y + 14, false);
       SL.hot('queue', 40, y - 12, 590, 24);
-    } else { g.fillStyle = 'rgba(239,83,80,.06)'; g.fillRect(40, y - 44, 560, 88); g.strokeStyle = 'rgba(239,83,80,.4)'; g.setLineDash([6, 4]); g.strokeRect(40.5, y - 43.5, 559, 87); g.setLineDash([]); SL.hot('queue', 40, y - 44, 560, 88); }
+    } else { SL.zone(g, 40, y - 44, 560, 88, { color: '#ef5350', hatch: true, fill: 0.06, label: '' }); SL.hot('queue', 40, y - 44, 560, 88); }
     for (let i = 0; i < p.n; i++) {
-      const c = i >> 1, side = i % 2 ? 1 : -1, x = 70 + c * 138, yy = y + side * (hoy ? 104 : 86), k = s.st[i], busy = !!k.o && !k.off && !s.blk;
-      if (!hoy) SL.belt(g, [[x + 30, y + side * 13], [x + 30, yy - side * 18]], 10);
+      const { x, side, yy } = stG(p, i), k = s.st[i], busy = !!k.o && !k.off && !s.blk;
+      SL.zone(g, x - 8, yy - 44, 102, 80, { color: k.off ? '#ef5350' : '#38bdf8', fill: 0.025, dash: [3, 4], label: '' });
+      if (!hoy) SL.belt(g, [[x + 30, y + side * 13], [x + 30, yy - side * 18]], 10, null, busy ? p.vb / 0.4 : 0);
       SL.table(g, x, yy - 6, 62);
+      g.fillStyle = SL.metal(g, yy - 17, 11, '#3a4757'); g.fillRect(x + 44, yy - 17, 14, 11); g.fillStyle = '#f1f4f7'; g.fillRect(x + 46, yy - 8, 10, 2); SL.led(g, x + 55, yy - 14, 1.2, s.prn ? '#ef5350' : '#3ecf8e', true); // impresora
       if (k.o) SL.carton(g, x + 16, yy - 22, 22, 16, col(k.o));
-      SL.person(g, x + 78, yy + 14, { dir: -1, busy, shirt: k.off ? '#6b7d93' : undefined });
+      const op = opPos(s, p, i);
+      SL.person(g, op.x, op.y, { dir: op.dir || -1, busy: busy && !op.walk, walk: op.walk, carry: op.carry && k.o ? col(k.o) : null, shirt: k.off ? '#6b7d93' : undefined });
       SL.led(g, x + 4, yy - 12, 2.4, k.off || s.blk ? SL.STATE.down : busy ? SL.STATE.run : SL.STATE.idle, true);
-      SL.text(g, 'P' + (i + 1) + (k.off ? ' · FUERA' : ''), x + 31, yy + 30, k.off ? '#ef5350' : '#8b9bb0', '11px system-ui', 'center');
+      SL.text(g, 'P' + (i + 1) + (k.off ? ' · FUERA' : ''), hoy ? x + 31 : x + 52, yy + 30, k.off ? '#ef5350' : '#8b9bb0', '11px system-ui', 'center');
       SL.hot('p:' + i, x - 2, yy - 38, 92, 56);
     }
-    if (hoy) for (let i = 0; i < Math.min(s.q.length, 200); i++) SL.carton(g, 48 + (i % 40) * 13.6 + ((i * 7) % 3), y - 36 + Math.floor(i / 40) * 14, 11, 10, col(s.q[i]));
+    if (hoy) for (let i = 0; i < Math.min(s.q.length, 200); i++) { const [cx, cy] = floorC(i); SL.carton(g, cx, cy, 11, 10, col(s.q[i])); }
     else if (s.q.length > cap) for (let i = 0; i < Math.min(s.q.length - cap, 80); i++) SL.carton(g, 48 + (i % 40) * 13.6, y + 124 + Math.floor(i / 40) * 12, 11, 10, '#f5b942');
     DST.forEach((n, i) => { SL.chute(g, 668, 70 + i * 115, 110, 80, Math.min(1, s.dest[i] / 150), '#3ecf8e', n); SL.tag(g, `${s.dest[i]}`, 723, 164 + i * 115, SL.STATE.run); SL.hot('ch:' + i, 668, 70 + i * 115, 110, 80); });
+    SL.bollard(g, 672, 446, 18); SL.bollard(g, 770, 446, 18); SL.hazard(g, 680, 446, 86, 3, 0.7);
     if (h < p.cut) { SL.van(g, 700, 440, { s: 0.75, dir: 1, open: true, cab: '#c0504d' }); SL.hot('van', 686, 412, 52, 30); } else SL.tag(g, 'Camión del courier partió', 700, 430, SL.STATE.down);
-    SL.text(g, hoy ? 'Cola en el PISO (pasillo)' : 'Cola en la BANDA (amarillo = desborde al piso)', 20, 26, hoy ? '#ef5350' : '#3ecf8e', '600 14px system-ui');
+    SL.text(g, hoy ? 'Cola en el PISO (pasillo)' : 'Cola en la BANDA (amarillo = desborde al piso)', 20, 30, hoy ? '#ef5350' : '#3ecf8e', '600 14px system-ui');
     // Tablero de control
     const age = s.q.length ? ((s.t || 0) - s.q[0].t0) / 60 : 0, left = (p.cut - h) * 60, thr = (s.td.length / Math.min(Math.max(s.t || 0, 60), 1800)) * 3600;
-    SL.tag(g, h < p.cut ? `Cutoff ${hh((p.cut - 15) * 3600)} · faltan ${Math.floor(left / 60)}:${String(Math.floor(left % 60)).padStart(2, '0')}` : 'Cutoff vencido', 560, 22, left < 60 ? SL.STATE.down : SL.STATE.block);
+    SL.tag(g, h < p.cut ? `Cutoff ${hh((p.cut - 15) * 3600)} · faltan ${Math.floor(left / 60)}:${String(Math.floor(left % 60)).padStart(2, '0')}` : 'Cutoff vencido', 560, 26, left < 60 ? SL.STATE.down : SL.STATE.block);
     SL.tag(g, s.blk ? 'SIN ENERGÍA' : hoy ? `Pasillo ${(s.q.length * 0.3).toFixed(1)} m² con WIP` : `Banda ${p.vb.toFixed(2)} m/s · ${s.pb.toFixed(2)} kW`, 120, 400, s.blk ? SL.STATE.down : SL.STATE.info);
     SL.tag(g, `Ritmo ${thr.toFixed(0)} ped/h · cap. ${capH(p, s).toFixed(0)}`, 330, 400, SL.STATE.info);
     SL.tag(g, `Más antiguo ${age.toFixed(0)} / ${p.sla} min · ${POL[p.pol]}`, 540, 400, age > p.sla ? SL.STATE.down : SL.STATE.run);

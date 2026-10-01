@@ -15,6 +15,40 @@ const oee = (s, p) => {
   const T = Math.max(s.t || 0, 1), run = Math.max(T - s.mstop - s.tset, 1), A = run / T, P = Math.min(1, (s.made * p.cyc) / run), Q = s.pall ? (s.pall - s.marked - s.fell) / s.pall : 1;
   return { A, P, Q, O: A * P * Q };
 };
+// ---- Escenografía (LOD) ----
+const peye = (g, x, y1, y2, hit) => { // fotocelda retro-reflectiva: emisor arriba, reflector abajo y haz
+  g.save(); g.strokeStyle = hit ? 'rgba(239,83,80,.9)' : 'rgba(62,207,142,.45)'; g.lineWidth = 1; g.setLineDash([2, 2]); g.beginPath(); g.moveTo(x, y1 + 3); g.lineTo(x, y2 - 2); g.stroke(); g.setLineDash([]);
+  g.fillStyle = '#5b6b80'; g.fillRect(x - 1, y1 - 9, 2, 7); g.fillStyle = SL.metal(g, y1 - 3, 6, '#2b3746'); g.fillRect(x - 4, y1 - 3, 8, 6); g.fillStyle = '#c3ccd6'; g.fillRect(x - 3, y2 - 2, 6, 2.5);
+  SL.led(g, x + 2, y1, 1.1, hit ? '#f5b942' : '#3ecf8e', true); g.restore();
+};
+const fence = (g, x1, x2, yb, h, gate) => { // cerco perimetral de malla con postes y puerta
+  g.save(); g.fillStyle = 'rgba(30,40,52,.4)'; g.fillRect(x1, yb - h, x2 - x1, h);
+  g.beginPath(); g.rect(x1, yb - h, x2 - x1, h); g.clip(); g.strokeStyle = 'rgba(160,175,190,.16)'; g.lineWidth = 0.8; g.beginPath();
+  for (let k = -h; k < x2 - x1; k += 6) { g.moveTo(x1 + k, yb); g.lineTo(x1 + k + h, yb - h); g.moveTo(x1 + k, yb - h); g.lineTo(x1 + k + h, yb); } g.stroke(); g.restore(); g.save();
+  g.fillStyle = '#c99a18'; g.fillRect(x1, yb - h, x2 - x1, 2.5); g.fillRect(x1, yb - 6, x2 - x1, 2);
+  for (let x = x1; x <= x2 + 0.1; x += (x2 - x1) / Math.max(1, Math.round((x2 - x1) / 45))) { g.fillStyle = SL.hgrad(g, x - 2, 4, '#f5c542', '#a97f12'); g.fillRect(x - 2, yb - h - 2, 4, h + 2); g.fillStyle = '#20282f'; g.fillRect(x - 3.5, yb - 1.5, 7, 2); }
+  if (gate != null) { g.strokeStyle = '#3ecf8e'; g.lineWidth = 1.2; g.strokeRect(gate, yb - h + 4, 22, h - 10); g.fillStyle = '#9aa6b3'; g.fillRect(gate + 17, yb - h / 2 - 3, 2, 6); SL.led(g, gate + 11, yb - h - 4, 1.6, '#3ecf8e', true); }
+  g.restore();
+};
+const wall = (g, h) => { // muro del fondo con paneles, zócalo y bandeja portacables
+  g.save(); g.fillStyle = SL.vgrad(g, 0, h, '#18212c', '#111820'); g.fillRect(0, 0, 800, h);
+  g.strokeStyle = 'rgba(255,255,255,.035)'; g.lineWidth = 1; g.beginPath(); for (let x = 60; x < 800; x += 80) { g.moveTo(x + 0.5, 0); g.lineTo(x + 0.5, h); } g.stroke();
+  g.fillStyle = '#0a0f14'; g.fillRect(0, h, 800, 3); g.fillStyle = 'rgba(245,185,66,.25)'; g.fillRect(0, h - 4, 800, 2); g.restore();
+  SL.cableTray(g, 0, 12, 800, { drop: 10 });
+};
+// Montacargas que retira el pallet completo (32 s tras completarse): posición derivada del estado.
+const fork = (s, px) => { const u = (s.t || 0) - s.tpc; if (u < 0 || u > 32) return null; const xs = 850, xp = px + 98;
+  return u < 12 ? { x: SL.lerp(xs, xp, u / 12), load: false, lift: 0 } : u < 18 ? { x: xp, load: true, lift: Math.min(6, (u - 12) * 2) } : { x: SL.lerp(xp, xs, (u - 18) / 14), load: true, lift: 6 }; };
+// Posición de operarios: hoy dos acarreadores van y vienen mesa → pallet y uno acomoda; propuesto 1 (+ayudante) junto al tope.
+const layout = (s, p) => { const { hoy, L } = geo(p), xe = X0 + L * PX, px = hoy ? xe + 170 : xe + 36; return { xe, px }; };
+const ops = (s, p) => {
+  const { hoy, k } = geo(p), { xe, px } = layout(s, p), pl = s.pal, act = pl.busy && !s.palOff && pl.chg <= 0;
+  const dur = p.tp * k * (s.help ? 0.75 : 1), f = act ? SL.clamp(1 - pl.rem / dur, 0, 1) : 0, A = xe + 16, B = px - 12;
+  if (!hoy) return Array.from({ length: 1 + (s.help ? 1 : 0) }, (_, i) => ({ x: px - 14 - i * 22, dir: 1, carry: act && i === 0, walk: 0 }));
+  const car = (ph) => { const q = ph % 1; return q < 0.5 ? { x: SL.lerp(A, B, q * 2), dir: 1, carry: true } : { x: SL.lerp(B, A, (q - 0.5) * 2), dir: -1, carry: false }; };
+  if (!act) return [{ x: A, dir: 1, walk: 0 }, { x: B - 20, dir: -1, walk: 0 }, { x: px + 78, dir: -1, walk: 0 }];
+  return [{ ...car(f), walk: s.t * 8 }, { ...car(f + 0.5), walk: s.t * 8 + 2 }, { x: px + 78, dir: -1, carry: false, walk: 0 }];
+};
 SL.app({
   title: 'Demo A · Fin de línea a pallet (cartón)',
   desc: 'La máquina ya produce; el dinero se pierde entre la salida y el pallet. Si el palletizador se atrasa, la acumulación se llena y la máquina se detiene (luz roja). Clic en la pegadora, banda, tope, pallet u operarios para inspeccionar.',
@@ -31,13 +65,13 @@ SL.app({
     { id: 'v', label: 'Velocidad de banda', min: 0.3, max: 1, step: 0.05, value: 0.6, unit: 'm/s' },
     { sec: 'Paletizado', id: 'tp', label: 'Paletizado base', min: 3, max: 8, step: 0.2, value: 4.6, unit: 's/fardo' },
   ],
-  init() { return { items: [], m: { rem: 1 }, pal: { busy: false, rem: 0, chg: 0 }, made: 0, pall: 0, marked: 0, fell: 0, tm: [], tpl: [], nextChg: 1200, mstop: 0,
+  init() { return { items: [], m: { rem: 1 }, pal: { busy: false, rem: 0, chg: 0 }, made: 0, pall: 0, marked: 0, fell: 0, tm: [], tpl: [], tpc: -999, nextChg: 1200, mstop: 0,
     jam: false, palOff: false, help: false, mset: 0, tset: 0, pel: 0, kwh: 0, F: 0, walk: 0, kg: 0, blk: 0, blkLog: false, nb: 0 }; },
   step(s, dt, p, r) {
     const { hoy, L, acc, k } = geo(p), v = s.jam ? 0 : p.v;
     if (p.urg && s.t >= s.nextChg) { s.nextChg += 1200; s.m.rem += 60; s.mset = 60; s.pal.chg = hoy ? 90 : 30; SL.log(s, 'Cambio de medida (pedido urgente)', 'info'); }
     s.nb = 0;
-    s.items.forEach((a, i) => { const lim = i ? s.items[i - 1].x - SP : L, nx = a.x + v * dt; a.b = nx >= lim; if (a.b) s.nb++; a.x = Math.min(nx, lim); });
+    s.items.forEach((a, i) => { const lim = i ? s.items[i - 1].x - SP : L, nx = a.x + v * dt; a.b = nx >= lim; if (a.b) s.nb++; a.w = a.b || v === 0 ? (a.w || 0) + dt : 0; a.x = Math.min(nx, lim); });
     if (s.mset > 0) { s.mset -= dt; s.tset += dt; }
     if (s.m.rem > 0) s.m.rem -= dt;
     if (s.m.rem <= 0) {
@@ -47,7 +81,7 @@ SL.app({
     }
     const pl = s.pal;
     if (pl.chg > 0) pl.chg -= dt;
-    else if (pl.busy && (pl.rem -= dt) <= 0) { pl.busy = false; s.pall++; s.tpl.push(s.t); s.kg += p.mf; s.walk += hoy ? 8 : 2; if (s.pall % NPAL === 0) SL.log(s, `Pallet completo #${s.pall / NPAL} (${(NPAL * p.mf + 25).toFixed(0)} kg)`, 'ok'); }
+    else if (pl.busy && (pl.rem -= dt) <= 0) { pl.busy = false; s.pall++; s.tpl.push(s.t); s.kg += p.mf; s.walk += hoy ? 8 : 2; if (s.pall % NPAL === 0) s.tpc = s.t; if (s.pall % NPAL === 0) SL.log(s, `Pallet completo #${s.pall / NPAL} (${(NPAL * p.mf + 25).toFixed(0)} kg)`, 'ok'); }
     if (!pl.busy && pl.chg <= 0 && !s.palOff && s.items.length && s.items[0].x >= L - 0.3) {
       s.items.shift(); pl.busy = true; pl.rem = p.tp * k * (s.help ? 0.75 : 1) * (0.85 + 0.3 * r());
       const u = r(); if (u < (hoy ? 0.008 : 0.001)) { s.fell++; SL.log(s, 'Fardo caído al paletizar', 'warn'); } else if (u < (hoy ? 0.028 : 0.005)) s.marked++;
@@ -60,35 +94,82 @@ SL.app({
     while (s.tm.length && s.tm[0] < s.t - RW) s.tm.shift();
     while (s.tpl.length && s.tpl[0] < s.t - RW) s.tpl.shift();
   },
+  heatPos: [430, 398],
+  heat: [
+    { id: 'erg', label: 'Esfuerzo de acarreo', unit: 't·m/h', mode: 'max', max: (s, p) => ((3600 / p.cyc) * p.mf * 4) / 1000,
+      fn(s, p) { // masa movida a mano × distancia recorrida por fardo (hoy ~4 m, propuesto ~1 m)
+        const { hoy } = geo(p), { xe, px } = layout(s, p), fy = 250, v = (rate(s.tpl, s.t || 0) * p.mf * (hoy ? 4 : 1)) / 1000, pts = [];
+        if (hoy) for (let x = xe + 16; x <= px + 80; x += 12) pts.push([x, fy - 22, v, 30]); else pts.push([px - 14, fy - 22, v, 28], [px + 8, fy - 30, v, 26]);
+        return pts; } },
+    { id: 'cong', label: 'Congestión de salida', unit: '%', mode: 'max', max: 100,
+      fn(s, p) { // llenado de la acumulación (fotoceldas) y % del turno con la pegadora parada por desalojo
+        const { L, acc } = geo(p), cap = Math.floor(acc / SP), inAcc = s.items.filter((a) => a.x > L - acc).length, xe = X0 + L * PX, pts = [];
+        for (let x = xe - acc * PX + 10; x <= xe; x += 14) pts.push([x, 184, (100 * inAcc) / cap, 30]);
+        pts.push([62, 140, (100 * s.mstop) / Math.max(s.t || 0, 1), 64]); return pts; } },
+    { id: 'risk', label: 'Riesgo montacargas–persona', unit: 'índice', mode: 'max', max: 10,
+      fn(s, p) { // 10 = persona junto al punto de retiro del pallet con el montacargas presente; el cerco del propuesto reduce ×0.4
+        const { hoy } = geo(p), { px } = layout(s, p), f = fork(s, px), xp = f ? f.x : px + 98;
+        return ops(s, p).map((o) => [o.x, 228, 10 * Math.max(0, 1 - Math.max(0, Math.abs(xp - o.x) - 20) / 240) * (f ? 1 : 0.35) * (hoy ? 1 : 0.4), 46]); } },
+  ],
   draw(g, s, p, W, H) {
-    const { hoy, L, acc } = geo(p), y = 190, fy = y + 60;
-    const stopped = s.m.rem <= 0, xe = X0 + L * PX, cap = Math.floor(acc / SP), inAcc = s.items.filter((a) => a.x > L - acc).length, o = oee(s, p);
+    const { hoy, L, acc } = geo(p), y = 190, fy = 250, { xe, px } = layout(s, p);
+    const stopped = s.m.rem <= 0, cap = Math.floor(acc / SP), inAcc = s.items.filter((a) => a.x > L - acc).length, o = oee(s, p), run = !s.jam;
+    // --- fondo: muro, racks de stock, tablero eléctrico, portón, luminarias
+    wall(g, 104);
+    SL.shelf(g, 236, 26, 130, 66, 2, 0.75, 3); SL.shelf(g, 384, 26, 130, 66, 2, hoy ? 0.9 : 0.55, 7);
+    SL.sign(g, 375, 21, 'PRODUCTO TERMINADO', { color: '#2f6fb0' });
+    g.fillStyle = SL.metal(g, 30, 52, '#3a4757'); SL.rr(g, 150, 30, 46, 52, 3); g.fill(); g.strokeStyle = 'rgba(0,0,0,.4)'; g.stroke();
+    SL.dial(g, 166, 50, 9, s.pel / 1.5, { red: 0.8 }); SL.led(g, 186, 44, 2, run ? '#3ecf8e' : '#ef5350', true); SL.led(g, 186, 54, 2, '#f5b942', stopped);
+    g.fillStyle = '#e6edf3'; g.font = '600 7px system-ui'; g.fillText('TAB-01', 156, 75); g.strokeStyle = '#2b3746'; g.lineWidth = 2; g.beginPath(); g.moveTo(173, 30); g.lineTo(173, 16); g.stroke();
+    g.fillStyle = SL.vgrad(g, 20, 84, '#2a3542', '#1b232d'); g.fillRect(560, 20, 120, 84); g.strokeStyle = 'rgba(255,255,255,.06)'; g.beginPath(); for (let k = 26; k < 104; k += 6) { g.moveTo(562, k); g.lineTo(678, k); } g.stroke();
+    SL.hazard(g, 556, 20, 4, 84, 0.8); SL.hazard(g, 680, 20, 4, 84, 0.8); SL.sign(g, 620, 12, 'ANDÉN 2 · MONTACARGAS', { color: '#c0392b' });
+    SL.sign(g, 740, 44, 'USO OBLIGATORIO EPP', { color: '#2f6fb0' }); SL.stackLight(g, 740, 92, s.fell ? 'warn' : 'run', { s: 0.8 });
+    for (const lx of [80, 300, 520, 720]) SL.lightPool(g, lx, fy - 30, 120, 0.07);
+    // --- piso: franjas, zonas demarcadas y pasillo peatonal
+    g.fillStyle = SL.vgrad(g, fy, 80, 'rgba(70,84,102,.2)', 'rgba(70,84,102,0)'); g.fillRect(0, fy, 800, 80);
     g.fillStyle = 'rgba(255,255,255,.05)'; g.fillRect(10, fy, 780, 2);
-    SL.machine(g, 12, y - 72, 100, 112, { label: 'Pegadora', sub: stopped ? 'PARADA' : s.mset > 0 ? 'cambio medida' : 'produce', state: stopped ? 'down' : s.mset > 0 ? 'setup' : 'run', tag: stopped ? 'PARADA: sin desalojo' : 'produciendo' });
+    SL.zone(g, px - 24, fy + 1, 112, 9, { color: '#f5b942', hatch: true, fill: 0.1 });
+    SL.zone(g, 0, fy + 52, 800, 24, { color: '#3ecf8e', fill: 0.06, label: 'pasillo peatonal' });
+    g.fillStyle = 'rgba(62,207,142,.25)'; for (let x = 180; x < 780; x += 60) { g.beginPath(); g.moveTo(x, fy + 60); g.lineTo(x + 10, fy + 64); g.lineTo(x, fy + 68); g.fill(); }
+    SL.zone(g, px - 24, fy + 27, 824 - px, 20, { color: '#ef5350', fill: 0.05, dash: [6, 6], label: 'tránsito montacargas' });
+    // --- zona de paletizado: hoy suelta (conos), propuesto con cerco y puerta enclavada
+    if (!hoy) fence(g, px - 44, px + 100, fy, 74, px - 40); else { SL.cone(g, px - 30, fy + 2); SL.cone(g, px + 96, fy + 2); }
+    SL.bollard(g, px + 106, fy + 4, 20); SL.bollard(g, Math.min(790, px + 150), fy + 4, 20);
+    // --- máquina, banda, motorreductor, fotoceldas
+    SL.contact(g, 62, y + 44, 60, 5, 0.5);
+    SL.machine(g, 12, y - 72, 100, 112, { label: 'Pegadora', sub: stopped ? 'PARADA' : s.mset > 0 ? 'cambio medida' : 'produce', state: stopped ? 'down' : s.mset > 0 ? 'setup' : 'run', tag: stopped ? 'PARADA: sin desalojo' : 'produciendo', load: stopped ? 0 : 0.8 });
     SL.hot('mac', 12, y - 72, 100, 112);
-    SL.belt(g, [[X0, y], [xe, y]], 24, s.jam ? '#4a2020' : null); SL.hot('belt', X0, y - 14, xe - X0 - acc * PX, 28);
+    g.strokeStyle = '#2b3746'; g.lineWidth = 2; g.beginPath(); g.moveTo(100, y - 72); g.lineTo(100, 16); g.stroke();
+    SL.contact(g, (X0 + xe) / 2, y + 26, (xe - X0) / 2 + 10, 4, 0.4);
+    SL.belt(g, [[X0, y], [xe, y]], 24, s.jam ? '#4a2020' : null, run ? p.v / 0.6 : 0); SL.hot('belt', X0, y - 14, xe - X0 - acc * PX, 28);
+    g.fillStyle = SL.metal(g, y + 14, 14, '#3d5a7a'); SL.rr(g, xe - 44, y + 15, 22, 13, 2); g.fill(); SL.fan(g, xe - 49, y + 21, 5, run, p.v); g.fillStyle = '#5b6b80'; g.fillRect(xe - 22, y + 18, 8, 7);
     g.fillStyle = 'rgba(245,185,66,.12)'; g.fillRect(xe - acc * PX, y - 15, acc * PX, 30);
     g.strokeStyle = 'rgba(245,185,66,.6)'; g.setLineDash([4, 3]); g.strokeRect(xe - acc * PX + 0.5, y - 14.5, acc * PX - 1, 29); g.setLineDash([]);
-    SL.text(g, hoy ? 'acumulación' : 'zona de acumulación', xe - (acc * PX) / 2, y - 24, '#f5b942', '11px system-ui', 'center');
+    SL.text(g, hoy ? 'acumulación' : 'zona de acumulación', xe - (acc * PX) / 2, y - 30, '#f5b942', '11px system-ui', 'center');
     SL.hot('acc', xe - acc * PX, y - 14, acc * PX - 6, 28);
+    const occ = (x0, x1) => s.items.some((a) => a.x >= x0 && a.x <= x1);
+    if (!hoy) { peye(g, X0 + 30, y - 24, y + 12, occ(0.3, 0.9)); peye(g, xe - acc * PX + 6, y - 24, y + 12, occ(L - acc, L - acc + 0.4)); }
+    peye(g, xe - 14, y - 24, y + 12, s.items.length && s.items[0].x >= L - 0.3);
+    s.items.forEach((a) => { const bx = X0 + a.x * PX - 11; SL.carton(g, bx, y - 18, 22, 14, '#c59b6d'); g.fillStyle = 'rgba(30,30,30,.55)'; g.fillRect(bx + 6, y - 18, 1.5, 14); g.fillRect(bx + 14, y - 18, 1.5, 14); });
     g.fillStyle = '#26313d'; g.fillRect(xe - 2, y - 26, 4, 12); SL.led(g, xe, y - 28, 2.2, SL.STATE.down, stopped); // tope
     SL.hot('stop', xe - 6, y - 34, 12, 48);
-    s.items.forEach((a) => { const bx = X0 + a.x * PX - 11; SL.carton(g, bx, y - 18, 22, 14, '#c59b6d'); g.fillStyle = 'rgba(30,30,30,.55)'; g.fillRect(bx + 6, y - 18, 1.5, 14); g.fillRect(bx + 14, y - 18, 1.5, 14); });
     if (s.jam) SL.tag(g, 'ATASCO · motor en paro', Math.max(200, X0 + (xe - X0) / 2), y + 44, SL.STATE.down);
-    const px = xe + 36, n = s.pall % NPAL;
+    // --- pallet, baliza de estación, montacargas, operarios
+    const n = s.pall % NPAL;
+    SL.contact(g, px + 32, fy, 40, 3, 0.5);
     SL.pallet(g, px, fy - 7, 64);
     for (let i = 0; i < n; i++) SL.carton(g, px + 1 + (i % 4) * 15.5, fy - 7 - 12 - Math.floor(i / 4) * 12, 15, 12, '#c59b6d');
-    SL.tag(g, `Pallet ${n}/${NPAL}`, px + 32, fy + 16, s.palOff ? SL.STATE.down : SL.STATE.info);
+    g.fillStyle = '#4b5b6e'; g.fillRect(px + 87, fy - 70, 2, 70); SL.stackLight(g, px + 88, fy - 68, s.palOff ? 'down' : s.pal.chg > 0 ? 'setup' : s.pal.busy ? 'run' : 'idle', { s: 0.8 });
+    SL.tag(g, `Pallet ${n}/${NPAL} · ${hoy ? '3 personas en acarreo' : s.help ? '2 personas' : '1 persona'}`, Math.min(px + 32, 700), fy + 16, s.palOff ? SL.STATE.down : SL.STATE.info);
     SL.hot('pal', px, fy - 132, 64, 139);
-    for (let i = 0; i < Math.min(s.fell, 6); i++) { g.save(); g.translate(px + 150 + i * 12, fy - 5); g.rotate(0.5 + i * 0.3); SL.carton(g, -7, -5, 14, 10, '#8a6a48'); g.restore(); }
-    const np = hoy ? 3 : 1 + (s.help ? 1 : 0);
-    for (let i = 0; i < np; i++) {
-      const ox = hoy ? px + 78 + i * 24 : px - 14 - i * 22;
-      SL.person(g, ox, fy, { dir: 1, busy: s.pal.busy && !s.palOff, carry: s.pal.busy && i === 0 ? '#c59b6d' : null, walk: hoy && s.pal.busy ? s.t * 6 + i : 0, shirt: s.palOff ? '#6b7d93' : undefined });
-      SL.hot('op:' + i, ox - 8, fy - 40, 16, 42);
-    }
+    for (let i = 0; i < Math.min(s.fell, 6); i++) { g.save(); g.translate((hoy ? px + 130 : px - 100) + i * 12, fy - 5); g.rotate(0.5 + i * 0.3); SL.carton(g, -7, -5, 14, 10, '#8a6a48'); g.restore(); }
+    const fk = fork(s, px); if (fk) SL.forklift(g, fk.x, fy, { dir: -1, dist: fk.x, load: fk.load ? '#c59b6d' : null, lift: fk.lift });
+    ops(s, p).forEach((q, i) => {
+      SL.person(g, q.x, fy, { dir: q.dir, busy: s.pal.busy && !s.palOff, carry: q.carry ? '#c59b6d' : null, walk: q.walk, shirt: s.palOff ? '#6b7d93' : undefined });
+      SL.hot('op:' + i, q.x - 8, fy - 40, 16, 42);
+    });
+    if (fk && hoy) SL.tag(g, '⚠ montacargas cerca de personas', Math.min(700, fk.x), fy - 96, SL.STATE.block);
     if (s.palOff) SL.tag(g, 'Paletizador FUERA', px + 32, fy - 150, SL.STATE.down);
-    SL.text(g, hoy ? '3 personas en acarreo' : np > 1 ? '2 personas en pallet' : '1 persona en pallet', px + 32, fy + 38, '#8b9bb0', '12px system-ui', 'center');
     // Tablero de variables de la línea
     const ty = 340;
     SL.tag(g, `Banda ${(s.jam ? 0 : p.v).toFixed(2)} m/s · ${s.pel.toFixed(2)} kW`, 110, ty, s.jam ? SL.STATE.down : SL.STATE.info);
