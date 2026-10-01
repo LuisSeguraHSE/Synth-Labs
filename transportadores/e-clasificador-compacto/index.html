@@ -2,74 +2,222 @@
 <html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <link rel="stylesheet" href="../../shared/style.css"></head>
 <body><div id="app"></div>
+<script src="../../shared/controls.js"></script>
 <script src="../../shared/sim.js"></script>
+<script src="../../shared/gfx.js"></script>
 <script>
 // Clasificador compacto con recirculación. Unidad: segundos. Lazo de 30 m; desviadores en bordes superior/inferior.
+// Física: banda de 30 m (8 kg/m) arrastrada sobre cama: F = μ·(m_banda + m_carga)·g ; P = (F·v + m·a·v)/η + P0. Velocidad con rampa.
 const DN = ['Lima', 'Norte', 'Sur', 'Aéreo', 'Sierra', 'Selva'], WT = [0.4, 0.22, 0.2, 0.1, 0.05, 0.03], LM = 30, DS = [3, 6, 9, 18, 21, 24], RJ = 27.5;
 const LOOP = [[100, 100], [700, 100], [700, 300], [100, 300], [100, 100]], LL = SL.len(LOOP), TY = [['bolsa', 0.5], ['caja', 0.7], ['irregular', 1.2]];
+const KG = [1.2, 4, 7], MB = 8, MU = 0.25, ETA = 0.8, P0 = 0.35, GR = 9.81, ACC = 0.5; // kg por tipo, kg/m banda, μ, η, kW vacío, m/s², m/s²
 const at = (s) => SL.along(LOOP, ((s % LM) / LM) * LL);
+const load = (s) => s.it.reduce((a, x) => a + KG[x.ty], 0);
+const occ = (s) => s.it.reduce((a, x) => a + TY[x.ty][1], 0) / LM;
+const amps = (kw) => (kw * 1000) / (Math.sqrt(3) * 400 * 0.85);
+const stTxt = (s, p) => (p.mode === 0 ? 'MANUAL' : s.estop ? 'PARO DE EMERGENCIA' : s.v < 0.05 ? 'DETENIDO' : 'MARCHA');
 SL.app({
   title: 'Demo E · Clasificador chico (4–6 destinos)',
-  desc: 'Inducción → lectura → desviadores → chutes, con recirculación cuando el chute está lleno. Mix de bolsas, cajas e irregulares. Baja el volumen para ver el punto de equilibrio.',
+  desc: 'Inducción → lectura → desviadores → chutes, con recirculación cuando el chute está lleno. Mix de bolsas, cajas e irregulares. Baja el volumen para ver el punto de equilibrio. Clic en lector, desviadores, chutes y motor para inspeccionar.',
   pitch: '"No es el sorter de 150 mil unidades. Es el de 1.500–4.000 bultos/hora que les quita la fila de las 6 pm."',
   obj: '"Muy caro para el volumen." → Revisa el KPI de payback: a X bultos/día la banda se paga; debajo, no insistas.',
   unit: 's', dt: 0.1, sample: 10, speeds: [1, 5, 20, 60],
   params: [
-    { id: 'mode', label: 'Escenario', opts: ['Hoy: 6 personas clasificando', 'Propuesto: clasificador + 2 personas'], value: 1 },
+    { sec: 'Escenario y demanda', id: 'mode', label: 'Escenario', opts: ['Hoy: 6 personas clasificando', 'Propuesto: clasificador + 2 personas'], value: 1 },
     { id: 'nd', label: 'Destinos con chute', min: 4, max: 6, step: 1, value: 4, reset: true },
     { id: 'rate', label: 'Volumen de bultos', min: 300, max: 4000, step: 100, value: 2000, unit: '/h' },
-    { id: 'v', label: 'Velocidad de banda', min: 0.6, max: 1.4, step: 0.1, value: 0.9, unit: 'm/s' },
-    { id: 'cap', label: 'Capacidad de chute', min: 6, max: 40, step: 2, value: 16, unit: 'bultos' },
+    { sec: 'Control del sorter', id: 'v', label: 'Velocidad de banda (SP)', min: 0.6, max: 1.4, step: 0.1, value: 0.9, unit: 'm/s' },
+    { id: 'lap', label: 'Vueltas máx. antes de rechazo', min: 1, max: 6, step: 1, value: 3 },
+    { id: 'rd', label: 'Tasa de lectura del escáner', min: 85, max: 99.9, step: 0.1, value: 97, unit: '%' },
+    { id: 'gapm', label: 'Hueco mínimo de inducción', min: 0.1, max: 1, step: 0.05, value: 0.3, unit: 'm' },
+    { sec: 'Chutes y operación', id: 'cap', label: 'Capacidad de chute', min: 6, max: 40, step: 2, value: 16, unit: 'bultos' },
     { id: 'drain', label: 'Retiro del chute', min: 2, max: 12, step: 0.5, value: 3.5, unit: 's/bulto' },
-    { id: 'inv', label: 'Inversión del sistema', min: 30, max: 250, step: 10, value: 90, unit: 'k USD' },
+    { sec: 'Económicos', id: 'inv', label: 'Inversión del sistema', min: 30, max: 250, step: 10, value: 90, unit: 'k USD' },
     { id: 'sal', label: 'Costo mensual por persona', min: 500, max: 1800, step: 50, value: 900, unit: 'USD' },
   ],
-  init(p) { return { it: [], q: 0, ch: Array.from({ length: 6 }, () => ({ n: 0, tm: 0, got: 0 })), man: Array.from({ length: 6 }, () => ({ rem: 0, it: null })), out: 0, ok: 0, bad: 0, rec: 0, rej: 0, inq: 0, nextIn: 0 }; },
+  init(p) { return { it: [], q: 0, ch: Array.from({ length: 6 }, () => ({ n: 0, tm: 0, got: 0, jam: false, off: false, full: false })), man: Array.from({ length: 6 }, () => ({ rem: 0, it: null, off: false, n: 0 })), out: 0, ok: 0, bad: 0, rec: 0, rej: 0, rbin: 0, inq: 0, nextIn: 0, v: p.v, kw: 0, kwh: 0, thr: 0, dv: 0, reads: 0, noread: 0, surge: false, estop: false, rdf: false, crew: false, qAl: false }; },
   step(s, dt, p, r) {
-    const hoy = p.mode === 0, nd = p.nd, w = WT.slice(0, nd), sw = w.reduce((a, b) => a + b, 0);
-    if (r() < (p.rate / 3600) * dt) { const u = r(), ty = u < 0.45 ? 0 : u < 0.85 ? 1 : 2; let d = 0, a = r() * sw; while (a > w[d] && d < nd - 1) a -= w[d++]; s.q++; s.inq = (s.inq || 0); s.pend = (s.pend || []); s.pend.push({ ty, d }); }
+    const hoy = p.mode === 0, nd = p.nd, w = WT.slice(0, nd), sw = w.reduce((a, b) => a + b, 0), out0 = s.out;
+    if (r() < ((p.rate * (s.surge ? 2 : 1)) / 3600) * dt) { const u = r(), ty = u < 0.45 ? 0 : u < 0.85 ? 1 : 2; let d = 0, a = r() * sw; while (a > w[d] && d < nd - 1) a -= w[d++]; s.q++; s.pend = (s.pend || []); s.pend.push({ ty, d }); }
     s.pend = s.pend || [];
-    s.ch.forEach((c, i) => { if (c.n > 0 && (c.tm += dt) >= p.drain) { c.n--; c.tm = 0; } });
+    const dr = p.drain * (s.crew ? 0.5 : 1);
+    s.ch.forEach((c, i) => { if (c.n > 0 && (c.tm += dt) >= dr) { c.n--; c.tm = 0; } if (c.full && c.n < p.cap / 2) c.full = false; });
+    if (!s.qAl && s.q > 30) { s.qAl = true; SL.log(s, `Cola de inducción alta (${s.q} bultos)`, 'warn'); } else if (s.qAl && s.q < 15) { s.qAl = false; SL.log(s, 'Cola de inducción normalizada', 'ok'); }
+    const ema = () => { s.thr += (((s.out - out0) / dt) * 3600 - s.thr) * (dt / 120); };
     if (hoy) {
+      s.kw = 0;
       for (let i = 0; i < 6; i++) {
         const k = s.man[i];
-        if (k.it && (k.rem -= dt) <= 0) { s.out++; if (r() < 0.03) s.bad++; else s.ok++; k.it = null; }
-        if (!k.it && s.pend.length) { k.it = s.pend.shift(); s.q--; k.rem = (3600 / 250) * (0.8 + 0.4 * r()) * (1 + 0.15 * TY[k.it.ty][1]); }
+        if (k.it && (k.rem -= dt) <= 0) { s.out++; k.n++; if (r() < 0.03) s.bad++; else s.ok++; k.it = null; }
+        if (!k.it && !k.off && s.pend.length) { k.it = s.pend.shift(); s.q--; k.rem = (3600 / 250) * (0.8 + 0.4 * r()) * (1 + 0.15 * TY[k.it.ty][1]); }
       }
-      return;
+      ema(); return;
     }
-    const v = p.v;
+    // Rampa de velocidad (VFD): SP → v real; paro de emergencia frena a 2 m/s²
+    const tgt = s.estop ? 0 : p.v, v0 = s.v;
+    s.v = tgt > s.v ? Math.min(tgt, s.v + ACC * dt) : Math.max(tgt, s.v - (s.estop ? 2 : ACC) * dt);
+    const m = MB * LM + load(s), a2 = (s.v - v0) / dt;
+    s.kw = s.v > 0.01 ? Math.max(0, MU * m * GR * s.v + m * a2 * s.v) / 1000 / ETA + P0 : 0.05;
+    s.kwh += (s.kw * dt) / 3600;
+    const v = s.v;
     for (const a of s.it) {
       const prev = a.s; a.s += v * dt; a.age += dt;
-      if (Math.floor(a.s / LM) > Math.floor(prev / LM)) { a.lap++; if (a.lap > 3 && !a.rj) a.rj = true; }
+      if (Math.floor(a.s / LM) > Math.floor(prev / LM)) { a.lap++; if (a.lap > p.lap && !a.rj) a.rj = true; }
       const pos = a.s % LM, pp = prev % LM;
       if (!a.done && !a.rj && pos >= DS[a.d] && (pp < DS[a.d] || pp > pos)) {
-        if (s.ch[a.d].n < p.cap) { s.ch[a.d].n++; a.done = true; s.out++; if (r() < 0.004) s.bad++; else s.ok++; if (a.lap > 0) s.rec++; }
-        else a.miss = true;
+        const c = s.ch[a.d];
+        if (c.n < p.cap && !c.jam && !c.off) { c.n++; c.got++; s.dv++; a.done = true; s.out++; if (r() < 0.004) s.bad++; else s.ok++; if (a.lap > 0) s.rec++; }
+        else { a.miss = true; if (c.n >= p.cap && !c.full) { c.full = true; SL.log(s, `Chute ${DN[a.d]} lleno → recirculación`, 'warn'); } }
       }
-      if (!a.done && a.rj && pos >= RJ && (pp < RJ || pp > pos)) { a.done = true; s.rej++; }
+      if (!a.done && a.rj && pos >= RJ && (pp < RJ || pp > pos)) { a.done = true; s.rej++; s.rbin++; }
     }
     s.it = s.it.filter((a) => !a.done);
-    if (s.pend.length) {
-      const c = TY[s.pend[0].ty][1] + 0.3;
-      if (!s.it.some((a) => { const x = a.s % LM; return x < c || x > LM - c; })) { const it = s.pend.shift(); s.q--; s.it.push({ s: 0, d: it.d, ty: it.ty, lap: 0, age: 0, rj: r() < 0.03, done: false }); }
+    if (s.pend.length && !s.estop && s.v > 0.2) {
+      const c = TY[s.pend[0].ty][1] + p.gapm;
+      if (!s.it.some((a) => { const x = a.s % LM; return x < c || x > LM - c; })) { const it = s.pend.shift(); s.q--; const nr = r() < (s.rdf ? 0.4 : 1 - p.rd / 100); s.reads++; if (nr) s.noread++; s.it.push({ s: 0, d: it.d, ty: it.ty, lap: 0, age: 0, rj: nr, done: false }); }
     }
+    ema();
   },
   draw(g, s, p, W, H) {
     const hoy = p.mode === 0;
+    const parcel = (x, y, ty, a) => {
+      g.save();
+      if (a.rj || a.lap > 0) { g.strokeStyle = a.rj ? '#ef5350' : '#ba68c8'; g.lineWidth = 2.5; g.beginPath(); g.arc(x, y, 12, 0, 7); g.stroke(); }
+      if (ty === 0) { g.fillStyle = SL.vgrad(g, y - 7, 14, '#8fd0f5', '#3a8fc4'); g.beginPath(); g.ellipse(x, y, 8, 6, 0.2, 0, 7); g.fill(); g.fillStyle = 'rgba(255,255,255,.35)'; g.fillRect(x - 5, y - 5, 4, 2); }
+      else if (ty === 1) SL.carton(g, x - 8, y - 6, 16, 12, '#c59b6d');
+      else { g.fillStyle = SL.vgrad(g, y - 8, 16, '#f5d27a', '#c99a2e'); g.beginPath(); g.moveTo(x - 11, y + 2); g.lineTo(x - 4, y - 8); g.lineTo(x + 10, y - 5); g.lineTo(x + 11, y + 6); g.lineTo(x - 6, y + 8); g.closePath(); g.fill(); }
+      g.restore();
+    };
     if (hoy) {
-      SL.text(g, 'Cola de bultos en el piso: ' + s.q, 40, 50, '#ef5350', '14px system-ui');
-      for (let i = 0; i < Math.min(s.q, 200); i++) { g.fillStyle = '#c59b6d'; g.fillRect(40 + (i % 40) * 17, 70 + Math.floor(i / 40) * 17, 13, 13); }
-      s.man.forEach((k, i) => { g.fillStyle = k.it ? '#3ecf8e' : '#2a3646'; g.beginPath(); g.arc(120 + i * 100, 250, 24, 0, 7); g.fill(); SL.text(g, 'P' + (i + 1), 120 + i * 100, 255, '#fff', '13px system-ui', 'center'); });
-      SL.text(g, '6 personas llevan cada bulto a su destino (error ~3%, sin recirculación)', 40, 320, '#8b9bb0');
-    } else {
-      SL.belt(g, LOOP, 22);
-      for (let k = 0; k < p.nd; k++) { const q = at(DS[k]), top = DS[k] < 15, y0 = top ? 100 : 300, sg = top ? -1 : 1; g.fillStyle = '#243040'; g.fillRect(q.x - 45, y0 + sg * 60 - 20, 90, 40); SL.text(g, DN[k] + ' ' + s.ch[k].n + '/' + p.cap, q.x, y0 + sg * 60 + 5, s.ch[k].n >= p.cap ? '#ef5350' : '#3ecf8e', '12px system-ui', 'center'); g.strokeStyle = '#f5b942'; g.lineWidth = 3; g.beginPath(); g.moveTo(q.x - 8, y0); g.lineTo(q.x + 8, y0 + sg * 40); g.stroke(); }
-      const rq = at(RJ); g.fillStyle = '#4a2424'; g.fillRect(rq.x - 90, rq.y - 25, 70, 50); SL.text(g, 'Rechazo ' + s.rej, rq.x - 55, rq.y + 4, '#ef5350', '12px system-ui', 'center');
-      s.it.forEach((a) => { const q = at(a.s); g.fillStyle = a.rj ? '#ef5350' : a.lap > 0 ? '#ba68c8' : ['#4fc3f7', '#c59b6d', '#f5b942'][a.ty]; if (a.ty === 0) { g.beginPath(); g.arc(q.x, q.y, 6, 0, 7); g.fill(); } else if (a.ty === 1) g.fillRect(q.x - 8, q.y - 6, 16, 12); else { g.beginPath(); g.moveTo(q.x - 11, q.y); g.lineTo(q.x, q.y - 8); g.lineTo(q.x + 11, q.y); g.lineTo(q.x, q.y + 8); g.fill(); } });
-      SL.text(g, 'Inducción ▶ (cola: ' + s.q + ')', 105, 135, '#e6edf3', '12px system-ui');
-      SL.text(g, 'Violeta: recirculando · Rojo: no leído → rechazo · azul bolsa / marrón caja / amarillo irregular', 40, 430, '#8b9bb0', '12px system-ui');
+      SL.text(g, 'Cola de bultos en el piso: ' + s.q, 40, 40, '#ef5350', '600 14px system-ui'); SL.hot('floor', 40, 24, 700, 190);
+      if (s.surge) SL.tag(g, 'OLA DE PEDIDOS ×2', 640, 36, SL.STATE.warn);
+      for (let i = 0; i < Math.min(s.q, 160); i++) parcel(48 + (i % 40) * 17 + ((i * 7) % 5), 62 + Math.floor(i / 40) * 17 + ((i * 3) % 4), i % 3, {});
+      s.man.forEach((k, i) => { const x = 90 + i * 112; SL.person(g, x, 290, { dir: i % 2 ? -1 : 1, busy: !!k.it, carry: k.it ? '#c59b6d' : null, walk: k.it ? s.t * 8 + i : 0, shirt: k.off ? '#4a5a6e' : undefined }); SL.led(g, x, 244, 2.6, k.off ? SL.STATE.down : k.it ? SL.STATE.run : SL.STATE.idle, !!k.it || k.off); SL.text(g, k.off ? 'P' + (i + 1) + ' pausa' : 'P' + (i + 1), x, 308, k.off ? '#ef5350' : '#8b9bb0', '11px system-ui', 'center'); SL.hot('man:' + i, x - 18, 236, 36, 76); });
+      DN.slice(0, p.nd).forEach((n, k) => { SL.chute(g, 40 + k * 124, 330, 104, 64, s.ch[k].n / p.cap, '#3ecf8e', `${n} ${s.ch[k].n}`); SL.hot('ch:' + k, 40 + k * 124, 330, 104, 64); });
+      SL.text(g, '6 personas llevan cada bulto a su destino (error ~3 %, sin recirculación)', 40, 432, '#8b9bb0');
+      return;
     }
+    SL.hot('belt', 88, 88, 624, 24); SL.hot('belt', 88, 288, 624, 24); SL.hot('belt', 688, 88, 24, 224);
+    SL.belt(g, LOOP, 22, s.estop ? '#4a2a2a' : undefined);
+    const rd = at(1); // arco de lectura
+    g.fillStyle = '#26313d'; g.fillRect(rd.x - 3, rd.y - 28, 6, 56); g.fillRect(rd.x - 3, rd.y - 30, 24, 5); SL.led(g, rd.x + 18, rd.y - 27, 2.4, s.rdf ? SL.STATE.down : SL.STATE.info);
+    g.strokeStyle = s.rdf ? 'rgba(239,83,80,.6)' : 'rgba(79,195,247,.45)'; g.beginPath(); g.moveTo(rd.x + 18, rd.y - 24); g.lineTo(rd.x + 6, rd.y + 10); g.lineTo(rd.x + 30, rd.y + 10); g.closePath(); g.stroke();
+    SL.hot('reader', rd.x - 8, rd.y - 34, 36, 64);
+    if (s.rdf) SL.tag(g, 'LECTOR FALLA', rd.x + 12, rd.y - 44, SL.STATE.down);
+    for (let k = 0; k < p.nd; k++) {
+      const c = s.ch[k], q = at(DS[k]), top = DS[k] < 15, y0 = top ? 100 : 300, sg = top ? -1 : 1, full = c.n >= p.cap, blk = c.jam || c.off;
+      g.save(); g.translate(q.x, y0); g.rotate(-sg * 0.7); g.fillStyle = c.jam ? '#ef5350' : full || c.off ? '#8b9bb0' : '#f5b942'; g.fillRect(-2.5, 0, 5, sg * 24); g.restore(); // desviador
+      const cy = top ? y0 - 94 : y0 + 28;
+      SL.chute(g, q.x - 46, cy, 92, 62, c.n / p.cap, full || blk ? '#ef5350' : '#3ecf8e', `${DN[k]} ${c.n}/${p.cap}`);
+      SL.hot('ch:' + k, q.x - 46, cy, 92, 62); SL.hot('div:' + k, q.x - 14, top ? y0 - 30 : y0 + 2, 28, 28);
+      if (c.jam) SL.tag(g, 'DESVIADOR ATASCADO', q.x, top ? y0 - 22 : y0 + 22, SL.STATE.down);
+      else if (c.off) SL.tag(g, 'FUERA DE SERVICIO', q.x, top ? y0 - 22 : y0 + 22, SL.STATE.idle);
+      else if (full) SL.tag(g, 'LLENO → recircula', q.x, top ? y0 - 22 : y0 + 22, SL.STATE.warn);
+    }
+    const rq = at(RJ); SL.chute(g, rq.x - 96, rq.y - 30, 70, 60, s.rbin / 40, '#ef5350', `Rechazo ${s.rbin}`); SL.hot('rej', rq.x - 96, rq.y - 30, 70, 60);
+    s.it.forEach((a) => { const q = at(a.s); parcel(q.x, q.y, a.ty, a); });
+    SL.person(g, 70, 96, { dir: 1, busy: s.q > 0 }); SL.text(g, 'Inducción', 70, 112, '#8b9bb0', '10px system-ui', 'center'); SL.hot('ind', 54, 60, 32, 56);
+    SL.person(g, 40, 380, { dir: 1, busy: s.rbin > 0 }); SL.text(g, 'Excepciones', 40, 396, '#8b9bb0', '10px system-ui', 'center'); SL.hot('exc', 22, 344, 40, 56);
+    SL.tag(g, `Cola de inducción: ${s.q}`, 250, 130, s.q > 20 ? SL.STATE.warn : SL.STATE.info);
+    // Motor de accionamiento (lado derecho) con VFD
+    const mx = 716, my = 176, run = s.v > 0.02;
+    SL.rr(g, mx, my, 50, 40, 5); g.fillStyle = SL.vgrad(g, my, 40, '#5a6f86', '#2e3a48'); g.fill(); g.strokeStyle = '#8b9bb0'; g.lineWidth = 1; g.stroke();
+    for (let k = 0; k < 5; k++) { g.fillStyle = 'rgba(0,0,0,.35)'; g.fillRect(mx + 6 + k * 8, my + 6, 3, 28); }
+    SL.led(g, mx + 44, my + 7, 2.4, s.estop ? SL.STATE.down : run ? SL.STATE.run : SL.STATE.idle);
+    SL.text(g, 'M-1', mx + 25, my + 54, '#8b9bb0', '10px system-ui', 'center'); SL.hot('drive', mx - 4, my - 4, 60, 64);
+    SL.tag(g, `${s.kw.toFixed(2)} kW`, mx + 25, my - 14, s.estop ? SL.STATE.down : SL.STATE.info);
+    // Panel del PLC del sorter
+    const px = 286, py = 150, stc = s.estop ? SL.STATE.down : run ? SL.STATE.run : SL.STATE.idle;
+    SL.rr(g, px, py, 290, 96, 6); g.fillStyle = 'rgba(8,12,18,.8)'; g.fill(); g.strokeStyle = s.estop ? '#ef5350' : '#2e3e52'; g.lineWidth = 1.2; g.stroke();
+    SL.led(g, px + 14, py + 16, 3, stc); SL.text(g, `PLC sorter · ${stTxt(s, p)}`, px + 26, py + 20, stc, '600 12px system-ui');
+    SL.text(g, `v ${s.v.toFixed(2)} / SP ${p.v.toFixed(1)} m/s · ${amps(s.kw).toFixed(1)} A`, px + 12, py + 40, '#e6edf3', '11px system-ui');
+    SL.text(g, `Lectura ${s.reads ? (100 - (100 * s.noread) / s.reads).toFixed(1) : '—'} % · máx ${p.lap} vueltas · ${s.thr.toFixed(0)} b/h`, px + 12, py + 58, '#8b9bb0', '11px system-ui');
+    SL.gauge(g, px + 12, py + 70, 266, 14, occ(s) / 0.6, occ(s) > 0.45 ? SL.STATE.warn : SL.STATE.info, `Ocupación de banda ${(100 * occ(s)).toFixed(0)} % · ${load(s).toFixed(0)} kg`);
+    SL.hot('plc', px, py, 290, 96);
+    if (s.surge) SL.tag(g, 'OLA DE PEDIDOS ×2', 250, 270, SL.STATE.warn);
+    SL.text(g, 'Aro violeta: recirculando · aro rojo: no leído → rechazo · azul bolsa / cartón caja / amarillo irregular', 30, 436, '#8b9bb0', '11px system-ui');
+  },
+  vars(s, p) {
+    const hoy = p.mode === 0, T = Math.max(s.t || 0, 1), m = load(s), rr = s.reads ? 100 - (100 * s.noread) / s.reads : 100;
+    const fis = hoy ? [
+      ['Throughput (móvil 2 min)', s.thr.toFixed(0), 'bultos/h', s.thr / 4000],
+      ['Throughput promedio', ((3600 * s.out) / T).toFixed(0), 'bultos/h'],
+      ['Bultos en piso (cola)', s.q, '', Math.min(1, s.q / 100), s.q > 30 ? '#ef5350' : undefined],
+      ['Personas trabajando', s.man.filter((k) => k.it).length, 'de 6', s.man.filter((k) => k.it).length / 6],
+      ['Capacidad manual', (6 * 250).toFixed(0), 'bultos/h'],
+      ['Utilización manual', Math.min(100, (100 * s.thr) / 1500).toFixed(0), '%', s.thr / 1500],
+      ['Errores de destino', s.bad, 'bultos'],
+      ['Potencia eléctrica', '0', 'kW'],
+      ...DN.slice(0, p.nd).map((n, k) => [`Chute ${n}`, `${s.ch[k].n}/${p.cap}`, 'bultos', s.ch[k].n / p.cap]),
+    ] : [
+      ['Velocidad real de banda', s.v.toFixed(2), 'm/s', s.v / 1.4, '#4fc3f7'],
+      ['Tiempo de vuelta', s.v > 0.05 ? (LM / s.v).toFixed(1) : '—', 's'],
+      ['Bultos sobre banda', s.it.length, ''],
+      ['Carga sobre banda', m.toFixed(1), 'kg', m / 150],
+      ['Ocupación de banda', (100 * occ(s)).toFixed(0), '%', occ(s) / 0.6],
+      ['Fuerza de arrastre', ((MU * (MB * LM + m) * GR) / 1000).toFixed(2), 'kN'],
+      ['Potencia motor M-1', s.kw.toFixed(2), 'kW', s.kw / 1.5, '#c98500'],
+      ['Corriente motor (400 V)', amps(s.kw).toFixed(2), 'A'],
+      ['Energía', s.kwh.toFixed(3), 'kWh'],
+      ['Energía por 1000 bultos', s.out ? ((1000 * s.kwh) / s.out).toFixed(2) : '—', 'kWh'],
+      ['Throughput (móvil 2 min)', s.thr.toFixed(0), 'bultos/h', s.thr / 4000],
+      ['Throughput promedio', ((3600 * s.out) / T).toFixed(0), 'bultos/h'],
+      ['Bultos en chute de rechazo', s.rbin, '', Math.min(1, s.rbin / 40)],
+    ];
+    const ctl = [
+      ['Estado', stTxt(s, p), '', null, s.estop ? '#ef5350' : '#3ecf8e'],
+      ['SP velocidad / real', `${p.v.toFixed(1)} / ${s.v.toFixed(2)}`, 'm/s'],
+      ['Rampa VFD', ACC, 'm/s²'],
+      ['Tasa de lectura real', rr.toFixed(1), '%', rr / 100, s.rdf ? '#ef5350' : rr < 95 ? '#f5b942' : '#3ecf8e'],
+      ['Lector', s.rdf ? 'FALLA (40 % no lee)' : 'OK', '', null, s.rdf ? '#ef5350' : undefined],
+      ['Regla de desvío', 'chute libre → desvía; lleno → recircula', ''],
+      ['Vueltas máx. → rechazo', p.lap, ''],
+      ['Hueco mínimo inducción', p.gapm.toFixed(2), 'm'],
+      ['Cola de inducción', s.q, '', Math.min(1, s.q / 60), s.qAl ? '#ef5350' : undefined],
+      ['Alarma de cola (>30)', s.qAl ? 'ACTIVA' : 'normal', '', null, s.qAl ? '#ef5350' : undefined],
+      ['Chutes llenos / bloqueados', `${s.ch.slice(0, p.nd).filter((c) => c.n >= p.cap).length} / ${s.ch.slice(0, p.nd).filter((c) => c.jam || c.off).length}`, ''],
+      ['% recirculado', ((100 * s.rec) / Math.max(s.out, 1)).toFixed(1), '%'],
+      ['Desvíos ejecutados', s.dv, ''],
+      ['Refuerzo en chutes', s.crew ? 'SÍ (retiro ×2)' : 'no', ''],
+    ];
+    return { fis, ctl };
+  },
+  actions: [
+    { label: 'Ola de pedidos ×2', kind: 'warn', hint: 'Duplica la llegada de bultos', on: (s) => s.surge, run: (s) => { s.surge = !s.surge; SL.log(s, s.surge ? 'Ola de pedidos: llegada ×2' : 'Llegada de pedidos normal', s.surge ? 'warn' : 'ok'); } },
+    { label: 'Atasco desviador Lima', kind: 'crit', on: (s) => s.ch[0].jam, run: (s) => { s.ch[0].jam = !s.ch[0].jam; SL.log(s, s.ch[0].jam ? 'Desviador Lima atascado: todo Lima recircula' : 'Desviador Lima liberado', s.ch[0].jam ? 'crit' : 'ok'); } },
+    { label: 'Falla del lector', kind: 'warn', on: (s) => s.rdf, run: (s) => { s.rdf = !s.rdf; SL.log(s, s.rdf ? 'Escáner degradado: 40 % sin lectura' : 'Escáner limpio y calibrado', s.rdf ? 'warn' : 'ok'); } },
+    { label: 'Paro de emergencia', kind: 'crit', on: (s) => s.estop, run: (s) => { s.estop = !s.estop; SL.log(s, s.estop ? 'PARO DE EMERGENCIA: banda frenando' : 'Paro rearmado, rampa de arranque', s.estop ? 'crit' : 'ok'); } },
+    { label: 'Refuerzo en chutes', on: (s) => s.crew, run: (s) => { s.crew = !s.crew; SL.log(s, s.crew ? 'Refuerzo: retiro de chutes ×2' : 'Refuerzo retirado', 'info'); } },
+    { label: 'Reprocesar rechazos', hint: 'Excepciones reinducen el chute de rechazo', run: (s, p, r) => { const n = s.rbin; for (let i = 0; i < n; i++) (s.pend || (s.pend = [])).push({ ty: Math.floor(r() * 3), d: Math.floor(r() * p.nd) }); s.q += n; s.rbin = 0; } },
+  ],
+  inspect(s, p, id) {
+    const [kind, ix] = id.split(':'), k = +ix, hoy = p.mode === 0;
+    if (kind === 'ch' && k < p.nd) { const c = s.ch[k], dr = p.drain * (s.crew ? 0.5 : 1); return { title: `Chute ${DN[k]}`, sub: `Destino ${k + 1} · participación ${(100 * WT[k]).toFixed(0)} % del volumen`,
+      fis: [['Ocupación', `${c.n}/${p.cap}`, 'bultos', c.n / p.cap], ['Retiro', dr.toFixed(1), 's/bulto'], ['Capacidad de retiro', (3600 / dr).toFixed(0), 'bultos/h'], ['Recibidos (desviados)', c.got, '']],
+      ctl: [['Estado', c.jam ? 'DESVIADOR ATASCADO' : c.off ? 'FUERA DE SERVICIO' : c.n >= p.cap ? 'LLENO' : 'DISPONIBLE', '', null, c.jam || c.n >= p.cap ? '#ef5350' : c.off ? '#8b9bb0' : '#3ecf8e'], ['Decisión de desvío', c.n >= p.cap || c.jam || c.off ? 'recircula' : 'desvía', '']],
+      actions: [{ label: 'Vaciar chute', run: (s) => { s.ch[k].n = 0; } }, { label: c.off ? 'Habilitar chute' : 'Poner fuera de servicio', run: (s) => { s.ch[k].off = !s.ch[k].off; } }] }; }
+    if (kind === 'div' && k < p.nd) { const c = s.ch[k]; return { title: `Desviador DV-${k + 1} · ${DN[k]}`, sub: `Brazo neumático a ${DS[k]} m de la inducción`,
+      fis: [['Posición en lazo', DS[k], 'm'], ['Actuaciones', c.got, ''], ['Tiempo de paso (a v real)', s.v > 0.05 ? ((0.7 / s.v) * 1000).toFixed(0) : '—', 'ms']],
+      ctl: [['Estado', c.jam ? 'ATASCADO' : 'OK', '', null, c.jam ? '#ef5350' : '#3ecf8e'], ['Permisivo (chute no lleno)', c.n < p.cap && !c.off ? 'SÍ' : 'NO', '']],
+      actions: [{ label: c.jam ? 'Reparar desviador' : 'Forzar atasco', run: (s) => { s.ch[k].jam = !s.ch[k].jam; } }] }; }
+    if (kind === 'reader') { const rr = s.reads ? 100 - (100 * s.noread) / s.reads : 100; return { title: 'Arco de lectura · escáner 5 lados', sub: 'Asigna destino; sin lectura → marca para rechazo',
+      fis: [['Leídos', s.reads, ''], ['Sin lectura', s.noread, ''], ['Velocidad de paso', s.v.toFixed(2), 'm/s']],
+      ctl: [['Tasa de lectura real', rr.toFixed(1), '%', rr / 100], ['Tasa nominal', p.rd, '%'], ['Estado', s.rdf ? 'FALLA' : 'OK', '', null, s.rdf ? '#ef5350' : '#3ecf8e']],
+      actions: [{ label: s.rdf ? 'Limpiar y calibrar' : 'Forzar falla', run: (s) => { s.rdf = !s.rdf; } }] }; }
+    if (kind === 'drive' || kind === 'belt' || kind === 'plc') { const m = load(s); return { title: kind === 'plc' ? 'PLC del sorter' : 'M-1 · Motorreductor + VFD de banda', sub: `Lazo de ${LM} m · banda ${MB} kg/m · μ = ${MU} · η = ${ETA}`,
+      fis: [['Velocidad real', s.v.toFixed(2), 'm/s', s.v / 1.4], ['Carga', m.toFixed(1), 'kg'], ['Fuerza de arrastre', ((MU * (MB * LM + m) * GR) / 1000).toFixed(2), 'kN'], ['Potencia', s.kw.toFixed(2), 'kW', s.kw / 1.5], ['Corriente', amps(s.kw).toFixed(2), 'A'], ['Energía', s.kwh.toFixed(3), 'kWh']],
+      ctl: [['Estado', stTxt(s, p), '', null, s.estop ? '#ef5350' : '#3ecf8e'], ['SP velocidad', p.v.toFixed(1), 'm/s'], ['Error de velocidad', (p.v - s.v).toFixed(2), 'm/s'], ['Ocupación', (100 * occ(s)).toFixed(0), '%']],
+      actions: [{ label: s.estop ? 'Rearmar paro' : 'Paro de emergencia', run: (s) => { s.estop = !s.estop; } }, { label: 'Velocidad +0.1 m/s', run: (s, p, r, api) => api.set('v', Math.min(1.4, +(p.v + 0.1).toFixed(1))) }, { label: 'Velocidad −0.1 m/s', run: (s, p, r, api) => api.set('v', Math.max(0.6, +(p.v - 0.1).toFixed(1))) }] }; }
+    if (kind === 'rej') return { title: 'Chute de rechazo / excepciones', sub: `No leídos o con más de ${p.lap} vueltas`,
+      fis: [['En chute', s.rbin, 'bultos', s.rbin / 40], ['Rechazos acumulados', s.rej, '']], ctl: [['% rechazo', ((100 * s.rej) / Math.max(s.out + s.rej, 1)).toFixed(2), '%']],
+      actions: [{ label: 'Reinducir rechazos', run: (s, p, r) => { const n = s.rbin; for (let i = 0; i < n; i++) (s.pend || (s.pend = [])).push({ ty: Math.floor(r() * 3), d: Math.floor(r() * p.nd) }); s.q += n; s.rbin = 0; } }] };
+    if (kind === 'ind' || kind === 'exc' || kind === 'floor') return { title: kind === 'exc' ? 'Operario de excepciones' : kind === 'floor' ? 'Bultos en piso (sin clasificar)' : 'Operario de inducción', sub: hoy ? 'Clasificación manual' : `Induce con hueco mínimo de ${p.gapm} m`,
+      fis: [['Cola', s.q, 'bultos', Math.min(1, s.q / 60)], ['Llegada', (p.rate * (s.surge ? 2 : 1)).toFixed(0), 'bultos/h']], ctl: [['Alarma de cola', s.qAl ? 'ACTIVA' : 'normal', '', null, s.qAl ? '#ef5350' : undefined], ['Ola de pedidos', s.surge ? 'SÍ' : 'no', '']],
+      actions: [{ label: s.surge ? 'Terminar ola' : 'Provocar ola ×2', run: (s) => { s.surge = !s.surge; } }] };
+    if (kind === 'man') { const m = s.man[k]; return { title: `Clasificador manual P${k + 1}`, sub: '≈ 250 bultos/h por persona',
+      fis: [['Bultos llevados', m.n, ''], ['Ritmo promedio', ((3600 * m.n) / Math.max(s.t, 1)).toFixed(0), 'bultos/h'], ['Restante del viaje', m.it ? m.rem.toFixed(1) : '—', 's']],
+      ctl: [['Estado', m.off ? 'EN PAUSA' : m.it ? 'LLEVANDO' : 'LIBRE', '', null, m.off ? '#ef5350' : m.it ? '#3ecf8e' : undefined]],
+      actions: [{ label: m.off ? 'Reincorporar' : 'Enviar a pausa', run: (s) => { s.man[k].off = !s.man[k].off; } }] }; }
   },
   kpis(s, p) {
     const hrs = Math.max(s.t, 1) / 3600, need = Math.ceil(p.rate / 250), sav = (need - 2) * p.sal, pay = (p.inv * 1000) / Math.max(sav, 1);

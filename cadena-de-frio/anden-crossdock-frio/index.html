@@ -2,47 +2,156 @@
 <html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <link rel="stylesheet" href="../../shared/style.css"></head>
 <body><div id="app"></div>
+<script src="../../shared/controls.js"></script>
 <script src="../../shared/sim.js"></script>
+<script src="../../shared/gfx.js"></script>
 <script>
 // Andén / cross-dock con frío: pallets que esperan expuestos entre camión y cámara. Unidad: minutos.
+// Pallet = 800 kg de producto (cp 3.5 kJ/kg·K) que se calienta hacia la T° del andén con τ = 120 min.
+// Andén frío: UA = 1.2 kW/K contra el exterior + calor que absorben los pallets; COP 2.8. Montacargas 0.03 kWh por viaje.
+const MP = 800, CPP = 3.5, UA = 1.2, COPD = 2.8, EFK = 0.03, RULE = ['FIFO (orden de llegada)', 'Más caliente primero'];
 SL.app({
   title: 'Cadena de frío · Andén y cross-dock refrigerado',
-  desc: 'Cada camión llega con pallets que quedan expuestos al ambiente del andén hasta que un operario los mueve a cámara. La cola en andén es cadena de frío rota.',
+  desc: 'Cada camión llega con pallets que quedan expuestos al ambiente del andén hasta que un operario los mueve a cámara. La cola en andén es cadena de frío rota. Clic en pallets, montacargas, camión o cámara.',
   pitch: '"La cadena de frío se rompe en los 15 metros entre el camión y la cámara."',
   obj: '"Un andén refrigerado es muy caro." → Compara reclamos y pallets rechazados contra el costo de mercadería dañada.',
   unit: 'min', dt: 0.1, sample: 5, speeds: [1, 10, 60, 240],
   params: [
-    { id: 'mode', label: 'Escenario', opts: ['Hoy: andén ambiente + 2 montacargas', 'Propuesto: andén frío + rodillos'], value: 0 },
-    { id: 'np', label: 'Pallets por camión', min: 8, max: 40, step: 2, value: 20 },
+    { sec: 'Escenario', id: 'mode', label: 'Escenario', opts: ['Hoy: andén ambiente + 2 montacargas', 'Propuesto: andén frío + rodillos'], value: 0 },
+    { sec: 'Llegadas', id: 'np', label: 'Pallets por camión', min: 8, max: 40, step: 2, value: 20 },
     { id: 'gap', label: 'Un camión cada', min: 15, max: 90, step: 5, value: 35, unit: 'min' },
-    { id: 'tamb', label: 'Ambiente exterior', min: 15, max: 40, step: 1, value: 28, unit: '°C' },
+    { sec: 'Recursos y despacho', id: 'extra', label: 'Montacargas / operarios extra', min: 0, max: 3, step: 1, value: 0 },
+    { id: 'dist', label: 'Distancia andén → cámara', min: 5, max: 40, step: 5, value: 15, unit: 'm' },
+    { id: 'rule', label: 'Regla de despacho', opts: RULE, value: 0, reset: false },
+    { sec: 'Físicos y umbrales', id: 'tamb', label: 'Ambiente exterior', min: 15, max: 40, step: 1, value: 28, unit: '°C' },
     { id: 'lim', label: 'Umbral de pallet', min: 3, max: 8, step: 0.5, value: 5, unit: '°C' },
     { id: 'rej', label: 'Rechazo si supera', min: 6, max: 12, step: 0.5, value: 8, unit: '°C' },
   ],
-  init() { return { q: [], srv: [], sv: 0, n: 0, bad: 0, rej: 0, sumPk: 0, nextT: 0, expo: 0, hist: [] }; },
+  init(p) { return { q: [], srv: [], sv: 0, n: 0, bad: 0, rej: 0, sumPk: 0, nextT: 0, expo: 0, hist: [], seq: 0, trucks: 0, tdock: p.mode === 0 ? p.tamb - 4 : 8, qpal: 0, qref: 0, pel: 0, kwhD: 0, kwhF: 0, km: 0, sumW: 0, busyT: 0, capT: 0, fk: false, blk: false, alQ: false, lastRej: -1e9 }; },
   step(s, dt, p, r) {
-    const hoy = p.mode === 0, nsrv = hoy ? 2 : 1, svc = hoy ? 2.8 : 1.2, tdock = hoy ? p.tamb - 4 : 8, tau = 120;
-    if (s.t >= s.nextT) { for (let i = 0; i < p.np; i++) s.q.push({ T: 2, a: s.t, bad: 0 }); s.nextT += p.gap; }
-    const exp = (o) => { o.T += dt * (tdock - o.T) / tau; if (o.T > p.lim) o.bad += dt; };
+    const hoy = p.mode === 0, nsrv = (hoy ? 2 : 1) + p.extra, svc = (hoy ? 2.8 : 1.2) * (p.dist / 15), tgt = hoy || s.blk ? p.tamb - 4 : 8, tau = 120;
+    s.tdock += tgt === s.tdock ? 0 : (tgt - s.tdock) * Math.min(1, dt / 20); // el aire del andén responde con τ = 20 min
+    const tdock = s.tdock;
+    if (s.t >= s.nextT) { for (let i = 0; i < p.np; i++) s.q.push({ T: 2, a: s.t, bad: 0, id: s.seq++ }); s.nextT += p.gap; s.trucks++; }
+    let qp = 0;
+    const exp = (o) => { const d = (dt * (tdock - o.T)) / tau; o.T += d; qp += (d / dt) * MP * CPP / 60; if (o.T > p.lim) o.bad += dt; }; // qp en kW
     s.q.forEach(exp);
-    for (let i = 0; i < nsrv; i++) {
-      const k = s.srv[i] || (s.srv[i] = { o: null, rem: 0 });
-      if (k.o) { exp(k.o); if ((k.rem -= dt) <= 0) { const o = k.o; k.o = null; s.n++; s.sumPk += o.T; s.bad += o.bad; if (o.T > p.rej) s.rej++; s.hist.push(o.T); } }
-      if (!k.o && s.q.length) { k.o = s.q.shift(); k.rem = svc * (0.85 + 0.3 * r()); }
+    if (p.rule === 1) s.q.sort((a, b) => b.T - a.T);
+    for (let i = 0; i < Math.max(nsrv, s.srv.length); i++) {
+      const k = s.srv[i] || (s.srv[i] = { o: null, rem: 0, down: false, mv: 0 });
+      const dn = k.down || (i === 0 && s.fk);
+      if (k.o) { exp(k.o); if (!dn && (k.rem -= dt) <= 0) { const o = k.o; k.o = null; s.n++; k.mv++; s.sumPk += o.T; s.bad += o.bad; s.sumW += s.t - o.a; s.km += (2 * p.dist) / 1000; if (hoy) s.kwhF += EFK * p.dist / 15;
+        if (o.T > p.rej) { s.rej++; if (s.t - s.lastRej > 30) SL.log(s, `Rechazos: pallet ingresa a ${o.T.toFixed(1)} °C`, 'crit'); s.lastRej = s.t; } s.hist.push(o.T); } }
+      if (i < nsrv && !dn) { s.capT += dt; if (k.o) s.busyT += dt; }
+      if (!k.o && !dn && i < nsrv && s.q.length) { k.o = s.q.shift(); k.rem = svc * (0.85 + 0.3 * r()); }
     }
+    s.qpal = qp;
+    s.qref = hoy ? 0 : Math.max(0, UA * (p.tamb - tdock) + qp); // carga del equipo del andén frío
+    s.pel = s.qref / COPD + (!hoy && s.srv[0] && s.srv[0].o ? 0.75 : 0); // + motor de rodillos
+    s.kwhD += (s.pel * dt) / 60;
+    const aq = s.q.length > p.np; if (aq && !s.alQ) SL.log(s, `Cola en andén supera un camión (${s.q.length} pallets)`, 'warn'); else if (!aq && s.alQ) SL.log(s, 'Cola en andén normalizada', 'ok'); s.alQ = aq;
   },
   draw(g, s, p, W, H) {
-    const hoy = p.mode === 0, y = 200;
-    g.fillStyle = hoy ? '#3a3020' : '#1c3a4a'; g.fillRect(130, y - 70, 320, 140); SL.text(g, hoy ? 'ANDÉN AMBIENTE' : 'ANDÉN REFRIGERADO (8 °C)', 290, y - 78, hoy ? '#f5b942' : '#4fc3f7', '12px system-ui', 'center');
-    g.fillStyle = '#243040'; g.fillRect(20, y - 50, 100, 100); SL.text(g, 'Camión', 70, y + 4, '#e6edf3', '13px system-ui', 'center');
-    g.fillStyle = '#143a4a'; g.fillRect(560, y - 70, 210, 140); SL.text(g, 'CÁMARA ' + s.n, 665, y - 78, '#4fc3f7', '12px system-ui', 'center');
-    SL.belt(g, [[450, y], [560, y]], hoy ? 4 : 18, '#2a3646');
-    s.q.slice(0, 60).forEach((o, i) => { g.fillStyle = SL.color(1 - SL.clamp((o.T - 2) / (p.rej - 2), 0, 1)); g.fillRect(140 + (i % 12) * 26, y - 55 + Math.floor(i / 12) * 26, 20, 20); });
-    [0, 1].forEach((i) => { const k = s.srv[i]; if (hoy || i === 0) { g.fillStyle = k && k.o ? '#3ecf8e' : '#2a3646'; g.beginPath(); g.arc(480 + i * 30, y + 45, 10, 0, 7); g.fill(); } });
-    SL.text(g, 'Cola en andén: ' + s.q.length + ' pallets', 140, y + 100, s.q.length > 10 ? '#ef5350' : '#8b9bb0', '14px system-ui');
-    SL.text(g, 'Color = temperatura del pallet (verde frío → rojo caliente)', 140, y + 120);
+    const hoy = p.mode === 0, y = 190, fy = y + 84, nsrv = (hoy ? 2 : 1) + p.extra;
+    SL.van(g, 104, fy, { s: 1.5, dir: -1, open: true, reefer: true, body: '#e8eef5', cab: '#1f6f8b' }); SL.hot('truck', 20, fy - 56, 120, 58);
+    g.fillStyle = hoy || s.blk ? 'rgba(245,185,66,.06)' : 'rgba(79,195,247,.08)'; g.fillRect(132, y - 90, 330, 176);
+    g.strokeStyle = hoy || s.blk ? 'rgba(245,185,66,.5)' : 'rgba(79,195,247,.6)'; g.setLineDash([6, 4]); g.strokeRect(132.5, y - 89.5, 329, 175); g.setLineDash([]);
+    SL.hot('dock', 132, y - 90, 330, 176);
+    SL.tag(g, hoy ? `ANDÉN AMBIENTE ${s.tdock.toFixed(0)} °C` : s.blk ? `ANDÉN SIN FRÍO ${s.tdock.toFixed(1)} °C` : `ANDÉN REFRIGERADO ${s.tdock.toFixed(1)} °C`, 297, y - 102, hoy || s.blk ? SL.STATE.warn : SL.STATE.info);
+    const col = (T) => SL.color(1 - SL.clamp((T - 2) / (p.rej - 2), 0, 1));
+    const pallet = (x, yy, T, w = 32) => { SL.pallet(g, x, yy + 26, w); for (let r = 0; r < 2; r++) for (let k = 0; k < 2; k++) SL.carton(g, x + 1 + k * (w / 2 - 0.5), yy + 2 + r * 12, w / 2 - 1, 12, col(T)); };
+    s.q.slice(0, 24).forEach((o, i) => { const px = 142 + (i % 8) * 39, py = y - 70 + Math.floor(i / 8) * 50; pallet(px, py, o.T); SL.hot('pal:' + o.id, px, py, 34, 34); });
+    if (s.q.length > 24) SL.tag(g, `+${s.q.length - 24} pallets`, 420, y + 78, SL.STATE.down);
+    g.fillStyle = SL.vgrad(g, y - 90, 176, '#1d3a4f', '#122636'); g.fillRect(560, y - 90, 226, 176); g.strokeStyle = '#4fc3f7'; g.lineWidth = 1.5; g.strokeRect(560.5, y - 89.5, 225, 175);
+    SL.hot('cam', 560, y - 90, 226, 176);
+    SL.tag(g, `CÁMARA · ${s.n} pallets`, 673, y - 102, SL.STATE.info);
+    for (let i = 0; i < Math.min(s.n, 30); i++) pallet(570 + (i % 6) * 36, y + 42 - Math.floor(i / 6) * 32, 2, 30);
+    const dn = (i) => (s.srv[i] && s.srv[i].down) || (i === 0 && s.fk);
+    if (hoy) {
+      for (let i = 0; i < nsrv; i++) { const k = s.srv[i], busy = !!(k && k.o), f = busy ? SL.clamp(1 - k.rem / 3, 0, 1) : 0, yy = i < 2 ? fy - 30 + i * 30 : fy - 60 - (i - 2) * 30;
+        SL.forklift(g, 470 + f * 70, yy, { s: 1.1, load: busy ? col(k.o.T) : null }); SL.hot('srv:' + i, 450 + f * 70, yy - 32, 44, 34);
+        if (dn(i)) SL.tag(g, 'AVERÍA', 480 + f * 70, yy - 38, SL.STATE.down, '600 9px system-ui'); }
+    } else {
+      SL.belt(g, [[462, y], [560, y]], 20);
+      const k = s.srv[0]; if (k && k.o) pallet(470 + SL.clamp(1 - k.rem / 1.2, 0, 1) * 60, y - 34, k.o.T, 30);
+      for (let i = 0; i < nsrv; i++) { const kk = s.srv[i]; SL.person(g, 476 + i * 20, fy, { dir: 1, busy: !!(kk && kk.o) }); SL.hot('srv:' + i, 466 + i * 20, fy - 34, 20, 36); }
+      if (dn(0)) SL.tag(g, 'RODILLOS DETENIDOS', 511, y - 22, SL.STATE.down, '600 9px system-ui');
+    }
+    SL.text(g, `Cola en andén: ${s.q.length} pallets · color de caja = temperatura del pallet`, 140, y + 108, s.q.length > 10 ? '#ef5350' : '#8b9bb0', '12px system-ui');
     const bins = [0, 0, 0, 0, 0, 0]; s.hist.forEach((T) => { bins[SL.clamp(Math.floor(T - 2), 0, 5)]++; });
-    const mx = Math.max(1, ...bins); bins.forEach((v, i) => { g.fillStyle = SL.color(1 - i / 5); g.fillRect(180 + i * 60, 420 - (v / mx) * 60, 44, (v / mx) * 60); SL.text(g, (2 + i) + '°', 202 + i * 60, 436, '#8b9bb0', '11px system-ui', 'center'); });
+    const mx = Math.max(1, ...bins);
+    bins.forEach((v, i) => { const h = (v / mx) * 58; SL.rr(g, 180 + i * 60, 420 - h, 44, Math.max(h, 1), 3); g.fillStyle = SL.color(1 - i / 5); g.fill(); SL.text(g, 2 + i + '°', 202 + i * 60, 436, '#8b9bb0', '11px system-ui', 'center'); });
+    SL.hot('hist', 176, 356, 360, 84);
+    SL.text(g, 'Temperatura de ingreso a cámara', 560, 420, '#8b9bb0', '11px system-ui');
+    SL.text(g, `Próx. camión ${Math.max(0, s.nextT - (s.t || 0)).toFixed(0)} min · ${p.rule ? 'caliente 1º' : 'FIFO'}`, 560, 384, '#8b9bb0', '11px system-ui');
+  },
+  vars(s, p) {
+    const hoy = p.mode === 0, nq = s.q.length, mT = nq ? s.q.reduce((a, o) => a + o.T, 0) / nq : 0, xT = nq ? Math.max(...s.q.map((o) => o.T)) : 0;
+    const hrs = Math.max(s.t, 1) / 60, util = s.capT ? s.busyT / s.capT : 0, nsrv = (hoy ? 2 : 1) + p.extra, act = [...Array(nsrv).keys()].filter((i) => !((s.srv[i] && s.srv[i].down) || (i === 0 && s.fk))).length;
+    return {
+      fis: [
+        ['T° aire del andén', s.tdock.toFixed(1), '°C', null, s.tdock > p.lim ? '#f5b942' : '#4fc3f7'],
+        ['T° ambiente exterior', p.tamb, '°C'],
+        ['Pallets expuestos en andén', nq, 'pallets', Math.min(1, nq / 40), nq > 10 ? '#ef5350' : undefined],
+        ['T° media cola', nq ? mT.toFixed(2) : '—', '°C'],
+        ['T° máx. cola', nq ? xT.toFixed(2) : '—', '°C', null, xT > p.rej ? '#ef5350' : xT > p.lim ? '#f5b942' : undefined],
+        ['Calor absorbido por la cola', s.qpal.toFixed(2), 'kW'],
+        ['Producto expuesto', ((nq * MP) / 1000).toFixed(1), 't'],
+        ['Carga térmica andén frío', hoy ? '— (sin frío)' : s.qref.toFixed(1), hoy ? '' : 'kW'],
+        ['Potencia eléctrica andén', s.pel.toFixed(2), 'kW'],
+        ['Energía andén frío', s.kwhD.toFixed(1), 'kWh'],
+        ['Energía montacargas', s.kwhF.toFixed(2), 'kWh'],
+        ['Recorrido de traslado', s.km.toFixed(2), 'km'],
+        ['Throughput a cámara', (s.n / hrs).toFixed(0), 'pallets/h'],
+        ['Estancia media en andén', s.n ? (s.sumW / s.n).toFixed(1) : '—', 'min'],
+      ],
+      ctl: [
+        ['Escenario', hoy ? 'Hoy (ambiente)' : 'Propuesto (frío)', ''],
+        ['Regla de despacho', RULE[p.rule], ''],
+        ['Recursos activos', `${act} / ${nsrv}`, '', act / nsrv, act < nsrv ? '#ef5350' : '#3ecf8e'],
+        ['Utilización de recursos', (100 * util).toFixed(0), '%', util],
+        ['Tiempo de servicio', ((hoy ? 2.8 : 1.2) * p.dist / 15).toFixed(2), 'min/pallet'],
+        ['Capacidad teórica', ((60 * act) / ((hoy ? 2.8 : 1.2) * p.dist / 15)).toFixed(0), 'pallets/h'],
+        ['Demanda de llegada', ((60 * p.np) / p.gap).toFixed(0), 'pallets/h'],
+        ['Espera del pallet más antiguo', nq ? (s.t - Math.min(...s.q.map((o) => o.a))).toFixed(0) : '0', 'min'],
+        ['Pallets en cola > umbral', s.q.filter((o) => o.T > p.lim).length, '', null, s.q.some((o) => o.T > p.lim) ? '#f5b942' : undefined],
+        ['Umbral / rechazo', `${p.lim} / ${p.rej}`, '°C'],
+        ['Rechazados', s.rej, 'pallets', null, s.rej ? '#ef5350' : undefined],
+        ['Alarma cola > 1 camión', s.alQ ? 'ACTIVA' : 'normal', '', null, s.alQ ? '#f5b942' : undefined],
+        ['Próximo camión', Math.max(0, s.nextT - s.t).toFixed(0), 'min'],
+        ['Frío del andén', hoy ? 'no instalado' : s.blk ? 'CORTE' : 'en servicio', '', null, s.blk && !hoy ? '#ef5350' : undefined],
+      ],
+    };
+  },
+  actions: [
+    { label: 'Dos camiones juntos', hint: 'Llega un camión extra ahora', kind: 'warn', run: (s, p) => { for (let i = 0; i < p.np; i++) s.q.push({ T: 2, a: s.t, bad: 0, id: s.seq++ }); s.trucks++; } },
+    { label: 'Avería montacargas / rodillos', kind: 'crit', on: (s) => s.fk, run: (s) => { s.fk = !s.fk; SL.log(s, s.fk ? 'Recurso 1 averiado (montacargas / rodillos)' : 'Recurso 1 reparado', s.fk ? 'crit' : 'ok'); } },
+    { label: 'Corte de frío en andén', hint: 'Solo afecta al escenario propuesto', kind: 'crit', on: (s) => s.blk, run: (s) => { s.blk = !s.blk; SL.log(s, s.blk ? 'Corte del equipo de frío del andén' : 'Frío del andén restablecido', s.blk ? 'crit' : 'ok'); } },
+    { label: 'Sumar operario', run: (s, p, r, api) => api.set('extra', Math.min(3, p.extra + 1)) },
+    { label: 'Quitar operario', run: (s, p, r, api) => api.set('extra', Math.max(0, p.extra - 1)) },
+    { label: 'Priorizar calientes', on: (s, p) => p.rule === 1, run: (s, p, r, api) => { api.set('rule', p.rule ? 0 : 1); SL.log(s, p.rule ? 'Despacho: más caliente primero' : 'Despacho: FIFO', 'info'); } },
+  ],
+  inspect(s, p, id) {
+    const hoy = p.mode === 0, v = () => this.vars(s, p);
+    if (id.startsWith('pal:')) { const pid = +id.split(':')[1], qi = s.q.findIndex((o) => o.id === pid), sv = s.srv.find((k) => k.o && k.o.id === pid), o = qi >= 0 ? s.q[qi] : sv && sv.o;
+      if (!o) return { title: `Pallet #${pid + 1}`, sub: 'Ya ingresó a cámara', fis: [], ctl: [] };
+      return { title: `Pallet #${pid + 1}`, sub: `${MP} kg · se calienta hacia ${s.tdock.toFixed(1)} °C con τ = 120 min`,
+        fis: [['T° producto', o.T.toFixed(2), '°C', SL.clamp((o.T - 2) / (p.rej - 2), 0, 1), o.T > p.rej ? '#ef5350' : o.T > p.lim ? '#f5b942' : '#3ecf8e'], ['Tasa de calentamiento', (60 * (s.tdock - o.T) / 120).toFixed(2), '°C/h'], ['Calor absorbido', (MP * CPP * (o.T - 2) / 1000).toFixed(0), 'MJ'], ['Tiempo en andén', (s.t - o.a).toFixed(0), 'min'], ['Min sobre umbral', o.bad.toFixed(0), 'min']],
+        ctl: [['Estado', sv ? 'EN TRASLADO' : 'EN COLA', ''], ['Posición en cola', qi >= 0 ? qi + 1 : '—', ''], ['Llega a rechazo en', o.T < p.rej && s.tdock > p.rej ? (-120 * Math.log((s.tdock - p.rej) / (s.tdock - o.T))).toFixed(0) : o.T >= p.rej ? 'YA' : 'nunca', o.T < p.rej && s.tdock > p.rej ? 'min' : '']],
+        actions: qi > 0 ? [{ label: 'Priorizar', run: (s) => { const j = s.q.findIndex((x) => x.id === pid); if (j > 0) s.q.unshift(s.q.splice(j, 1)[0]); } }] : [] }; }
+    if (id.startsWith('srv:')) { const i = +id.split(':')[1], k = s.srv[i] || { o: null, rem: 0, down: false, mv: 0 }, dn = k.down || (i === 0 && s.fk);
+      return { title: hoy ? `Montacargas ${i + 1}` : `Operario ${i + 1} · línea de rodillos`, sub: `Traslado de ${p.dist} m · ${((hoy ? 2.8 : 1.2) * p.dist / 15).toFixed(1)} min/pallet`,
+        fis: [['Pallets movidos', k.mv, ''], ['Recorrido', ((k.mv * 2 * p.dist) / 1000).toFixed(2), 'km'], hoy ? ['Energía batería', (k.mv * EFK * p.dist / 15).toFixed(2), 'kWh'] : ['Velocidad de rodillos', (p.dist / (1.2 * p.dist / 15 * 60)).toFixed(2), 'm/s'], ['Carga', k.o ? `pallet #${k.o.id + 1} · ${k.o.T.toFixed(1)} °C` : 'vacío', '']],
+        ctl: [['Estado', dn ? 'AVERÍA' : k.o ? 'TRASLADANDO' : 'LIBRE', '', null, dn ? '#ef5350' : k.o ? '#3ecf8e' : '#8b9bb0'], ['Resta', k.o ? Math.max(0, k.rem).toFixed(1) : '—', 'min']],
+        actions: [{ label: dn ? 'Reparar' : 'Forzar avería', run: (s) => { const kk = s.srv[i] || (s.srv[i] = { o: null, rem: 0, down: false, mv: 0 }); if (i === 0 && s.fk) s.fk = false; else kk.down = !kk.down; } }] }; }
+    if (id === 'truck') return { title: 'Camión refrigerado en descarga', sub: `${p.np} pallets cada ${p.gap} min`, fis: [['Camiones recibidos', s.trucks, ''], ['Pallets recibidos', s.seq, '']], ctl: [['Próximo camión', Math.max(0, s.nextT - s.t).toFixed(0), 'min'], ['Demanda', ((60 * p.np) / p.gap).toFixed(0), 'pallets/h']],
+      actions: [{ label: 'Adelantar camión', run: (s) => { s.nextT = s.t; } }] };
+    if (id === 'dock') return { title: hoy ? 'Andén ambiente' : 'Andén refrigerado', sub: hoy ? 'Sin frío: el aire del andén sigue al exterior (−4 °C)' : `UA ${UA} kW/K · COP ${COPD}`, fis: v().fis.slice(0, 10), ctl: v().ctl.slice(7, 12),
+      actions: hoy ? [] : [{ label: s.blk ? 'Restablecer frío' : 'Cortar frío', run: (s) => { s.blk = !s.blk; } }] };
+    if (id === 'cam') return { title: 'Cámara de conservación', sub: 'Pallets ingresados y su temperatura de ingreso',
+      fis: [['Pallets en cámara', s.n, ''], ['T° media de ingreso', (s.sumPk / Math.max(s.n, 1)).toFixed(2), '°C'], ['Producto', ((s.n * MP) / 1000).toFixed(1), 't'], ['Calor a extraer (ingreso − 2 °C)', ((MP * CPP * (s.sumPk - 2 * s.n)) / 3600 / 1000).toFixed(2), 'MWh']],
+      ctl: [['Rechazados', s.rej, ''], ['% rechazo', ((100 * s.rej) / Math.max(s.n, 1)).toFixed(1), '%']] };
+    if (id === 'hist') return { title: 'Histograma de T° de ingreso', sub: 'Pallets por grado de temperatura al entrar a cámara', fis: [['Pallets medidos', s.hist.length, ''], ['T° media', (s.sumPk / Math.max(s.n, 1)).toFixed(2), '°C']], ctl: [['Umbral', p.lim, '°C'], ['Rechazo', p.rej, '°C']] };
   },
   kpis(s, p) {
     const hrs = Math.max(s.t, 1) / 60;
@@ -52,9 +161,10 @@ SL.app({
       { label: 'Minutos pallet sobre umbral', value: s.bad.toFixed(0) + ' min' },
       { label: 'Pallets rechazados', value: s.rej + ' (' + ((100 * s.rej) / Math.max(s.n, 1)).toFixed(0) + ' %)' },
       { label: 'Cola en andén', value: s.q.length },
-      { label: 'Personas en andén', value: p.mode === 0 ? 2 : 1 },
+      { label: 'Personas en andén', value: (p.mode === 0 ? 2 : 1) + p.extra },
+      { label: 'Energía andén + montacargas', value: (s.kwhD + s.kwhF).toFixed(1) + ' kWh' },
     ];
   },
-  series: (s) => ({ 'Cola andén': s.q.length, 'Rechazados': s.rej, 'Min sobre umbral': s.bad }),
+  series: (s) => ({ 'Cola andén': s.q.length, 'Rechazados': s.rej, 'Min sobre umbral': s.bad, 'T° andén': s.tdock }),
 });
 </script></body></html>

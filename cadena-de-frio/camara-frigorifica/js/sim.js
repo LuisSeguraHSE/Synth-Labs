@@ -4,7 +4,7 @@ import { DEFAULTS, SCENARIOS, INSULATION, PID_PRESETS, PRODUCTS, GRID } from './
 import { buildRoom, stepThermal, avgT, returnT, doorMassFlow, wFromRH, rhFromW, dewPoint } from './thermal.js';
 import { airflow, evaporator, updateEvapState, accumulateEnergy } from './refrigeration.js';
 import { updateControl, resetControl } from './control.js';
-import { log, schedule, processQueue, setDoor, updateDoor, setFail, startIngress, updateIngress, placeStock, updateRecovery, updatePulldown, freeSlots } from './events.js';
+import { log, schedule, startDisturbance, processQueue, setDoor, updateDoor, setFail, startIngress, updateIngress, placeStock, updateRecovery, updatePulldown, freeSlots } from './events.js';
 import { updateAlarms, excursionCount } from './alarms.js';
 
 const SAMPLE = 30;      // s entre muestras del historial
@@ -42,7 +42,8 @@ export function createSim(opts = {}) {
     pallets: [], nextId: 1, batches: [], queue: [], log: [], ingress: null, forklift: null,
     door: { cmd: false, frac: 0, openedAt: null, mInf: 0, Q: 0, loadJ: 0, elecJ: 0, lastDur: 0, totalOpen: 0, count: 0 },
     evap: { frost: 0, defrostLeft: 0, nextDefrost: p.defrostEvery * 3600, count: 0 },
-    ctrl: { on: false, u: 0, uCmd: 0, I: 0, dF: 0, prevT: null, lastSwitch: -1e4, starts: 0 },
+    ctrl: { on: false, u: 0, uCmd: 0, I: 0, dF: 0, prevT: null, lastSwitch: -1e4, starts: 0, spEff: null, e: 0, P: 0, Iterm: 0, D: 0, raw: 0, sat: false, since: 0, lockLeft: 0, why: '' },
+    cut: false, cutUntil: -1,
     air: { fanCmd: 0, fanFrac: 0, Vdot: 0, mdot: 0, col: new Array(R.ny).fill(0), vRatio: new Array(R.ny).fill(0) },
     evapOut: { Q: 0, Qs: 0, Qlat: 0, Qcomp: 0, Qair: 0, avail: 0, airLimited: false, Tevap: p.sp, Tsup: p.sp, eps: 0, mCond: 0, cop: 3, TD: 3 },
     elec: { comp: 0, fan: 0, defrost: 0, lights: 0, total: 0 },
@@ -100,7 +101,7 @@ export function createSim(opts = {}) {
   function sample() {
     const L = st.loads, total = Math.max(0, L.product) + Math.max(0, L.door) + L.doorLat + Math.max(0, L.walls) + L.lights + L.fans + L.other;
     st.hist.push({
-      t: st.t, Ta: st.kpi.Tavg, Tr: st.kpi.Tret, Ts: st.kpi.Ts, Tc: st.kpi.Tc, sp: p.sp, lim: p.sp + p.alarmOffset,
+      t: st.t, Ta: st.kpi.Tavg, Tr: st.kpi.Tret, Ts: st.kpi.Ts, Tc: st.kpi.Tc, sp: st.ctrl.spEff ?? p.sp, lim: p.sp + p.alarmOffset,
       load: total / 1000, cool: st.evapOut.Q / 1000, elec: st.elec.total / 1000, u: st.ctrl.u, rh: st.kpi.rh,
       s: st.sensors.map((x) => [x.T, x.rh]),
     });
@@ -109,6 +110,9 @@ export function createSim(opts = {}) {
 
   function step(dt = 1) {
     st.t += dt;
+    const cut = st.t < st.cutUntil;
+    if (st.cut && !cut) log(st, 'fail', 'Energía restablecida', 'info');
+    st.cut = cut;
     processQueue(st, p, R);
     updateDoor(st, dt);
     updateIngress(st, p, R);
@@ -163,6 +167,8 @@ export function createSim(opts = {}) {
     door(open) { setDoor(st, open, 'usuario'); },
     ingress(spec) { return startIngress(st, p, R, spec); },
     freeSlots: () => freeSlots(st),
+    powerCut(min) { st.cutUntil = st.t + min * 60; st.cut = true; log(st, 'fail', `Corte de energía (${min} min): compresor, ventiladores y luces detenidos`, 'crit'); startDisturbance(st, 'Corte de energía'); schedule(st, { t: st.cutUntil + 1, type: 'endDist' }); },
+    doorPulse(sec) { setDoor(st, true, 'pulso'); schedule(st, { t: st.t + sec, type: 'door', open: false }); },
     defrostNow() { if (st.evap.defrostLeft <= 0) { st.evap.nextDefrost = st.t; } },
   };
   return api;

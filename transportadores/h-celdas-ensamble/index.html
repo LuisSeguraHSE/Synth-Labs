@@ -2,78 +2,184 @@
 <html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <link rel="stylesheet" href="../../shared/style.css"></head>
 <body><div id="app"></div>
+<script src="../../shared/controls.js"></script>
 <script src="../../shared/sim.js"></script>
+<script src="../../shared/gfx.js"></script>
 <script>
 // Celdas de ensamble: corte → costura/canto → armado → QC. Unidad: minutos.
-const CN = ['Corte', 'Costura/canto', 'Armado', 'QC'];
+// Física: potencia por celda (marcha / setup / espera), energía; traslado manual de lotes (kg y metros caminados) vs tramo corto FIFO.
+const CN = ['Corte', 'Costura/canto', 'Armado', 'QC'], PW = [5.5, 0.75, 2.2, 0.4], PB = 0.37, DM = 8, AP = 0.6; // kW celda, kW tramo, m entre celdas, m²/pza en piso
+const mkOrd = (s, p, u) => { s.id++; s.ords.push({ id: s.id, q: p.q, u, t0: s.t, av: [p.q, 0, 0, 0], pr: [0, 0, 0, 0] }); };
+const wipP = (s) => s.ords.reduce((a, o) => a + (o.q - o.pr[3]), 0);
+const tOf = (s, p, i) => [p.t0, p.t1, p.t2, p.t3][i] * (s.cells[i].slow ? 1.6 : 1) * (s.cells[i].help ? 0.65 : 1);
+const waitAt = (s, i) => s.ords.reduce((a, o) => a + (o.av[i] - o.pr[i] - (s.cells[i].o === o && s.cells[i].rem > 0 ? 1 : 0)), 0);
+const cSt = (c) => (c.down ? 'FALLA' : !c.o ? 'Libre' : c.setup > 0 ? 'Setup' : c.rem > 0 ? 'Produciendo' : 'Espera pieza/tope');
 SL.app({
   title: 'Demo H · Celdas de ensamble (poca banda)',
-  desc: 'Textil y mueble: el valor es el flujo, no el motor. "Hoy" los lotes se mueven completos y el WIP queda en el piso. "Propuesto": tramo corto FIFO pieza a pieza con tope visible. Una orden urgente salta la cola y se ve su costo.',
+  desc: 'Textil y mueble: el valor es el flujo, no el motor. "Hoy" los lotes se mueven completos y el WIP queda en el piso. "Propuesto": tramo corto FIFO pieza a pieza con tope visible. Una orden urgente salta la cola y se ve su costo. Clic en celdas, buffers y órdenes.',
   pitch: '"No le vendemos un almacén automático. Le hacemos visible dónde se esconde el pedido del cliente."',
   obj: '"Es muy poco para automatizar." → Cierre: estudio de layout (software) + 1 tramo de 4–8 m si el WIP está entre dos máquinas concretas.',
   unit: 'min', dt: 0.1, sample: 10, speeds: [1, 10, 60, 240],
   params: [
-    { id: 'mode', label: 'Escenario', opts: ['Hoy: lotes completos al piso', 'Propuesto: FIFO pieza a pieza'], value: 0 },
+    { sec: 'Escenario y demanda', id: 'mode', label: 'Escenario', opts: ['Hoy: lotes completos al piso', 'Propuesto: FIFO pieza a pieza'], value: 0 },
     { id: 'q', label: 'Piezas por orden', min: 4, max: 12, step: 1, value: 6 },
     { id: 'arr', label: 'Llega una orden cada', min: 14, max: 40, step: 1, value: 30, unit: 'min' },
     { id: 'urg', label: 'Orden urgente cada (0 = ninguna)', min: 0, max: 180, step: 30, value: 90, unit: 'min' },
+    { sec: 'Control', id: 'rule', label: 'Regla de despacho', opts: ['Urgente primero, luego FIFO', 'FIFO estricto'], value: 0 },
     { id: 'due', label: 'Plazo prometido', min: 60, max: 360, step: 10, value: 150, unit: 'min' },
     { id: 'buf', label: 'Tope entre celdas (propuesto)', min: 1, max: 6, step: 1, value: 3, unit: 'pzas' },
-    { id: 't0', label: 'Tiempo Corte', min: 1, max: 5, step: 0.2, value: 2, unit: 'min/pza' },
+    { id: 'su', label: 'Tiempo de setup por orden', min: 0, max: 10, step: 0.5, value: 3, unit: 'min' },
+    { sec: 'Proceso', id: 't0', label: 'Tiempo Corte', min: 1, max: 5, step: 0.2, value: 2, unit: 'min/pza' },
     { id: 't1', label: 'Tiempo Costura/canto', min: 1, max: 5, step: 0.2, value: 3.2, unit: 'min/pza' },
     { id: 't2', label: 'Tiempo Armado', min: 1, max: 5, step: 0.2, value: 2.6, unit: 'min/pza' },
     { id: 't3', label: 'Tiempo QC', min: 0.5, max: 4, step: 0.1, value: 1.4, unit: 'min/pza' },
+    { id: 'kg', label: 'Peso por pieza', min: 1, max: 25, step: 1, value: 8, unit: 'kg' },
   ],
-  init() { return { ords: [], cells: CN.map(() => ({ o: null, rem: 0, setup: 0, busy: 0 })), nextA: 0, nextU: null, id: 0, ot: 0, n: 0, ln: 0, lu: 0, nu: 0, ls: 0, lost: 0, cnt: 0 }; },
+  init() { return { ords: [], cells: CN.map(() => ({ o: null, rem: 0, setup: 0, busy: 0, st: 0, dn: 0, n: 0, kw: 0, down: false, slow: false, help: false })), nextA: 0, nextU: null, id: 0, ot: 0, n: 0, ln: 0, lu: 0, nu: 0, ls: 0, lost: 0, cnt: 0, pcs: 0, kw: 0, kwh: 0, walk: 0, kgMan: 0, bad: 0, late: 0, lateT: -1e9, wAl: false }; },
   step(s, dt, p, r) {
-    const hoy = p.mode === 0, T = [p.t0, p.t1, p.t2, p.t3];
+    const hoy = p.mode === 0;
     if (s.nextU === null) s.nextU = p.urg ? p.urg : 1e9;
-    const mk = (u) => { s.id++; const o = { id: s.id, q: p.q, u, t0: s.t, av: [p.q, 0, 0, 0], pr: [0, 0, 0, 0] }; s.ords.push(o); };
-    if (s.t >= s.nextA) { mk(false); s.nextA += p.arr; }
-    if (p.urg && s.t >= s.nextU) { mk(true); s.nextU += p.urg; }
+    if (s.t >= s.nextA) { mkOrd(s, p, false); s.nextA += p.arr; }
+    if (p.urg && s.t >= s.nextU) { mkOrd(s, p, true); s.nextU += p.urg; }
+    if (s.bad > 0) s.bad -= dt;
+    s.kw = hoy ? 0 : 3 * PB;
     CN.forEach((_, i) => {
       const c = s.cells[i];
+      c.kw = c.down ? 0 : c.setup > 0 ? 0.3 * PW[i] : c.rem > 0 ? PW[i] : 0.15 * PW[i]; s.kw += c.kw;
+      if (c.down) { c.dn += dt; return; }
       if (!c.o) {
         const cand = s.ords.filter((o) => o.pr[i] < o.q && o.av[i] - o.pr[i] > 0);
-        cand.sort((a, b) => (b.u - a.u) || a.t0 - b.t0);
-        if (cand.length) { c.o = cand[0]; c.setup = 3; }
+        cand.sort((a, b) => (p.rule ? 0 : b.u - a.u) || a.t0 - b.t0);
+        if (cand.length) { c.o = cand[0]; c.setup = p.su; }
       }
       const o = c.o; if (!o) return;
-      if (c.setup > 0) { c.setup -= dt; return; }
+      if (c.setup > 0) { c.setup -= dt; c.st += dt; return; }
       if (c.rem > 0) {
         c.busy += dt;
         if ((c.rem -= dt) <= 0) {
-          if (r() < (hoy ? 0.02 : 0.004)) { s.lost++; }
+          if (r() < (hoy ? 0.02 : 0.004) + (s.bad > 0 ? 0.15 : 0)) { s.lost++; }
           else {
-            o.pr[i]++;
-            if (i < 3) { if (hoy) { if (o.pr[i] === o.q) o.av[i + 1] = o.q; } else o.av[i + 1]++; }
+            o.pr[i]++; c.n++; if (i === 3) s.pcs++;
+            if (i < 3) { if (hoy) { if (o.pr[i] === o.q) { o.av[i + 1] = o.q; s.walk += 2 * DM; s.kgMan += o.q * p.kg; } } else o.av[i + 1]++; }
           }
           if (o.pr[i] >= o.q) {
             c.o = null;
-            if (i === 3) { const L = s.t - o.t0; s.n++; s.ln += L; if (L <= p.due) s.ot++; if (o.u) { s.nu++; s.lu += L; } else s.ls += L; s.ords = s.ords.filter((x) => x !== o); }
+            if (i === 3) {
+              const L = s.t - o.t0; s.n++; s.ln += L; if (L <= p.due) s.ot++; else { s.late++; if (s.t - s.lateT > 60) { s.lateT = s.t; SL.log(s, `Orden ${o.u ? 'URGENTE ' : ''}#${o.id} entregada tarde (${L.toFixed(0)} min > ${p.due})`, 'warn'); } }
+              if (o.u) { s.nu++; s.lu += L; } else s.ls += L; s.ords = s.ords.filter((x) => x !== o);
+            }
           }
         }
-      } else if (o.av[i] - o.pr[i] > 0 && (hoy || i === 3 || o.av[i + 1] - o.pr[i + 1] < p.buf)) c.rem = T[i] * (0.8 + 0.4 * r());
+      } else if (o.av[i] - o.pr[i] > 0 && (hoy || i === 3 || o.av[i + 1] - o.pr[i + 1] < p.buf)) c.rem = tOf(s, p, i) * (0.8 + 0.4 * r());
     });
+    s.kwh += (s.kw * dt) / 60;
+    const w = wipP(s);
+    if (!s.wAl && w > 60) { s.wAl = true; SL.log(s, `WIP alto: ${w} piezas en sistema`, 'warn'); } else if (s.wAl && w < 40) { s.wAl = false; SL.log(s, 'WIP normalizado', 'ok'); }
   },
   draw(g, s, p, W, H) {
-    const hoy = p.mode === 0;
+    const hoy = p.mode === 0, y = 96, fy = y + 150, T = Math.max(s.t, 1);
+    g.fillStyle = 'rgba(255,255,255,.05)'; g.fillRect(10, fy, 780, 2);
+    const bn = [0, 1, 2, 3].reduce((a, i) => (tOf(s, p, i) > tOf(s, p, a) ? i : a), 0), takt = p.arr / p.q;
+    SL.text(g, `Regla: ${p.rule ? 'FIFO estricto' : 'urgente primero'} · takt ${takt.toFixed(1)} min/pza · cuello ${CN[bn]} ${tOf(s, p, bn).toFixed(1)} min/pza · ${s.kw.toFixed(1)} kW`, 20, 24, tOf(s, p, bn) > takt ? '#f5b942' : '#8b9bb0', '12px system-ui');
+    if (s.bad > 0) SL.tag(g, `LOTE DEFECTUOSO · ${s.bad.toFixed(0)} min`, 690, 20, SL.STATE.down);
     CN.forEach((n, i) => {
-      const x = 30 + i * 195, y = 90, c = s.cells[i];
-      g.fillStyle = !c.o ? '#2a3646' : c.setup > 0 ? '#f5b942' : c.rem > 0 ? '#3ecf8e' : '#ef5350'; g.fillRect(x, y, 120, 80);
-      SL.text(g, n, x + 60, y + 30, '#000', '14px system-ui', 'center');
-      SL.text(g, c.o ? (c.o.u ? 'URGENTE #' : 'Orden #') + c.o.id : 'libre', x + 60, y + 52, '#000', '12px system-ui', 'center');
-      SL.text(g, c.setup > 0 ? 'setup' : c.o && c.rem <= 0 ? 'esperando pieza/tope' : '', x + 60, y + 68, '#000', '11px system-ui', 'center');
-      const wait = s.ords.reduce((a, o) => a + (o.av[i] - o.pr[i] - (c.o === o && c.rem > 0 ? 1 : 0)), 0);
-      if (i < 3) for (let j = 0; j < Math.min(wait, 60); j++) { g.fillStyle = hoy ? '#ef5350' : '#4fc3f7'; g.fillRect(x + 125 + (j % 4) * 11, hoy ? y + 10 + Math.floor(j / 4) * 11 + (j % 3) * 4 : y + 10 + Math.floor(j / 4) * 11, 8, 8); }
-      if (i === 0) SL.text(g, 'Entrada: ' + wait + ' pzas', x + 60, y + 100, '#8b9bb0', '12px system-ui', 'center');
+      const x = 20 + i * 196, c = s.cells[i];
+      const state = c.down ? 'down' : !c.o ? 'idle' : c.setup > 0 ? 'setup' : c.rem > 0 ? 'run' : 'block';
+      SL.machine(g, x, y, 128, 86, { label: n, sub: c.down ? 'FALLA' : c.o ? `${c.o.u ? 'URGENTE' : 'Orden'} #${c.o.id}` : 'libre', state, fs: 12, tag: c.down ? 'FALLA' : c.setup > 0 ? 'setup' : c.o && c.rem <= 0 ? 'espera pieza/tope' : c.slow ? 'ausencia' : c.help ? 'apoyo' : null });
+      SL.hot('cell:' + i, x, y - 20, 128, 106);
+      if (c.o && c.o.u) { g.strokeStyle = '#ef5350'; g.lineWidth = 2; g.strokeRect(x - 3, y - 3, 134, 92); }
+      SL.person(g, x + 36, fy, { dir: 1, busy: c.rem > 0 && !c.down, shirt: c.slow ? '#4a5a6e' : undefined });
+      if (c.help) SL.person(g, x + 70, fy, { dir: -1, busy: c.rem > 0, shirt: '#2e7d5b' });
+      SL.text(g, `${c.kw.toFixed(1)} kW · ${((100 * c.busy) / T).toFixed(0)} %`, x + 64, fy + 16, c.down ? '#ef5350' : '#8b9bb0', '11px system-ui', 'center');
+      const wait = waitAt(s, i);
+      if (i === 0) SL.tag(g, `Entrada: ${wait} pzas`, x + 64, y - 34, SL.STATE.info);
+      if (i < 3) {
+        const nw = waitAt(s, i + 1);
+        SL.hot('buf:' + i, x + 130, y + 40, 64, 110);
+        if (hoy) {
+          const zx = x + 132, zw = 60;
+          g.fillStyle = 'rgba(239,83,80,.06)'; g.fillRect(zx, y + 98, zw, 50); g.strokeStyle = 'rgba(239,83,80,.45)'; g.setLineDash([4, 3]); g.strokeRect(zx + 0.5, y + 98.5, zw - 1, 49); g.setLineDash([]);
+          for (let j = 0; j < Math.min(nw, 40); j++) SL.carton(g, zx + 4 + (j % 5) * 11 + ((j * 5) % 3), fy - 12 - Math.floor(j / 5) * 8 + ((j * 3) % 2), 10, 8, '#b98a58');
+          if (nw > 40) SL.tag(g, `+${nw - 40}`, zx + zw / 2, y + 92, SL.STATE.down);
+        } else {
+          SL.belt(g, [[x + 128, y + 58], [x + 196, y + 58]], 12);
+          const m = p.buf, step = 64 / Math.max(m, 1);
+          for (let j = 0; j < m; j++) { const bx = x + 132 + j * step; if (j < nw) SL.carton(g, bx, y + 50, Math.min(step - 2, 12), 10, '#b98a58'); else { g.strokeStyle = 'rgba(139,155,176,.35)'; g.strokeRect(bx + 0.5, y + 50.5, Math.min(step - 2, 12) - 1, 9); } }
+          if (nw >= m) SL.led(g, x + 190, y + 40, 2.4, SL.STATE.warn);
+        }
+      }
     });
-    if (!hoy) for (let i = 0; i < 3; i++) SL.belt(g, [[150 + i * 195, 160], [225 + i * 195, 160]], 8);
-    SL.text(g, hoy ? 'WIP en el PISO entre celdas (rojo): lote completo espera al lote completo' : 'Tramo corto FIFO (azul): pieza a pieza, con tope de ' + p.buf, 30, 260, hoy ? '#ef5350' : '#3ecf8e', '13px system-ui');
-    SL.text(g, `Órdenes en sistema: ${s.ords.length} · urgentes: ${s.ords.filter((o) => o.u).length}`, 30, 290, '#e6edf3', '13px system-ui');
+    // Tablero de órdenes en sistema
+    SL.text(g, `Órdenes en sistema: ${s.ords.length} · urgentes: ${s.ords.filter((o) => o.u).length} · WIP ${wipP(s)} pzas`, 20, 300, s.wAl ? '#ef5350' : '#e6edf3', '600 13px system-ui');
+    s.ords.slice(0, 16).forEach((o, i) => {
+      const x = 20 + (i % 8) * 96, yy = 312 + Math.floor(i / 8) * 54, done = o.pr[3] / o.q, late = s.t - o.t0 > p.due;
+      SL.rr(g, x, yy, 88, 44, 5); g.fillStyle = '#121922'; g.fill(); g.strokeStyle = o.u ? '#ef5350' : late ? '#f5b942' : '#2e3e52'; g.lineWidth = 1.5; g.stroke();
+      SL.text(g, `${o.u ? '⚠ ' : ''}#${o.id}`, x + 8, yy + 16, o.u ? '#ef5350' : '#e6edf3', '600 11px system-ui');
+      SL.text(g, `${Math.round((s.t - o.t0))} min`, x + 80, yy + 16, late ? '#f5b942' : '#8b9bb0', '10px system-ui', 'right');
+      SL.gauge(g, x + 6, yy + 26, 76, 9, done, SL.STATE.run);
+      SL.hot('ord:' + o.id, x, yy, 88, 44);
+    });
+    SL.text(g, hoy ? 'WIP en el PISO: el lote completo espera al lote completo' : `Tramo corto FIFO: pieza a pieza, tope de ${p.buf}`, 20, H - 6, hoy ? '#ef5350' : '#3ecf8e', '12px system-ui');
+  },
+  vars(s, p) {
+    const hoy = p.mode === 0, T = Math.max(s.t, 1), w = wipP(s), th = (60 * s.pcs) / T, floorW = hoy ? [0, 1, 2].reduce((a, i) => a + waitAt(s, i + 1), 0) : 0;
+    const bn = [0, 1, 2, 3].reduce((a, i) => (tOf(s, p, i) > tOf(s, p, a) ? i : a), 0), takt = p.arr / p.q;
+    return {
+      fis: [
+        ['Throughput', th.toFixed(1), 'pzas/h', th / 30],
+        ['WIP en sistema', w, 'pzas', Math.min(1, w / 80), s.wAl ? '#ef5350' : undefined],
+        ['Lead time por Little (WIP/TH)', th > 0 ? ((w / th) * 60).toFixed(0) : '—', 'min'],
+        ['Área de piso con WIP', (floorW * AP).toFixed(1), 'm²'],
+        ['Masa en WIP', (w * p.kg).toFixed(0), 'kg'],
+        ['Masa trasladada a mano', (s.kgMan / 1000).toFixed(2), 't'],
+        ['Distancia caminada (lotes)', (s.walk / 1000).toFixed(2), 'km'],
+        ...CN.map((n, i) => [`Utilización ${n}`, ((100 * s.cells[i].busy) / T).toFixed(0), '%', s.cells[i].busy / T, s.cells[i].down ? '#ef5350' : undefined]),
+        ['Potencia total', s.kw.toFixed(2), 'kW', s.kw / 10, '#c98500'],
+        ['Energía', s.kwh.toFixed(2), 'kWh'],
+        ['Energía por pieza', s.pcs ? ((1000 * s.kwh) / s.pcs).toFixed(0) : '—', 'Wh/pza'],
+      ],
+      ctl: [
+        ['Regla de despacho', p.rule ? 'FIFO estricto' : 'Urgente primero + FIFO', ''],
+        ['Flujo', hoy ? 'Lote completo (push)' : `FIFO pieza a pieza, tope ${p.buf}`, ''],
+        ['Takt de demanda', takt.toFixed(2), 'min/pza'],
+        ['Cuello de botella', `${CN[bn]} ${tOf(s, p, bn).toFixed(1)}`, 'min/pza', null, tOf(s, p, bn) > takt ? '#ef5350' : '#3ecf8e'],
+        ['Setup por orden', p.su, 'min'],
+        ['Plazo prometido', p.due, 'min'],
+        ['Órdenes abiertas / urgentes', `${s.ords.length} / ${s.ords.filter((o) => o.u).length}`, ''],
+        ['Órdenes vencidas abiertas', s.ords.filter((o) => s.t - o.t0 > p.due).length, '', null, s.ords.some((o) => s.t - o.t0 > p.due) ? '#f5b942' : undefined],
+        ['OTIF', s.n ? ((100 * s.ot) / s.n).toFixed(0) : '—', '%', s.n ? s.ot / s.n : null],
+        ['Entregas tarde', s.late, ''],
+        ['Alarma WIP (>60)', s.wAl ? 'ACTIVA' : 'normal', '', null, s.wAl ? '#ef5350' : undefined],
+        ['Celdas en falla', s.cells.filter((c) => c.down).length, '', null, s.cells.some((c) => c.down) ? '#ef5350' : undefined],
+        ['Lote defectuoso', s.bad > 0 ? `${s.bad.toFixed(0)} min restantes` : 'no', '', null, s.bad > 0 ? '#ef5350' : undefined],
+      ],
+    };
+  },
+  actions: [
+    { label: 'Falla en Costura', kind: 'crit', on: (s) => s.cells[1].down, run: (s) => { const c = s.cells[1]; c.down = !c.down; SL.log(s, c.down ? 'Costura/canto en falla (máquina parada)' : 'Costura/canto reparada', c.down ? 'crit' : 'ok'); } },
+    { label: 'Pedido urgente ahora', kind: 'warn', run: (s, p) => mkOrd(s, p, true) },
+    { label: 'Ausencia en Armado', kind: 'warn', on: (s) => s.cells[2].slow, run: (s) => { const c = s.cells[2]; c.slow = !c.slow; SL.log(s, c.slow ? 'Ausencia en Armado: ciclo ×1.6' : 'Armado con dotación completa', c.slow ? 'warn' : 'ok'); } },
+    { label: 'Lote defectuoso (20 min)', kind: 'crit', run: (s) => { s.bad = 20; } },
+    { label: 'Polivalente a Costura', on: (s) => s.cells[1].help, run: (s) => { const c = s.cells[1]; c.help = !c.help; SL.log(s, c.help ? 'Operario polivalente apoya Costura (−35 % ciclo)' : 'Polivalente vuelve a su puesto', 'info'); } },
+    { label: 'Cambiar regla de despacho', run: (s, p, r, api) => api.set('rule', p.rule ? 0 : 1) },
+  ],
+  inspect(s, p, id) {
+    const [k, ix] = id.split(':'), i = +ix, T = Math.max(s.t, 1);
+    if (k === 'cell') { const c = s.cells[i]; return { title: `Celda ${i + 1} · ${CN[i]}`, sub: `Ciclo nominal ${[p.t0, p.t1, p.t2, p.t3][i]} min/pza · motor ${PW[i]} kW`,
+      fis: [['Ciclo efectivo', tOf(s, p, i).toFixed(2), 'min/pza'], ['Capacidad', (60 / tOf(s, p, i)).toFixed(1), 'pzas/h'], ['Piezas hechas', c.n, ''], ['Utilización', ((100 * c.busy) / T).toFixed(0), '%', c.busy / T], ['Tiempo en setup', c.st.toFixed(0), 'min'], ['Tiempo en falla', c.dn.toFixed(0), 'min'], ['Potencia', c.kw.toFixed(2), 'kW', c.kw / PW[i]]],
+      ctl: [['Estado', cSt(c), '', null, c.down ? '#ef5350' : c.rem > 0 ? '#3ecf8e' : undefined], ['Orden actual', c.o ? `${c.o.u ? 'URGENTE ' : ''}#${c.o.id} (${c.o.pr[i]}/${c.o.q})` : '—', ''], ['Piezas en espera', waitAt(s, i), ''], ['Dotación', c.slow ? 'AUSENCIA' : c.help ? '+ polivalente' : 'normal', '']],
+      actions: [{ label: c.down ? 'Reparar' : 'Forzar falla', run: (s) => { s.cells[i].down = !s.cells[i].down; } }, { label: c.help ? 'Retirar apoyo' : 'Asignar polivalente', run: (s) => { s.cells[i].help = !s.cells[i].help; } }, { label: c.slow ? 'Reintegrar operario' : 'Simular ausencia', run: (s) => { s.cells[i].slow = !s.cells[i].slow; } }] }; }
+    if (k === 'buf') { const nw = waitAt(s, i + 1); return { title: p.mode ? `Tramo FIFO ${CN[i]} → ${CN[i + 1]}` : `WIP en piso ${CN[i]} → ${CN[i + 1]}`, sub: p.mode ? `Banda ${PB} kW · tope ${p.buf} pzas (kanban)` : `Lote completo · traslado manual ${DM} m`,
+      fis: [['Piezas esperando', nw, ''], ['Masa', (nw * p.kg).toFixed(0), 'kg'], ['Área de piso', p.mode ? '0' : (nw * AP).toFixed(1), 'm²']],
+      ctl: [['Tope', p.mode ? p.buf : 'sin tope', 'pzas'], ['Bloquea aguas arriba', p.mode && nw >= p.buf ? 'SÍ' : 'no', '', null, p.mode && nw >= p.buf ? '#f5b942' : undefined]],
+      actions: p.mode ? [{ label: 'Tope +1', run: (s, p, r, api) => api.set('buf', Math.min(6, p.buf + 1)) }, { label: 'Tope −1', run: (s, p, r, api) => api.set('buf', Math.max(1, p.buf - 1)) }] : [] }; }
+    if (k === 'ord') { const o = s.ords.find((x) => x.id === i); if (!o) return null; const age = s.t - o.t0; return { title: `Orden ${o.u ? 'URGENTE ' : ''}#${o.id}`, sub: `${o.q} piezas · plazo ${p.due} min`,
+      fis: [['Edad', age.toFixed(0), 'min', age / p.due, age > p.due ? '#ef5350' : undefined], ...CN.map((n, j) => [`${n} hechas`, `${o.pr[j]}/${o.q}`, '', o.pr[j] / o.q])],
+      ctl: [['Prioridad', o.u ? 'URGENTE' : 'normal', '', null, o.u ? '#ef5350' : undefined], ['Holgura', (p.due - age).toFixed(0), 'min', null, age > p.due ? '#ef5350' : '#3ecf8e']],
+      actions: [{ label: o.u ? 'Quitar urgencia' : 'Priorizar (urgente)', run: (s) => { const x = s.ords.find((y) => y.id === i); if (x) x.u = !x.u; } }] }; }
   },
   kpis(s, p) {
-    const inSys = s.ords.reduce((a, o) => a + (o.q - o.pr[3]), 0);
+    const inSys = wipP(s);
     return [
       { label: 'Lead time promedio', value: s.n ? (s.ln / s.n).toFixed(0) + ' min' : '—' },
       { label: 'Lead time normal / urgente', value: (s.n - s.nu ? (s.ls / (s.n - s.nu)).toFixed(0) : '—') + ' / ' + (s.nu ? (s.lu / s.nu).toFixed(0) : '—') + ' min' },
@@ -83,6 +189,6 @@ SL.app({
       { label: 'Retrabajos por pieza perdida', value: s.lost },
     ];
   },
-  series: (s) => ({ 'WIP piezas': s.ords.reduce((a, o) => a + (o.q - o.pr[3]), 0), 'Lead time prom.': s.n ? s.ln / s.n : 0, 'Terminadas': s.n }),
+  series: (s) => ({ 'WIP piezas': wipP(s), 'Lead time prom.': s.n ? s.ln / s.n : 0, 'Terminadas': s.n }),
 });
 </script></body></html>

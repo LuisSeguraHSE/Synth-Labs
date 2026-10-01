@@ -2,50 +2,160 @@
 <html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <link rel="stylesheet" href="../../shared/style.css"></head>
 <body><div id="app"></div>
+<script src="../../shared/controls.js"></script>
 <script src="../../shared/sim.js"></script>
+<script src="../../shared/gfx.js"></script>
 <script>
 // Cola M/G/c de pedidos atendidos por pickers. Unidad: minutos. Incluye pico de demanda.
+// Tiempo de pedido = recorrido (55 %, depende de ruta y velocidad de marcha) + extracción de líneas. Erlang-C como referencia analítica.
+const TR = 0.55, V0 = 1.2, KG = 2.5, ROUTE = [1, 1.2, 0.9], ZN = ['A', 'B', 'C', 'D']; // fracción de recorrido, m/s nominal, kg/línea, factor de distancia
+const lamOf = (s, p) => { const hr = ((s.t || 0) / 60) % 16; return p.lam * (hr > 4 && hr < 7 ? p.peak : 1); }; // punta 12:00-15:00
+const dfac = (s, p) => (ROUTE[p.route] * (s.block ? 1.5 : 1)) / (p.vw / V0); // factor de recorrido
+const svcMean = (s, p) => p.svc * (1 - TR + TR * dfac(s, p));
+function erlang(s, p) { // M/M/c: P(esperar), Wq, P(W ≤ SLA) y dotación mínima para 90 %
+  const lam = lamOf(s, p), mu = 1 / svcMean(s, p), a = lam / mu, calc = (c) => {
+    if (c <= a) return { pw: 1, wq: Infinity, ok: 0 };
+    let sum = 0, term = 1; for (let k = 0; k < c; k++) { sum += term; term *= a / (k + 1); }
+    const last = (term * c) / (c - a), pw = last / (sum + last);
+    return { pw, wq: pw / (c * mu - lam), ok: 1 - pw * Math.exp(-(c * mu - lam) * p.sla) };
+  };
+  const c = s.pk.filter((k) => !(k.brk > 0)).length, e = calc(c); let rec = 1; while (rec < 60 && calc(rec).ok < 0.9) rec++;
+  return { ...e, rho: a / Math.max(c, 1), a, rec, c };
+}
 SL.app({
   title: 'Logística · Picking de almacén',
-  desc: 'Pedidos llegan (Poisson) y son preparados por N pickers. Busca el mínimo de personal que cumple el SLA, incluso en hora punta.',
+  desc: 'Pedidos llegan (Poisson) y son preparados por N pickers que recorren pasillos. Busca el mínimo de personal que cumple el SLA, incluso en hora punta; prueba reglas de cola, rutas, caídas del WMS y olas de pedidos. Clic en pickers, zonas y banda para inspeccionar.',
   unit: 'min', dt: 0.1, sample: 5,
   clock: (t) => `Hora: ${String(8 + Math.floor(t / 60) % 16).padStart(2, '0')}:${String(Math.floor(t % 60)).padStart(2, '0')}`,
   params: [
-    { id: 'n', label: 'Pickers', min: 1, max: 20, step: 1, value: 6 },
-    { id: 'lam', label: 'Llegada base', min: 0.2, max: 5, step: 0.1, value: 1.2, unit: 'ped/min' },
+    { sec: 'Demanda', id: 'lam', label: 'Llegada base', min: 0.2, max: 5, step: 0.1, value: 1.2, unit: 'ped/min' },
     { id: 'peak', label: 'Factor hora punta', min: 1, max: 3, step: 0.1, value: 1.8, unit: '×' },
+    { sec: 'Recursos y físicos', id: 'n', label: 'Pickers', min: 1, max: 20, step: 1, value: 6 },
     { id: 'svc', label: 'Tiempo de picking', min: 1, max: 15, step: 0.5, value: 4.5, unit: 'min' },
-    { id: 'sla', label: 'SLA (espera máx.)', min: 1, max: 30, step: 1, value: 10, unit: 'min' },
+    { id: 'vw', label: 'Velocidad de marcha', min: 0.6, max: 1.8, step: 0.1, value: 1.2, unit: 'm/s' },
+    { sec: 'Control', id: 'sla', label: 'SLA (espera máx.)', min: 1, max: 30, step: 1, value: 10, unit: 'min' },
+    { id: 'disc', label: 'Regla de cola', opts: ['FIFO', 'Cortos primero (SPT)'], value: 0, reset: false },
+    { id: 'route', label: 'Ruta de picking', opts: ['S-shape', 'Retorno', 'Largest gap'], value: 0, reset: false },
+    { id: 'qal', label: 'Alarma de cola', min: 5, max: 60, step: 1, value: 15, unit: 'ped' },
   ],
-  init() { return { q: [], w: [], done: 0, arr: 0, ok: 0, wait: 0, busy: 0, pk: [] }; },
+  init() { return { q: [], w: [], done: 0, arr: 0, ok: 0, wait: 0, busy: 0, pk: [], dist: 0, lines: 0, kwh: 0, wms: false, block: false, qAl: false, late0: 0, pk0: false, zone: [0, 0, 0, 0] }; },
   step(s, dt, p, r) {
-    const hr = (s.t || 0) / 60 % 16, lam = p.lam * (hr > 4 && hr < 7 ? p.peak : 1); // punta 12:00-15:00
-    if (r() < lam * dt) { s.q.push(s.t || 0); s.arr++; }
-    while (s.pk.length < p.n) s.pk.push({ rem: 0, busy: false });
+    const T = s.t || 0, lam = lamOf(s, p);
+    if (r() < lam * dt) { const u = r(); s.q.push({ t: T, u, lines: Math.round(2 + 6 * u), z: Math.floor(r() * 4), vip: false }); s.arr++; }
+    while (s.pk.length < p.n) s.pk.push({ rem: 0, busy: false, tot: 0, trav: 0, dist: 0, lines: 0, ord: 0, brk: 0, o: null, work: 0 });
     s.pk.length = p.n;
     for (const k of s.pk) {
-      if (k.busy && (k.rem -= dt) <= 0) k.busy = false;
-      if (!k.busy && s.q.length) {
-        const w = (s.t || 0) - s.q.shift();
-        s.done++; s.wait += w; if (w <= p.sla) s.ok++;
-        k.busy = true; k.rem = p.svc * (0.5 + r());
+      if (k.brk > 0 && !k.busy) { if ((k.brk -= dt) <= 0) { k.brk = 0; SL.log(s, `P${s.pk.indexOf(k) + 1} vuelve del descanso`, 'ok'); } continue; }
+      if (k.busy) {
+        const el = k.tot - k.rem; k.walk = el < k.trav / 2 || k.rem < k.trav / 2;
+        if (k.walk) { const m = dt * 60 * p.vw; k.dist += m; s.dist += m; }
+        if ((k.rem -= dt) <= 0) { k.busy = false; k.walk = false; k.lines += k.o.lines; s.lines += k.o.lines; s.zone[k.o.z] += k.o.lines; k.ord++; k.o = null; }
       }
-      if (k.busy) s.busy += dt;
+      if (!k.busy && !(k.brk > 0) && s.q.length && !s.wms) {
+        let j = s.q.findIndex((o) => o.vip); // urgentes primero
+        if (j < 0) j = p.disc ? s.q.reduce((b, o, i) => (o.u < s.q[b].u ? i : b), 0) : 0;
+        const o = s.q.splice(j, 1)[0], w = T - o.t;
+        s.done++; s.wait += w; if (w <= p.sla) s.ok++;
+        const f = dfac(s, p); k.o = o; k.busy = true; k.tot = k.rem = p.svc * (0.5 + o.u) * (1 - TR + TR * f); k.trav = p.svc * (0.5 + o.u) * TR * f;
+      }
+      if (k.busy) { s.busy += dt; k.work += dt; }
     }
+    s.bkw = 0.75 + 0.02 * s.q.length; s.kwh += (s.bkw * dt) / 60; // banda de acumulación
+    // Eventos por transición
+    const qa = s.q.length >= p.qal; if (qa !== s.qAl) { s.qAl = qa; SL.log(s, qa ? `Alarma: cola ≥ ${p.qal} pedidos` : 'Cola bajo el umbral', qa ? 'warn' : 'ok'); }
+    const late = s.q.filter((o) => T - o.t > p.sla).length; if (!!late !== !!s.late0) SL.log(s, late ? 'Pedidos en cola superan el SLA' : 'Cola sin pedidos atrasados', late ? 'crit' : 'ok'); s.late0 = late;
+    const pk = lam > p.lam; if (pk !== s.pk0) { s.pk0 = pk; SL.log(s, pk ? `Inicio hora punta (×${p.peak})` : 'Fin de hora punta', pk ? 'warn' : 'info'); }
   },
   draw(g, s, p, W, H) {
-    g.fillStyle = '#8b9bb0'; g.font = '13px system-ui'; g.fillText(`Cola de pedidos: ${s.q.length}`, 20, 30);
-    for (let i = 0; i < Math.min(s.q.length, 120); i++) {
-      const w = (s.t - s.q[i]), late = w > p.sla;
-      g.fillStyle = late ? '#ef5350' : '#4fc3f7'; g.fillRect(20 + (i % 40) * 18, 45 + Math.floor(i / 40) * 18, 14, 14);
-    }
-    g.fillStyle = '#8b9bb0'; g.fillText('Pickers (verde = ocupado)', 20, 170);
+    const T = s.t || 0, e = erlang(s, p);
+    for (let i = 0; i < 4; i++) { SL.shelf(g, 24 + i * 192, 24, 172, 108, 3, 0.75, i + 1); SL.hot('zone:' + i, 24 + i * 192, 18, 172, 118); SL.tag(g, `Zona ${ZN[i]}`, 110 + i * 192, 14, s.block && i === 2 ? SL.STATE.down : SL.STATE.idle, '600 10px system-ui'); }
+    if (s.block) SL.tag(g, 'PASILLO BLOQUEADO', 494, 80, SL.STATE.down);
+    SL.text(g, `Pedidos en cola: ${s.q.length}`, 20, 160, s.qAl ? '#f5b942' : '#e6edf3', '600 13px system-ui');
+    SL.tag(g, `λ ${(60 * lamOf(s, p)).toFixed(0)} ped/h · ρ ${e.rho.toFixed(2)} · Erlang-C ${isFinite(e.wq) ? e.wq.toFixed(1) + ' min' : '∞'} · rec. ${e.rec} pickers`, 460, 156, e.rho >= 1 ? SL.STATE.down : e.rec > e.c ? SL.STATE.warn : SL.STATE.info);
+    if (s.wms) SL.tag(g, 'WMS FUERA DE LÍNEA', 700, 230, SL.STATE.down);
+    SL.belt(g, [[16, 190], [784, 190]], 20); SL.hot('belt', 16, 176, 768, 28);
+    const nq = Math.min(s.q.length, 44);
+    for (let i = 0; i < nq; i++) SL.carton(g, 20 + i * 17, 183, 14, 14, s.q[i].vip ? '#4fc3f7' : T - s.q[i].t > p.sla ? '#c0504d' : '#b98a58');
+    if (s.q.length > nq) SL.tag(g, `+${s.q.length - nq}`, 764, 170, SL.STATE.warn);
     s.pk.forEach((k, i) => {
-      const x = 30 + (i % 10) * 76, y = 190 + Math.floor(i / 10) * 100;
-      g.fillStyle = k.busy ? '#3ecf8e' : '#2a3646'; g.beginPath(); g.arc(x + 25, y + 25, 22, 0, 7); g.fill();
-      g.fillStyle = '#fff'; g.fillText(i + 1, x + 21, y + 30);
+      const x = 26 + (i % 10) * 76, y = 296 + Math.floor(i / 10) * 100, brk = k.brk > 0 && !k.busy;
+      SL.table(g, x, y - 26, 46);
+      if (k.busy && !k.walk) { SL.carton(g, x + 6, y - 40, 16, 14, '#b98a58'); SL.carton(g, x + 24, y - 36, 12, 10, '#c9a06a'); }
+      if (!brk) SL.person(g, x + 58, y + 8, { dir: -1, busy: k.busy, walk: k.walk ? T * 40 : 0, carry: k.walk && k.rem < k.tot / 2 ? '#b98a58' : null });
+      SL.led(g, x + 4, y - 32, 2.6, brk ? SL.STATE.setup : k.busy ? SL.STATE.run : SL.STATE.idle, k.busy || brk);
+      SL.text(g, brk ? `P${i + 1} descanso` : `P${i + 1}${k.busy ? ' · ' + (k.walk ? 'camina' : 'extrae') : ''}`, x + 23, y + 24, brk ? '#b39ddb' : '#8b9bb0', '11px system-ui', 'center');
+      SL.hot('pk:' + i, x - 4, y - 50, 74, 80);
     });
-    g.fillStyle = '#ef5350'; g.fillText('Rojo: pedido fuera de SLA', 20, H - 12);
+    SL.text(g, 'Caja roja fuera de SLA · azul urgente · LED violeta = descanso', 20, H - 8, '#8b9bb0', '11px system-ui');
+  },
+  vars(s, p) {
+    const T = Math.max(s.t || 0, 1), e = erlang(s, p), wk = s.pk.filter((k) => k.busy && k.walk).length, pi = s.pk.filter((k) => k.busy && !k.walk).length, old = s.q.length ? (s.t || 0) - s.q[0].t : 0;
+    const kg = s.pk.reduce((a, k) => a + (k.busy && k.rem < k.tot / 2 ? k.o.lines * KG : 0), 0), late = s.q.filter((o) => (s.t || 0) - o.t > p.sla).length;
+    return {
+      fis: [
+        ['Tasa de llegada λ', (60 * lamOf(s, p)).toFixed(0), 'ped/h'],
+        ['Capacidad de servicio c·μ', ((60 * e.c) / svcMean(s, p)).toFixed(0), 'ped/h'],
+        ['Tiempo medio por pedido', svcMean(s, p).toFixed(2), 'min'],
+        ['Velocidad de marcha', p.vw.toFixed(1), 'm/s'],
+        ['Pickers caminando / extrayendo', `${wk} / ${pi}`, ''],
+        ['Distancia recorrida', (s.dist / 1000).toFixed(2), 'km'],
+        ['Distancia por pedido', s.done ? (s.dist / s.done).toFixed(0) : '—', 'm'],
+        ['Líneas extraídas', s.lines, ''],
+        ['Productividad', ((60 * s.lines) / T / Math.max(1, p.n)).toFixed(0), 'líneas/h·picker'],
+        ['Carga en carros', kg.toFixed(0), 'kg'],
+        ['Potencia banda', (s.bkw || 0).toFixed(2), 'kW'],
+        ['Energía banda', s.kwh.toFixed(2), 'kWh'],
+        ['Utilización ρ', e.rho.toFixed(2), '', e.rho, e.rho >= 1 ? '#ef5350' : e.rho > 0.85 ? '#f5b942' : '#3ecf8e'],
+      ],
+      ctl: [
+        ['SLA', p.sla, 'min'],
+        ['Cumplimiento SLA', ((100 * s.ok) / Math.max(s.done, 1)).toFixed(1), '%', s.ok / Math.max(s.done, 1)],
+        ['Cola / umbral de alarma', `${s.q.length} / ${p.qal}`, 'ped', s.q.length / p.qal, s.qAl ? '#f5b942' : undefined],
+        ['Pedidos atrasados en cola', late, '', null, late ? '#ef5350' : undefined],
+        ['Antigüedad del más viejo', old.toFixed(1), 'min', old / p.sla, old > p.sla ? '#ef5350' : undefined],
+        ['Regla de cola', ['FIFO', 'SPT'][p.disc], ''],
+        ['Ruta de picking', ['S-shape', 'Retorno', 'Largest gap'][p.route], ''],
+        ['Hora punta', lamOf(s, p) > p.lam ? `ACTIVA ×${p.peak}` : 'no', '', null, lamOf(s, p) > p.lam ? '#f5b942' : undefined],
+        ['Pickers disponibles', `${e.c} / ${p.n}`, ''],
+        ['Erlang-C P(esperar)', (100 * Math.min(1, e.pw)).toFixed(0), '%'],
+        ['Erlang-C Wq', isFinite(e.wq) ? e.wq.toFixed(2) : '∞ (inestable)', 'min'],
+        ['Erlang-C P(W ≤ SLA)', (100 * e.ok).toFixed(0), '%'],
+        ['Dotación recomendada (90 %)', e.rec, 'pickers', null, e.rec > e.c ? '#f5b942' : '#3ecf8e'],
+        ['WMS', s.wms ? 'FUERA DE LÍNEA' : 'en línea', '', null, s.wms ? '#ef5350' : undefined],
+      ],
+    };
+  },
+  actions: [
+    { label: 'Ola de pedidos (+30)', kind: 'warn', run: (s, p, r) => { for (let i = 0; i < 30; i++) { const u = r(); s.q.push({ t: s.t || 0, u, lines: Math.round(2 + 6 * u), z: Math.floor(r() * 4), vip: false }); s.arr++; } } },
+    { label: 'Caída del WMS', kind: 'crit', hint: 'No se asignan pedidos nuevos', on: (s) => s.wms, run: (s) => { s.wms = !s.wms; SL.log(s, s.wms ? 'WMS fuera de línea: sin asignación de pedidos' : 'WMS restablecido', s.wms ? 'crit' : 'ok'); } },
+    { label: 'Pasillo bloqueado', kind: 'warn', hint: 'Recorrido ×1.5 por desvío', on: (s) => s.block, run: (s) => { s.block = !s.block; SL.log(s, s.block ? 'Pasillo de zona C bloqueado: desvío ×1.5' : 'Pasillo despejado', s.block ? 'warn' : 'ok'); } },
+    { label: 'Picker a descanso', kind: 'warn', hint: 'Un picker toma 15 min de descanso al terminar su pedido', run: (s, p, r) => { const c = s.pk.filter((k) => !(k.brk > 0)); if (c.length) c[Math.floor(r() * c.length)].brk = 15; } },
+    { label: 'Pedido urgente', hint: 'Entra a la cola con prioridad', run: (s, p, r) => { const u = r(); s.q.unshift({ t: s.t || 0, u, lines: Math.round(2 + 6 * u), z: Math.floor(r() * 4), vip: true }); s.arr++; } },
+    { label: '+1 picker', run: (s, p, r, api) => api.set('n', Math.min(20, p.n + 1)) },
+  ],
+  inspect(s, p, id) {
+    const T = Math.max(s.t || 0, 1);
+    if (id.startsWith('pk:')) {
+      const i = +id.split(':')[1], k = s.pk[i]; if (!k) return null;
+      const brk = k.brk > 0 && !k.busy, e = brk ? 'DESCANSO' : k.busy ? (k.walk ? 'CAMINANDO' : 'EXTRAYENDO') : 'LIBRE';
+      return { title: `P${i + 1} · Picker`, sub: k.o ? `Pedido de ${k.o.lines} líneas · zona ${ZN[k.o.z]}${k.o.vip ? ' · URGENTE' : ''}` : 'Sin pedido asignado',
+        fis: [['Velocidad', k.busy && k.walk ? p.vw.toFixed(1) : '0.0', 'm/s'], ['Carga en carro', k.busy && k.rem < k.tot / 2 ? (k.o.lines * KG).toFixed(1) : '0.0', 'kg'], ['Distancia recorrida', (k.dist / 1000).toFixed(2), 'km'], ['Pedidos completados', k.ord, ''], ['Líneas extraídas', k.lines, ''], ['Utilización', ((100 * k.work) / T).toFixed(0), '%', k.work / T]],
+        ctl: [['Estado', e, '', null, brk ? '#b39ddb' : k.busy ? '#3ecf8e' : '#8b9bb0'], ['Tiempo restante', k.busy ? k.rem.toFixed(1) : brk ? k.brk.toFixed(1) : '—', 'min', k.busy ? 1 - k.rem / k.tot : null], ['Recorrido del pedido', k.busy ? k.trav.toFixed(1) : '—', 'min']],
+        actions: [{ label: k.brk > 0 ? 'Terminar descanso' : 'Enviar a descanso', run: () => { k.brk = k.brk > 0 ? 0 : 15; } }] };
+    }
+    if (id.startsWith('zone:')) {
+      const i = +id.split(':')[1], q = s.q.filter((o) => o.z === i).length;
+      return { title: `Zona ${ZN[i]} · estanterías`, sub: '3 niveles; los pedidos se reparten al azar entre zonas.',
+        fis: [['Líneas extraídas', s.zone[i], '', s.zone[i] / Math.max(1, s.lines)], ['Pedidos en cola de la zona', q, ''], ['Pickers en la zona', s.pk.filter((k) => k.busy && k.o.z === i).length, '']],
+        ctl: [['Pasillo', s.block && i === 2 ? 'BLOQUEADO' : 'libre', '', null, s.block && i === 2 ? '#ef5350' : undefined]],
+        actions: i === 2 ? [{ label: s.block ? 'Despejar pasillo' : 'Bloquear pasillo', run: (s) => { s.block = !s.block; } }] : [] };
+    }
+    if (id === 'belt') { const e = erlang(s, p);
+      return { title: 'Banda de acumulación · cola de pedidos', sub: 'Pedidos liberados por el WMS esperando picker.',
+        fis: [['Pedidos en cola', s.q.length, '', s.q.length / p.qal], ['Potencia banda', (s.bkw || 0).toFixed(2), 'kW'], ['Energía', s.kwh.toFixed(2), 'kWh'], ['Espera promedio', (s.wait / Math.max(s.done, 1)).toFixed(1), 'min']],
+        ctl: [['Regla de cola', ['FIFO', 'SPT'][p.disc], ''], ['Erlang-C Wq', isFinite(e.wq) ? e.wq.toFixed(2) : '∞', 'min'], ['WMS', s.wms ? 'FUERA DE LÍNEA' : 'en línea', '', null, s.wms ? '#ef5350' : undefined]],
+        actions: [{ label: p.disc ? 'Regla FIFO' : 'Regla SPT', run: (s, p, r, api) => api.set('disc', p.disc ? 0 : 1) }, { label: s.wms ? 'Restablecer WMS' : 'Tumbar WMS', run: (s) => { s.wms = !s.wms; } }] };
+    }
   },
   kpis(s, p) {
     const d = Math.max(s.done, 1);
@@ -56,8 +166,9 @@ SL.app({
       { label: 'Espera promedio', value: (s.wait / d).toFixed(1) + ' min' },
       { label: 'Utilización pickers', value: ((100 * s.busy) / (Math.max(s.t, 1) * p.n)).toFixed(0) + ' %' },
       { label: 'Cola actual', value: s.q.length },
+      { label: 'Distancia recorrida', value: (s.dist / 1000).toFixed(1) + ' km' },
     ];
   },
-  series: (s, p) => ({ Cola: s.q.length, 'Pickers ocupados': s.pk.filter((k) => k.busy).length, 'Cumpl. SLA %': (100 * s.ok) / Math.max(s.done, 1) }),
+  series: (s, p) => ({ Cola: s.q.length, 'Pickers ocupados': s.pk.filter((k) => k.busy).length, 'Cumpl. SLA %': (100 * s.ok) / Math.max(s.done, 1), 'Erlang-C Wq': Math.min(60, erlang(s, p).wq) }),
 });
 </script></body></html>

@@ -2,60 +2,167 @@
 <html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <link rel="stylesheet" href="../../shared/style.css"></head>
 <body><div id="app"></div>
+<script src="../../shared/controls.js"></script>
 <script src="../../shared/sim.js"></script>
+<script src="../../shared/gfx.js"></script>
 <script>
 // Packing e-commerce. Unidad: segundos desde las 15:00. Olas de pedidos; pico 17:00–20:00.
+// Física: banda F = g·μ·(m_banda·L + m_pedidos), P = F·v/η + P0 ; material de empaque, volumen y peso cargado al camión.
 const hh = (t) => { const h = 15 + t / 3600; return String(Math.floor(h)).padStart(2, '0') + ':' + String(Math.floor((h % 1) * 60)).padStart(2, '0'); };
+const G = 9.81, LB = 34, MB = 7, MU = 0.035, VAN = 10, DST = ['Lima', 'Norte', 'Sur'], POL = ['FIFO', 'SPT', 'Frágil 1º'];
+const KG = (ty) => (ty > 80 ? 4 : ty < 50 ? 0.4 : 2.5), M3 = (ty) => (ty > 80 ? 0.03 : ty < 50 ? 0.002 : 0.02), TYN = (ty) => (ty > 80 ? 'frágil' : ty < 50 ? 'sobre' : 'caja');
+const crowd_ = (p) => (p.mode === 0 ? 1 + 0.07 * Math.max(0, p.n - 4) : 1);
+const capH = (p, s) => { if (s.blk) return 0; const f = p.frag / 100, m = f * 90 + (1 - f) * (0.3 * 45 + 0.7 * 65) + (p.mode === 0 ? 14 : 3) + (s.prn ? 40 : 0), n = s.st.slice(0, p.n).filter((k) => !k.off).length; return (3600 * n) / (m * crowd_(p)); };
 SL.app({
   title: 'Demo C · Packing e-commerce / courier',
-  desc: 'Los pedidos no se atrasan en la calle: se atrasan en la mesa. Olas de pedidos hacia 4–8 puestos; en "hoy" la cola vive en el piso, en "propuesto" vive en la banda.',
+  desc: 'Los pedidos no se atrasan en la calle: se atrasan en la mesa. Olas de pedidos hacia 4–8 puestos; en "hoy" la cola vive en el piso, en "propuesto" vive en la banda. Clic en puestos, cola, chutes o camión para inspeccionar.',
   pitch: '"El camión no espera. Si el packing no rinde a las 7 pm, el pedido viaja mañana y el cliente se queja."',
   obj: '"Con más gente se resuelve." → Sube puestos en "hoy": se estorban (el límite es el layout, no el headcount).',
   unit: 's', dt: 1, sample: 120, speeds: [1, 20, 120, 480],
   clock: (t) => 'Hora ' + hh(t),
   params: [
-    { id: 'mode', label: 'Escenario', opts: ['Hoy: mesas + pedidos en piso', 'Propuesto: banda central + espina'], value: 0 },
-    { id: 'n', label: 'Puestos de packing', min: 4, max: 8, step: 1, value: 6 },
-    { id: 'wave', label: 'Tamaño de ola', min: 40, max: 80, step: 5, value: 60, unit: 'pedidos' },
+    { sec: 'Escenario', id: 'mode', label: 'Escenario', opts: ['Hoy: mesas + pedidos en piso', 'Propuesto: banda central + espina'], value: 0 },
+    { sec: 'Demanda', id: 'wave', label: 'Tamaño de ola', min: 40, max: 80, step: 5, value: 60, unit: 'pedidos' },
     { id: 'frag', label: 'Mix frágil (90 s)', min: 0, max: 60, step: 5, value: 25, unit: '%' },
+    { sec: 'Recursos', id: 'n', label: 'Puestos de packing', min: 4, max: 8, step: 1, value: 6 },
+    { id: 'vb', label: 'Velocidad de banda (propuesto)', min: 0.2, max: 0.8, step: 0.05, value: 0.4, unit: 'm/s' },
+    { sec: 'Control / despacho', id: 'pol', label: 'Regla de despacho de cola', opts: ['FIFO (orden de llegada)', 'SPT: cortos primero', 'Frágiles primero'], value: 0, reset: false },
     { id: 'cut', label: 'Cutoff del courier', min: 18, max: 21, step: 0.5, value: 20, unit: 'h' },
+    { id: 'sla', label: 'SLA de espera en cola', min: 20, max: 120, step: 10, value: 60, unit: 'min' },
   ],
-  init() { return { q: [], st: Array.from({ length: 8 }, () => ({ rem: 0, o: null, work: 0 })), nextWave: 0, done: 0, late: 0, err: 0, dest: [0, 0, 0], lsum: 0, back: null, arr: 0 }; },
+  init() { return { q: [], st: Array.from({ length: 8 }, () => ({ rem: 0, o: null, work: 0, n: 0, off: false })), nextWave: 0, done: 0, late: 0, err: 0, dest: [0, 0, 0], lsum: 0, back: null, arr: 0,
+    td: [], blk: false, prn: false, kw: 0, pb: 0, kwh: 0, kg: 0, m3: 0, cb: 0, vf: 0, tape: 0, walk: 0, slaB: false, nsla: 0, gone: false }; },
   step(s, dt, p, r) {
     const hoy = p.mode === 0, h = 15 + s.t / 3600;
     if (s.t >= s.nextWave) {
       const gap = h >= 17 && h < 20 ? 900 : 2400, n = Math.round(p.wave * (0.9 + 0.2 * r()));
       for (let i = 0; i < n; i++) { const u = r(), f = p.frag / 100, ty = u < f ? 90 : u < f + (1 - f) * 0.3 ? 45 : 65, d = r(); s.q.push({ t0: s.t, ty, d: d < 0.55 ? 0 : d < 0.8 ? 1 : 2 }); s.arr++; }
-      s.nextWave += gap;
+      s.nextWave += gap; if (s.t > 0) SL.log(s, `Ola de ${n} pedidos (${gap === 900 ? 'pico' : 'valle'})`, 'info');
     }
-    const crowd = hoy ? 1 + 0.07 * Math.max(0, p.n - 4) : 1;
+    const crowd = crowd_(p);
+    const pick = () => { if (!p.pol) return 0; let b = 0; for (let i = 1; i < Math.min(s.q.length, 300); i++) if (p.pol === 1 ? s.q[i].ty < s.q[b].ty : s.q[i].ty > s.q[b].ty) b = i; return b; };
     for (let i = 0; i < p.n; i++) {
       const k = s.st[i];
+      if (k.off || s.blk) continue; // puesto detenido o sin energía
       if (k.o) {
         k.work += dt;
         if ((k.rem -= dt) <= 0) {
-          s.done++; s.dest[k.o.d]++; s.lsum += s.t - k.o.t0; if (r() < (hoy ? 0.012 : 0.004)) s.err++;
-          if (h >= p.cut) s.late++; k.o = null;
+          const o = k.o, tb = o.ty > 50;
+          s.done++; s.dest[o.d]++; s.lsum += s.t - o.t0; if (r() < (hoy ? 0.012 : 0.004)) s.err++;
+          if (h >= p.cut) s.late++; else { s.kg += KG(o.ty); s.m3 += M3(o.ty); }
+          s.cb += tb ? (o.ty > 80 ? 0.9 : 0.6) : 0.1; s.vf += o.ty > 80 ? 8 : 0; s.tape += tb ? 1.5 : 0; s.walk += hoy ? 6 : 0.5;
+          s.td.push(s.t); k.n++; k.o = null;
         }
       }
-      if (!k.o && s.q.length) { const o = s.q.shift(); k.o = o; k.rem = (o.ty + (hoy ? 14 : 3)) * crowd * (0.9 + 0.2 * r()); }
+      if (!k.o && s.q.length) { const o = s.q.splice(pick(), 1)[0]; k.o = o; k.rem = (o.ty + (hoy ? 14 : 3) + (s.prn ? 40 : 0)) * crowd * (0.9 + 0.2 * r()); k.tot = k.rem; }
     }
-    if (h >= p.cut && s.back === null) s.back = s.q.length + s.st.slice(0, p.n).filter((k) => k.o).length;
+    while (s.td.length && s.td[0] < s.t - 1800) s.td.shift();
+    if (h >= p.cut && s.back === null) { s.back = s.q.length + s.st.slice(0, p.n).filter((k) => k.o).length; SL.log(s, `Camión del courier partió · ${s.back} pedidos quedan para mañana`, s.back ? 'crit' : 'ok'); }
+    // Potencia: banda central (solo propuesto) + selladora/impresora por puesto
+    const nb = hoy || s.blk ? 0 : Math.min(s.q.length, 30), mOn = s.q.slice(0, nb).reduce((a, o) => a + KG(o.ty), 0);
+    s.pb = hoy || s.blk ? 0 : (G * MU * (MB * LB + mOn) * p.vb) / 1000 / 0.8 + 0.15;
+    s.kw = s.blk ? 0 : s.pb + s.st.slice(0, p.n).reduce((a, k) => a + (k.off ? 0 : k.o ? 0.15 : 0.03), 0);
+    s.kwh += (s.kw * dt) / 3600;
+    // SLA: el pedido más antiguo supera el límite
+    const age = s.q.length ? (s.t - s.q[0].t0) / 60 : 0, br = age > p.sla;
+    if (br && !s.slaB) { s.nsla++; SL.log(s, `SLA excedido: pedido esperando ${age.toFixed(0)} min`, 'warn'); }
+    if (!br && s.slaB) SL.log(s, 'Cola dentro del SLA', 'ok');
+    s.slaB = br;
   },
   draw(g, s, p, W, H) {
-    const hoy = p.mode === 0, y = 225, cap = 30;
-    if (!hoy) { SL.belt(g, [[70, y], [560, y]], 22); s.q.slice(0, cap).forEach((o, i) => { g.fillStyle = o.ty > 80 ? '#ef5350' : '#c59b6d'; g.fillRect(75 + i * 16, y - 7, 12, 14); }); }
+    const hoy = p.mode === 0, y = 225, cap = 30, h = 15 + (s.t || 0) / 3600;
+    const col = (o) => (o.ty > 80 ? '#c0504d' : o.ty < 50 ? '#d9c7a3' : '#b98a58');
+    if (!hoy) {
+      const bc = s.blk ? '#3a2323' : null;
+      SL.belt(g, [[40, y], [640, y], [640, 110], [660, 110]], 22, bc); SL.belt(g, [[640, y], [660, y]], 22, bc); SL.belt(g, [[640, y], [640, 340], [660, 340]], 22, bc);
+      s.q.slice(0, cap).forEach((o, i) => SL.carton(g, 44 + i * 18, y - 8, 15, 15, col(o)));
+      SL.hot('queue', 40, y - 12, 590, 24);
+    } else { g.fillStyle = 'rgba(239,83,80,.06)'; g.fillRect(40, y - 44, 560, 88); g.strokeStyle = 'rgba(239,83,80,.4)'; g.setLineDash([6, 4]); g.strokeRect(40.5, y - 43.5, 559, 87); g.setLineDash([]); SL.hot('queue', 40, y - 44, 560, 88); }
     for (let i = 0; i < p.n; i++) {
-      const col = i >> 1, side = i % 2 ? 1 : -1, x = 140 + col * 105, yy = y + side * (hoy ? 95 : 70) - 20;
-      g.fillStyle = s.st[i].o ? '#3ecf8e' : '#2a3646'; g.fillRect(x, yy, 70, 40);
-      if (!hoy) { g.strokeStyle = '#2a3646'; g.lineWidth = 4; g.beginPath(); g.moveTo(x + 35, yy + (side > 0 ? 0 : 40)); g.lineTo(x + 35, y + (side > 0 ? 11 : -11)); g.stroke(); }
-      SL.text(g, 'P' + (i + 1), x + 35, yy + 25, '#fff', '13px system-ui', 'center');
+      const c = i >> 1, side = i % 2 ? 1 : -1, x = 70 + c * 138, yy = y + side * (hoy ? 104 : 86), k = s.st[i], busy = !!k.o && !k.off && !s.blk;
+      if (!hoy) SL.belt(g, [[x + 30, y + side * 13], [x + 30, yy - side * 18]], 10);
+      SL.table(g, x, yy - 6, 62);
+      if (k.o) SL.carton(g, x + 16, yy - 22, 22, 16, col(k.o));
+      SL.person(g, x + 78, yy + 14, { dir: -1, busy, shirt: k.off ? '#6b7d93' : undefined });
+      SL.led(g, x + 4, yy - 12, 2.4, k.off || s.blk ? SL.STATE.down : busy ? SL.STATE.run : SL.STATE.idle, true);
+      SL.text(g, 'P' + (i + 1) + (k.off ? ' · FUERA' : ''), x + 31, yy + 30, k.off ? '#ef5350' : '#8b9bb0', '11px system-ui', 'center');
+      SL.hot('p:' + i, x - 2, yy - 38, 92, 56);
     }
-    if (hoy) { const nf = s.q.length; for (let i = 0; i < Math.min(nf, 240); i++) { g.fillStyle = s.q[i].ty > 80 ? '#ef5350' : '#c59b6d'; g.fillRect(85 + (i % 40) * 12, y - 14 + Math.floor(i / 40) * 11, 9, 9); } }
-    else if (s.q.length > cap) for (let i = 0; i < Math.min(s.q.length - cap, 120); i++) { g.fillStyle = '#f5b942'; g.fillRect(85 + (i % 40) * 12, y + 115 + Math.floor(i / 40) * 11, 9, 9); }
-    ['Lima', 'Norte', 'Sur'].forEach((n, i) => { g.fillStyle = '#243040'; g.fillRect(650, 60 + i * 110, 120, 80); SL.text(g, n, 710, 90 + i * 110, '#e6edf3', '14px system-ui', 'center'); SL.text(g, s.dest[i], 710, 118 + i * 110, '#3ecf8e', '16px system-ui', 'center'); });
-    SL.text(g, hoy ? 'Cola en el PISO (pasillo)' : 'Cola en la BANDA (naranja = desborde al piso)', 20, 30, hoy ? '#ef5350' : '#3ecf8e', '14px system-ui');
-    SL.text(g, 'Marrón: sobre/caja · Rojo: frágil', 20, H - 12);
+    if (hoy) for (let i = 0; i < Math.min(s.q.length, 200); i++) SL.carton(g, 48 + (i % 40) * 13.6 + ((i * 7) % 3), y - 36 + Math.floor(i / 40) * 14, 11, 10, col(s.q[i]));
+    else if (s.q.length > cap) for (let i = 0; i < Math.min(s.q.length - cap, 80); i++) SL.carton(g, 48 + (i % 40) * 13.6, y + 124 + Math.floor(i / 40) * 12, 11, 10, '#f5b942');
+    DST.forEach((n, i) => { SL.chute(g, 668, 70 + i * 115, 110, 80, Math.min(1, s.dest[i] / 150), '#3ecf8e', n); SL.tag(g, `${s.dest[i]}`, 723, 164 + i * 115, SL.STATE.run); SL.hot('ch:' + i, 668, 70 + i * 115, 110, 80); });
+    if (h < p.cut) { SL.van(g, 700, 440, { s: 0.75, dir: 1, open: true, cab: '#c0504d' }); SL.hot('van', 686, 412, 52, 30); } else SL.tag(g, 'Camión del courier partió', 700, 430, SL.STATE.down);
+    SL.text(g, hoy ? 'Cola en el PISO (pasillo)' : 'Cola en la BANDA (amarillo = desborde al piso)', 20, 26, hoy ? '#ef5350' : '#3ecf8e', '600 14px system-ui');
+    // Tablero de control
+    const age = s.q.length ? ((s.t || 0) - s.q[0].t0) / 60 : 0, left = (p.cut - h) * 60, thr = (s.td.length / Math.min(Math.max(s.t || 0, 60), 1800)) * 3600;
+    SL.tag(g, h < p.cut ? `Cutoff ${hh((p.cut - 15) * 3600)} · faltan ${Math.floor(left / 60)}:${String(Math.floor(left % 60)).padStart(2, '0')}` : 'Cutoff vencido', 560, 22, left < 60 ? SL.STATE.down : SL.STATE.block);
+    SL.tag(g, s.blk ? 'SIN ENERGÍA' : hoy ? `Pasillo ${(s.q.length * 0.3).toFixed(1)} m² con WIP` : `Banda ${p.vb.toFixed(2)} m/s · ${s.pb.toFixed(2)} kW`, 120, 400, s.blk ? SL.STATE.down : SL.STATE.info);
+    SL.tag(g, `Ritmo ${thr.toFixed(0)} ped/h · cap. ${capH(p, s).toFixed(0)}`, 330, 400, SL.STATE.info);
+    SL.tag(g, `Más antiguo ${age.toFixed(0)} / ${p.sla} min · ${POL[p.pol]}`, 540, 400, age > p.sla ? SL.STATE.down : SL.STATE.run);
+    if (s.prn) SL.tag(g, 'Impresora de etiquetas CAÍDA', 330, 52, SL.STATE.down);
+    SL.text(g, 'Crema: sobre · marrón: caja · rojo: frágil', 20, H - 8);
+  },
+  vars(s, p) {
+    const hoy = p.mode === 0, T = Math.max(s.t || 0, 1), h = 15 + T / 3600, thr = (s.td.length / Math.min(Math.max(T, 60), 1800)) * 3600, cH = capH(p, s);
+    const wip = s.q.length + s.st.slice(0, p.n).filter((k) => k.o).length, left = Math.max(0, p.cut - h), need = left > 0 ? wip / left : Infinity, risk = Math.max(0, Math.round(wip - cH * left));
+    const act = s.st.slice(0, p.n).filter((k) => k.o && !k.off).length, age = s.q.length ? (T - s.q[0].t0) / 60 : 0, util = s.st.slice(0, p.n).reduce((a, k) => a + k.work, 0) / (T * p.n);
+    return {
+      fis: [
+        ['Pedidos despachados (30 min)', thr.toFixed(0), 'ped/h', thr / 400],
+        ['Productividad', (s.done / (T / 3600) / p.n).toFixed(1), 'ped/h·pers'],
+        ['Velocidad de banda', hoy ? '— (sin banda)' : s.blk ? '0.00' : p.vb.toFixed(2), 'm/s'],
+        ['Carga sobre la banda', hoy ? '—' : s.q.slice(0, 30).reduce((a, o) => a + KG(o.ty), 0).toFixed(1), 'kg'],
+        ['Potencia banda', s.pb.toFixed(2), 'kW'],
+        ['Potencia total packing', s.kw.toFixed(2), 'kW', s.kw / 2.5, '#c98500'],
+        ['Energía', s.kwh.toFixed(2), 'kWh'],
+        ['Peso cargado al camión', s.kg.toFixed(0), 'kg'],
+        ['Volumen en camión', s.m3.toFixed(2), 'm³', s.m3 / VAN, s.m3 > VAN ? '#ef5350' : undefined],
+        ['Cartón consumido', s.cb.toFixed(1), 'm²'],
+        ['Relleno (frágiles) / cinta', `${s.vf.toFixed(0)} L / ${s.tape.toFixed(0)} m`, ''],
+        ['Distancia caminada total', (s.walk / 1000).toFixed(2), 'km'],
+        ['Área de pasillo con WIP', ((hoy ? s.q.length : Math.max(0, s.q.length - 30)) * 0.3).toFixed(1), 'm²'],
+        ['Utilización de puestos', (100 * util).toFixed(0), '%', util],
+      ],
+      ctl: [
+        ['Regla de despacho', POL[p.pol], ''],
+        ['Cola (WIP en espera)', s.q.length, 'ped', s.q.length / 200, s.q.length > 30 ? '#f5b942' : undefined],
+        ['Capacidad buffer banda', hoy ? '— (piso)' : `${Math.min(s.q.length, 30)} / 30`, ''],
+        ['Pedido más antiguo / SLA', `${age.toFixed(0)} / ${p.sla}`, 'min', age / p.sla, age > p.sla ? '#ef5350' : '#3ecf8e'],
+        ['Brechas de SLA', s.nsla, ''],
+        ['Puestos activos / habilitados', `${act} / ${s.st.slice(0, p.n).filter((k) => !k.off).length}`, ''],
+        ['Capacidad teórica', cH.toFixed(0), 'ped/h'],
+        ['Ritmo requerido al cutoff', isFinite(need) ? need.toFixed(0) : '—', 'ped/h', null, need > cH ? '#ef5350' : '#3ecf8e'],
+        ['Pedidos en riesgo de no salir', left > 0 ? risk : s.back ?? 0, '', null, risk ? '#ef5350' : undefined],
+        ['Tiempo al cutoff', left > 0 ? (left * 60).toFixed(0) : 'vencido', 'min'],
+        ['Próxima ola en', ((s.nextWave - T) / 60).toFixed(0), 'min'],
+        ['Factor de congestión', crowd_(p).toFixed(2), '×'],
+        ['Impresora / energía', `${s.prn ? 'CAÍDA' : 'ok'} / ${s.blk ? 'CORTE' : 'ok'}`, '', null, s.prn || s.blk ? '#ef5350' : undefined],
+      ],
+    };
+  },
+  actions: [
+    { label: 'Ola extra (flash sale)', hint: 'Llega una ola adicional ahora', kind: 'warn', run: (s, p, r) => { const n = p.wave; for (let i = 0; i < n; i++) { const u = r(), f = p.frag / 100, ty = u < f ? 90 : u < f + (1 - f) * 0.3 ? 45 : 65, d = r(); s.q.push({ t0: s.t || 0, ty, d: d < 0.55 ? 0 : d < 0.8 ? 1 : 2 }); s.arr++; } } },
+    { label: 'Impresora de etiquetas caída', hint: '+40 s por pedido (etiqueta manual)', kind: 'warn', on: (s) => s.prn, run: (s) => { s.prn = !s.prn; SL.log(s, s.prn ? 'Impresora de etiquetas caída: etiquetado manual' : 'Impresora de etiquetas restablecida', s.prn ? 'warn' : 'ok'); } },
+    { label: 'Corte de energía', hint: 'Se detienen banda, selladoras e impresoras', kind: 'crit', on: (s) => s.blk, run: (s) => { s.blk = !s.blk; SL.log(s, s.blk ? 'CORTE DE ENERGÍA: packing detenido' : 'Energía restablecida', s.blk ? 'crit' : 'ok'); } },
+    { label: 'Refuerzo +1 puesto', hint: 'Habilita un puesto más (máx. 8)', run: (s, p, r, api) => api.set('n', Math.min(8, p.n + 1)) },
+    { label: 'Cambiar regla de cola', hint: 'FIFO → SPT → Frágiles primero', run: (s, p, r, api) => api.set('pol', (p.pol + 1) % 3) },
+    { label: 'Adelantar cutoff 30 min', kind: 'warn', run: (s, p, r, api) => api.set('cut', Math.max(18, p.cut - 0.5)) },
+  ],
+  inspect(s, p, id) {
+    const V = this.vars(s, p), T = Math.max(s.t || 0, 1);
+    if (id.startsWith('p:')) { const i = +id.slice(2), k = s.st[i];
+      return { title: `Puesto de packing P${i + 1}`, sub: p.mode === 0 ? 'Mesa suelta: el operario busca el pedido en el piso (+14 s).' : 'Recibe el pedido por la espina de la banda (+3 s).',
+        fis: [['Pedido en mesa', k.o ? `${TYN(k.o.ty)} · ${DST[k.o.d]}` : '—', ''], ['Peso del pedido', k.o ? KG(k.o.ty).toFixed(1) : '—', 'kg'], ['Tiempo restante', k.o ? Math.max(0, k.rem).toFixed(0) : '—', 's', k.o ? 1 - k.rem / (k.tot || 1) : 0], ['Pedidos empacados', k.n, ''], ['Utilización', (100 * k.work / T).toFixed(0), '%', k.work / T], ['Potencia selladora+impresora', (k.off || s.blk ? 0 : k.o ? 0.15 : 0.03).toFixed(2), 'kW']],
+        ctl: [['Estado', k.off ? 'DETENIDO' : s.blk ? 'SIN ENERGÍA' : k.o ? 'EMPACANDO' : 'ESPERA PEDIDO', '', null, k.off || s.blk ? '#ef5350' : k.o ? '#3ecf8e' : undefined], ['Espera del pedido en cola', k.o ? ((T - k.o.t0) / 60).toFixed(0) : '—', 'min'], V.ctl[0]],
+        actions: [{ label: k.off ? 'Reanudar puesto' : 'Detener puesto', run: (s) => { k.off = !k.off; } }, { label: 'Priorizar frágil', run: (s) => { const j = s.q.findIndex((o) => o.ty > 80); if (j >= 0 && !k.o) { k.o = s.q.splice(j, 1)[0]; k.rem = k.tot = k.o.ty + (p.mode === 0 ? 14 : 3); } else if (j >= 0) s.q.unshift(s.q.splice(j, 1)[0]); } }] }; }
+    if (id === 'queue') return { title: p.mode === 0 ? 'Cola en el piso (pasillo)' : 'Banda central de acumulación', sub: p.mode === 0 ? 'Pedidos apilados en el pasillo: se buscan a mano.' : `L ≈ ${LB} m, ${MB} kg/m, μ = ${MU}, buffer de 30 pedidos.`,
+      fis: [V.fis[2], V.fis[3], V.fis[4], V.fis[12]], ctl: [V.ctl[1], V.ctl[2], V.ctl[3], V.ctl[0]],
+      actions: [{ label: 'Cambiar regla', run: (s, p, r, api) => api.set('pol', (p.pol + 1) % 3) }, ...(p.mode === 1 ? [{ label: 'Velocidad +0.1', run: (s, p, r, api) => api.set('vb', Math.min(0.8, +(p.vb + 0.1).toFixed(2))) }] : [])] };
+    if (id.startsWith('ch:')) { const i = +id.slice(3);
+      return { title: `Chute destino ${DST[i]}`, fis: [['Pedidos', s.dest[i], '', s.dest[i] / 150], ['Participación', (100 * s.dest[i] / Math.max(1, s.done)).toFixed(0), '%']], ctl: [['Mezcla objetivo', [55, 25, 20][i], '%']] }; }
+    if (id === 'van') return { title: 'Camión del courier', sub: `Parte al cutoff (${hh((p.cut - 15) * 3600)}). Capacidad ${VAN} m³.`,
+      fis: [V.fis[7], V.fis[8]], ctl: [V.ctl[9], V.ctl[7], V.ctl[8]],
+      actions: [{ label: 'Retrasar cutoff 30 min', run: (s, p, r, api) => api.set('cut', Math.min(21, p.cut + 0.5)) }, { label: 'Adelantar 30 min', run: (s, p, r, api) => api.set('cut', Math.max(18, p.cut - 0.5)) }] };
   },
   kpis(s, p) {
     const hrs = Math.max(s.t, 1) / 3600, floorQ = p.mode === 0 ? s.q.length : Math.max(0, s.q.length - 30);
@@ -69,6 +176,6 @@ SL.app({
       { label: 'Espera prom. en cola', value: (s.lsum / Math.max(s.done, 1) / 60).toFixed(1) + ' min' },
     ];
   },
-  series: (s, p) => ({ 'Cola': s.q.length, 'Despachados': s.done, 'Puestos activos': s.st.slice(0, p.n).filter((k) => k.o).length }),
+  series: (s, p) => ({ 'Cola': s.q.length, 'Despachados': s.done, 'Puestos activos': s.st.slice(0, p.n).filter((k) => k.o).length, 'Espera máx. min': s.q.length ? ((s.t || 0) - s.q[0].t0) / 60 : 0 }),
 });
 </script></body></html>

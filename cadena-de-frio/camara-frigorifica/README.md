@@ -74,10 +74,28 @@ y perfiles de uso con datos de sensores.
   recuperación, pull-down, condensación, control) · Simulación (+ escenarios, parámetros avanzados, fallas, A/B, +10 min).
 - **Escena 3D:** vistas 3D / planta (por nivel) / sección (gradiente vertical). Capas: mapa térmico, flujo de aire
   (partículas cuya velocidad sigue al ventilador), sensores, pallets. Hover técnico y clic para el detalle.
+- **Nivel de detalle:** paneles con juntas y zócalo sanitario, piso de concreto con señalización, luminarias LED;
+  racks selectivos con bastidores perforados, arriostres, largueros y protecciones; pallets con tarima de 17 piezas,
+  36 cartones y film (los cartones exteriores muestran la temperatura de superficie y los interiores la de núcleo);
+  puerta con marco, riel, hoja, cortina de tiras y baliza; evaporador con rejillas, 5 aspas por ventilador, bandeja,
+  drenaje y LED de estado; unidad condensadora exterior cuyo ventilador gira con el compresor; montacargas con mástil,
+  horquillas que elevan el pallet, ruedas y baliza. Todo lo repetido va en `InstancedMesh`.
+- **Calidad gráfica:** *Alta* (sombras suaves, reflejos de entorno, film de pallets) o *Media* para equipos modestos.
 - **Causa → efecto:** banner de puerta (kW, tiempo, kWh), «¿Por qué cambió la temperatura?», diagrama de balance,
   consecuencias al mover un control, «¿Qué está pasando?» por reglas, controles bloqueados según el contexto.
 - **Gráfico temporal:** aire / superficie / núcleo con setpoint y límite de alarma, y un segundo panel de
   potencias (carga, refrigeración, eléctrica) en el mismo eje de tiempo; marcadores de eventos, tabla y CSV.
+- **Faceplate TIC-01 (variables de control):** SP operador y SP efectivo (rampa), PV de retorno, error, aportes
+  P / I / D, salida calculada y saturación, salida comandada y carga aplicada (MV), estado y tiempo del compresor,
+  bloqueo anti-ciclo restante y motivo de retención, arranques/h. Modo **AUTO/MANUAL** con transferencia sin salto,
+  **rampa de setpoint**, tiempos mínimos ON/OFF y carga mínima configurables.
+- **Variables físicas** (pestañas): *Ciclo* (Q sensible/latente, SHR, T evaporación, ε-NTU, UA con escarcha,
+  condensado, presiones de succión/descarga R-404A aprox., relación de compresión, T condensación, lift, COP Carnot/real,
+  calor rechazado) · *Aire* (caudal, renovaciones, reparto por pasillo, psicrometría, estratificación) · *Envolvente*
+  (conducción, infiltración de puerta sensible/latente, aperturas) · *Producto* (masa, T superficie/núcleo, calor por retirar,
+  respiración, pallet más caliente).
+- **Perturbaciones rápidas:** corte de energía de 10 min, pulso de puerta de 60 s, condensador sucio (+8 K de condensación)
+  y aproximación de condensación ajustable; alarmas nuevas de corte de energía, alta presión de condensación y lazo en manual.
 - **Comparación A/B:** dos corridas completas del mismo escenario con la misma semilla (ON/OFF vs PID, ventilador,
   cortina, aislamiento) con tabla de KPI y curvas lado a lado.
 

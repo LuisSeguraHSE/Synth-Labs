@@ -19,6 +19,7 @@ export function loadBreakdown(st) {
 }
 
 export function dominantCause(st, p) {
+  if (st.cut) return { key: 'off', text: 'Corte de energía' };
   if (!p.refrigOn) return { key: 'off', text: 'Refrigeración apagada' };
   if (p.evapFail) return { key: 'fail', text: 'Falla de evaporador: flujo de aire y capacidad reducidos' };
   if (st.evap.defrostLeft > 0) return { key: 'defrost', text: 'Desescarche en curso: la refrigeración está detenida' };
@@ -42,6 +43,8 @@ export const ACTIONS = {
   cap: 'Restituir la capacidad frigorífica disponible.',
   ambient: 'Reducir aperturas y revisar condensador y aislamiento.',
   load: 'Reducir la carga (aperturas, ingresos) o aumentar la capacidad.',
+  cond: 'Limpiar el condensador, verificar su ventilador y reducir la aproximación de condensación.',
+  user: 'Volver el lazo a AUTOMÁTICO para que el controlador regule la temperatura.',
 };
 
 function trend(st) {
@@ -60,7 +63,9 @@ export function explain(st, p) {
   else if (dir === 'bajando') s += ` Baja porque la refrigeración (${kW(o.Q)}) retira más calor del que entra (${kW(total)}).`;
   else s += ` Entra ${kW(total)} de calor y el sistema retira ${kW(o.Q)} en promedio; el mayor aporte es ${top.label.toLowerCase()}.`;
   out.push(s);
-  if (!p.refrigOn) out.push('La refrigeración está apagada: nada compensa las ganancias de calor.');
+  if (st.cut) out.push(`Corte de energía: compresor y ventiladores detenidos ${fmtDur(st.cutUntil - st.t)} más. La inercia térmica del producto amortigua la subida.`);
+  else if (p.ctrlMode === 'manual') out.push(`Lazo en MANUAL: el compresor trabaja fijo al ${(st.ctrl.u * 100).toFixed(0)} % y no corrige desviaciones; vuelve a AUTO para regular.`);
+  else if (!p.refrigOn) out.push('La refrigeración está apagada: nada compensa las ganancias de calor.');
   else if (st.evap.defrostLeft > 0) out.push(`Desescarche en curso (${fmtDur(st.evap.defrostLeft)} restantes): compresor y ventiladores detenidos, resistencias encendidas.`);
   else if (p.control === 'onoff') out.push(`Control ON/OFF: el compresor está ${st.ctrl.on ? 'ENCENDIDO al 100 %' : 'APAGADO'}; enciende sobre ${(p.sp + p.hyst).toFixed(1)} °C y apaga bajo ${(p.sp - p.hyst).toFixed(1)} °C (retorno ${k.Tret.toFixed(1)} °C).`);
   else out.push(`Control PID: el compresor trabaja al ${(st.ctrl.u * 100).toFixed(0)} % para mantener el retorno (${k.Tret.toFixed(1)} °C) en ${p.sp} °C.`);

@@ -15,8 +15,8 @@ const f1 = (v) => (v == null || !isFinite(v) ? '—' : v.toFixed(1));
 const kW = (w) => `${(w / 1000).toFixed(1)} kW`;
 const GLY = { door: '▯', ingress: '▦', alarm: '⚠', fail: '✖', defrost: '❄', user: '✎', recovery: '✓', pulldown: '✓', start: '▶', control: '⚙' };
 const FILTER = { all: null, door: ['door'], ingress: ['ingress', 'pulldown'], alarm: ['alarm'], ctrl: ['control', 'defrost', 'recovery', 'fail', 'start'], user: ['user'] };
-const LABEL = { sp: 'Setpoint', fan: 'Ventiladores', hyst: 'Histéresis', tExt: 'T exterior', rhExt: 'HR exterior', capAvail: 'Capacidad disponible', Kp: 'Kp', Ki: 'Ki', Kd: 'Kd' };
-const UNIT = { sp: ' °C', fan: ' %', hyst: ' °C', tExt: ' °C', rhExt: ' %', capAvail: ' %', Kp: '', Ki: '', Kd: '' };
+const LABEL = { uMan: 'Salida manual', spRamp: 'Rampa SP', minOn: 'Mín. ON', minOff: 'Mín. OFF', uMin: 'Carga mínima', condApproach: 'Aproximación cond.', sp: 'Setpoint', fan: 'Ventiladores', hyst: 'Histéresis', tExt: 'T exterior', rhExt: 'HR exterior', capAvail: 'Capacidad disponible', Kp: 'Kp', Ki: 'Ki', Kd: 'Kd' };
+const UNIT = { uMan: ' %', spRamp: ' °C/min', minOn: ' s', minOff: ' s', uMin: ' %', condApproach: ' K', sp: ' °C', fan: ' %', hyst: ' °C', tExt: ' °C', rhExt: ' %', capAvail: ' %', Kp: '', Ki: '', Kd: '' };
 
 export function initUI(app) {
   const ui = { mode: 'eng', abRuns: 0, sel: null, filter: 'all', logLen: -1, lastUI: 0, lastChart: 0, hintTimer: null, committed: {} };
@@ -41,7 +41,7 @@ export function initUI(app) {
   SPEEDS.forEach((v) => { const b = document.createElement('button'); b.textContent = '×' + v; b.dataset.v = v; $('speeds').appendChild(b); });
   const markSpeed = () => { [...$('speeds').children].forEach((b) => b.classList.toggle('on', +b.dataset.v === app.speed)); $('speedLbl').textContent = app.playing ? `×${app.speed}` : 'pausa'; };
   $('speeds').onclick = (e) => { const b = e.target.closest('button'); if (b) { app.speed = +b.dataset.v; app.playing = true; $('btnPlay').textContent = '⏸'; markSpeed(); } };
-  $('btnPlay').onclick = () => { app.playing = !app.playing; $('btnPlay').textContent = app.playing ? '⏸' : '▶'; markSpeed(); };
+  $('btnPlay').onclick = () => { app.playing = !app.playing; $('btnPlay').textContent = app.playing ? '⏸' : '▶'; $('btnPlay').classList.toggle('accent', !app.playing); markSpeed(); };
   $('btnStep10').onclick = () => { sim().advance(600); refresh(true); };
   $('btnReset').onclick = () => app.load(app.scenario, { ...P() });
   $('modes').onclick = (e) => {
@@ -100,6 +100,11 @@ export function initUI(app) {
   slider('tExt', 'tExt', 'oText', (v) => `${v} °C`);
   slider('rhExt', 'rhExt', 'oRhe', (v) => `${v} %`);
   slider('Kp', 'Kp', 'oKp'); slider('Ki', 'Ki', 'oKi'); slider('Kd', 'Kd', 'oKd');
+  slider('uMan', 'uMan', 'oUman', (v) => `${v} %`);
+  slider('spRamp', 'spRamp', 'oRamp', (v) => (v > 0 ? `${v} °C/min` : 'escalón'));
+  slider('minOn', 'minOn', 'oMinOn', (v) => `${v} s`); slider('minOff', 'minOff', 'oMinOff', (v) => `${v} s`);
+  slider('uMin', 'uMin', 'oUmin', (v) => `${v} %`);
+  slider('condApproach', 'condApproach', 'oCondA', (v) => `${v} K`);
   const segBind = (id, key, label) => ($(id).onclick = (e) => {
     const b = e.target.closest('button'); if (!b || b.disabled) return;
     const v = b.dataset.v, from = P()[key];
@@ -107,11 +112,16 @@ export function initUI(app) {
     sim().setParam(key, v, `${label}: ${from} → ${v}`); showHints(key, from, v); syncControls();
   });
   segBind('ctrlSeg', 'control', 'Control');
+  segBind('modeSeg', 'ctrlMode', 'Modo TIC-01');
+  $('physSeg').onclick = (e) => { const b = e.target.closest('button'); if (!b) return; ui.phys = b.dataset.v; [...$('physSeg').children].forEach((x) => x.classList.toggle('on', x === b)); renderPhys(); };
   segBind('pidSeg', 'pidPreset', 'Respuesta PID');
   segBind('insSeg', 'insulation', 'Aislamiento');
   const check = (id, key, label) => ($(id).onchange = () => {
     const v = $(id).checked; sim().setParam(key, v, `${label}: ${v ? 'activada' : 'desactivada'}`); showHints(key, !v, v); syncControls();
   });
+  check('condDirty', 'condDirty', 'Condensador sucio');
+  $('btnCut').onclick = () => { if (!ST().cut) sim().powerCut(10); refresh(true); };
+  $('btnPulse').onclick = () => { if (!ST().door.cmd && !ST().ingress) sim().doorPulse(60); refresh(true); };
   check('refrigOn', 'refrigOn', 'Refrigeración'); check('curtain', 'curtain', 'Cortina de aire'); check('evapFail', 'evapFail', 'Falla de evaporador');
   $('btnDefrost').onclick = () => sim().defrostNow();
 
@@ -134,6 +144,12 @@ export function initUI(app) {
     app.scene.setView(b.dataset.v); [...$('viewSeg').children].forEach((x) => x.classList.toggle('on', x === b));
     $('levelSeg').hidden = b.dataset.v !== 'planta';
   };
+  function setQuality(q, why) {
+    app.scene.setQuality(q); app.quality = q;
+    [...$('qualSeg').children].forEach((x) => x.classList.toggle('on', x.dataset.v === q));
+    if (why) { $('hints').innerHTML = `<b>Calidad gráfica</b><div>${why}</div>`; $('hints').hidden = false; clearTimeout(ui.hintTimer); ui.hintTimer = setTimeout(() => ($('hints').hidden = true), 7000); }
+  }
+  $('qualSeg').onclick = (e) => { const b = e.target.closest('button'); if (!b) return; app.userQuality = true; setQuality(b.dataset.v); };
   $('levelSeg').onclick = (e) => { const b = e.target.closest('button'); if (!b) return; app.scene.setLevel(+b.dataset.v); [...$('levelSeg').children].forEach((x) => x.classList.toggle('on', x === b)); };
   document.querySelectorAll('[data-layer]').forEach((c) => (c.onchange = () => app.scene.setLayers({ [c.dataset.layer]: c.checked })));
   $('winSeg').onclick = (e) => { const b = e.target.closest('button'); if (!b) return; app.charts.setWindow(+b.dataset.v); [...$('winSeg').children].forEach((x) => x.classList.toggle('on', x === b)); refresh(true); };
@@ -167,15 +183,20 @@ export function initUI(app) {
     set('capAvail', p.capAvail, 'oCap', `${p.capAvail} % · ${((p.capNom * p.capAvail) / 100).toFixed(0)} kW`);
     set('tExt', p.tExt, 'oText', `${p.tExt} °C`); set('rhExt', p.rhExt, 'oRhe', `${p.rhExt} %`);
     set('Kp', p.Kp, 'oKp', p.Kp); set('Ki', p.Ki, 'oKi', p.Ki); set('Kd', p.Kd, 'oKd', p.Kd);
+    set('uMan', p.uMan, 'oUman', `${p.uMan} %`); set('spRamp', p.spRamp, 'oRamp', p.spRamp > 0 ? `${p.spRamp} °C/min` : 'escalón');
+    set('minOn', p.minOn, 'oMinOn', `${p.minOn} s`); set('minOff', p.minOff, 'oMinOff', `${p.minOff} s`); set('uMin', p.uMin, 'oUmin', `${p.uMin} %`);
+    set('condApproach', p.condApproach, 'oCondA', `${p.condApproach} K`); $('condDirty').checked = p.condDirty;
     $('refrigOn').checked = p.refrigOn; $('curtain').checked = p.curtain; $('evapFail').checked = p.evapFail;
     const seg = (id, v) => [...$(id).children].forEach((b) => b.classList.toggle('on', b.dataset.v === v));
-    seg('ctrlSeg', p.control); seg('pidSeg', p.pidPreset); seg('insSeg', p.insulation);
+    seg('ctrlSeg', p.control); seg('pidSeg', p.pidPreset); seg('insSeg', p.insulation); seg('modeSeg', p.ctrlMode);
+    $('manBox').hidden = p.ctrlMode !== 'manual';
     $('onoffBox').hidden = p.control !== 'onoff'; $('pidBox').hidden = p.control !== 'pid';
     $('insNote').textContent = `U = ${p.U} W/m²K`;
     ADV.forEach(([k]) => { const el = document.querySelector(`[data-adv=${k}]`); if (document.activeElement !== el) el.value = p[k]; });
     $('scenario').value = app.scenario; $('scDesc').textContent = SCENARIOS[app.scenario].desc;
-    ['sp', 'fan', 'hyst', 'capAvail', 'tExt', 'rhExt', 'Kp', 'Ki', 'Kd'].forEach((k) => (ui.committed[k] = p[k]));
+    ['sp', 'fan', 'hyst', 'capAvail', 'tExt', 'rhExt', 'Kp', 'Ki', 'Kd', 'uMan', 'spRamp', 'minOn', 'minOff', 'uMin', 'condApproach'].forEach((k) => (ui.committed[k] = p[k]));
     fanNote(); ladder(); legend();
+    window.SLControls?.paintAll();
   }
 
   function fanNote() {
@@ -224,6 +245,7 @@ export function initUI(app) {
       const o = st.evapOut;
       return `<b>EVAPORADOR EV-01</b><div><span class="k">Cooling</span>${kW(o.Q)}</div><div><span class="k">Fan</span>${p.fan} %${p.evapFail ? ' ⚠' : ''}</div><div><span class="k">Air outlet</span>${o.Tsup.toFixed(1)} °C</div>`;
     }
+    if (sel.kind === 'cond') return `<b>UNIDAD CONDENSADORA CU-01</b><div><span class="k">Compresor</span>${st.ctrl.on ? (st.ctrl.u * 100).toFixed(0) + ' %' : 'detenido'}</div><div><span class="k">Potencia</span>${kW(st.elec.comp)}</div><div><span class="k">COP</span>${st.evapOut.Q > 0 ? st.evapOut.cop.toFixed(2) : '—'}</div>`;
     if (sel.kind === 'door') return `<b>PUERTA P-01</b><div><span class="k">Estado</span>${st.door.cmd ? 'ABIERTA' : 'cerrada'}</div><div><span class="k">Carga</span>${kW(st.door.Q)}</div><div><span class="k">Cortina</span>${p.curtain ? 'sí' : 'no'}</div>`;
     if (sel.kind === 'zone') {
       const z = R.zones[sel.id];
@@ -257,6 +279,10 @@ export function initUI(app) {
       const o = st.evapOut, a = st.air;
       title = 'Evaporador EV-01';
       body = kv([['Capacidad entregada', kW(o.Q)], ['— sensible / latente', `${kW(o.Qs)} / ${kW(o.Qlat)}`], ['Capacidad compresor', kW(o.Qcomp)], ['Límite por aire', kW(o.Qair)], ['Ventiladores', `${p.fan} % (efectivo ${(a.fanFrac * 100).toFixed(0)} %)`], ['Caudal', `${a.Vdot.toFixed(2)} m³/s`], ['Aire de salida', `${o.Tsup.toFixed(1)} °C`], ['Aire de retorno', `${st.kpi.Tret.toFixed(1)} °C`], ['T evaporación', `${o.Tevap.toFixed(1)} °C`], ['COP', o.cop.toFixed(2)], ['Potencia compresor', kW(st.elec.comp)], ['Escarcha', `${st.evap.frost.toFixed(0)} kg`], ['Próximo desescarche', p.defrostEvery > 0 ? clock(st.evap.nextDefrost) : 'desactivado'], ['Estado', p.evapFail ? '⚠ FALLA' : st.evap.defrostLeft > 0 ? '❄ desescarche' : 'normal']]);
+    } else if (sel.kind === 'cond') {
+      const o = st.evapOut;
+      title = 'Unidad condensadora CU-01';
+      body = kv([['Estado', !p.refrigOn ? '⏻ sistema apagado' : st.evap.defrostLeft > 0 ? '❄ detenida por desescarche' : st.ctrl.on ? 'en marcha' : 'en espera'], ['Carga del compresor', `${(st.ctrl.u * 100).toFixed(0)} %`], ['Control', p.control === 'pid' ? `PID ${p.pidPreset}` : `ON/OFF ±${p.hyst} °C`], ['Capacidad entregada', kW(o.Q)], ['Capacidad disponible', kW(o.avail)], ['Potencia compresor', kW(st.elec.comp)], ['COP', o.Q > 0 ? o.cop.toFixed(2) : '—'], ['T evaporación', `${o.Tevap.toFixed(1)} °C`], ['T condensación', `${o.Tcond.toFixed(1)} °C${p.condDirty ? ' ⚠ sucio' : ''}`], ['P succión / descarga (R-404A)', `${o.Psuc.toFixed(1)} / ${o.Pdis.toFixed(1)} bar`], ['Relación de compresión', (o.Pdis / o.Psuc).toFixed(1)], ['COP Carnot · η', `${o.copCarnot.toFixed(2)} · ${p.eta}`], ['Calor rechazado', kW(o.Qcond)], ['Arranques', st.ctrl.starts], ['Energía compresor', `${(st.energy.compJ / 3.6e6).toFixed(1)} kWh`]]);
     } else if (sel.kind === 'door') {
       const d = st.door;
       title = 'Puerta P-01';
@@ -355,13 +381,15 @@ export function initUI(app) {
     if (d.cmd) $('doorBanner').innerHTML = `<div><small>Puerta abierta</small><b>${fmtDur(st.t - d.openedAt)}</b></div><div><small>Carga adicional</small><b>+${(d.Q / 1000).toFixed(1)} kW</b></div><div><small>Energía adicional</small><b>+${(d.elecJ / 3.6e6).toFixed(2)} kWh</b></div><div><small>HR</small><b>${st.kpi.rh.toFixed(0)} %</b></div>`;
     // Ingreso
     const g = st.ingress, free = app.sim.freeSlots();
-    $('btnIngress').disabled = !!g || free <= 0;
-    $('ingressInfo').textContent = g ? `Ingresando lote ${g.batch.id}: ${g.batch.n - g.left - (g.trip ? 1 : 0)}/${g.batch.n} en cámara · montacargas en ruta` : free <= 0 ? 'Cámara llena.' : `${free} posiciones libres.`;
+    $('btnIngress').disabled = !!g || free <= 0; $('btnIngress').classList.toggle('run', !!g);
+    $('ingressInfo').textContent = g ? `Ingresando lote ${g.batch.id}: ${g.batch.n - g.left}/${g.batch.n} en cámara · montacargas en ruta` : free <= 0 ? 'Cámara llena.' : `${free} posiciones libres.`;
     // Bloqueos por contexto
     $('capAvail').disabled = !p.refrigOn; $('capLock').hidden = p.refrigOn;
     $('fan').disabled = st.evap.defrostLeft > 0;
     $('ctrlLock').hidden = p.refrigOn; $('ctrlLock').textContent = '🔒 Refrigeración apagada: el control no actúa.';
     $('evapFail').checked = p.evapFail;
+    $('btnCut').classList.toggle('on', st.cut); $('btnCut').textContent = st.cut ? `⚡ Sin energía ${fmtDur(st.cutUntil - st.t)}` : '⚡ Corte 10 min';
+    $('btnPulse').disabled = d.cmd || !!st.ingress;
     const lt = document.getElementById('legTime'); if (lt) lt.textContent = clock(st.t);
     fanNote(); ladder();
   }
@@ -467,12 +495,72 @@ export function initUI(app) {
     requestAnimationFrame(() => { miniChart($('abCa'), [{ c: COLORS.sAir, pts: A.trace }], opts); miniChart($('abCb'), [{ c: COLORS.sAir, pts: B.trace }], opts); });
   }
 
+  // =================== Faceplate TIC-01 y variables físicas ===================
+  function renderFaceplate() {
+    const st = ST(), p = P(), c = st.ctrl, man = p.ctrlMode === 'manual', pid = p.control === 'pid';
+    const m = $('fpMode'); m.textContent = man ? 'MANUAL' : pid ? 'AUTO · PID' : 'AUTO · ON/OFF'; m.classList.toggle('man', man);
+    const sp = c.spEff ?? p.sp, rows = [
+      ['SP operador', `${p.sp.toFixed(1)} °C`], ['SP efectivo', `${sp.toFixed(2)} °C${Math.abs(sp - p.sp) > 0.01 ? ' ↝' : ''}`],
+      ['PV (retorno T-02)', `${f1(c.pv)} °C`], ['Error e = PV − SP', `${(c.e || 0) >= 0 ? '+' : ''}${(c.e || 0).toFixed(2)} K`],
+      ...(pid && !man ? [['P · I · D', `${c.P.toFixed(2)} · ${c.Iterm.toFixed(2)} · ${c.D.toFixed(2)}`], ['Salida calculada', `${(c.raw * 100).toFixed(0)} %${c.sat ? ' (satura)' : ''}`]] : []),
+      ...(!pid && !man ? [['Banda ON / OFF', `${(sp + p.hyst).toFixed(1)} / ${(sp - p.hyst).toFixed(1)} °C`]] : []),
+      ['Salida comandada', `${(c.uCmd * 100).toFixed(0)} %`], ['Carga aplicada (MV)', `${(c.u * 100).toFixed(0)} %`],
+      ['Compresor', `${c.on ? 'ON' : 'OFF'} hace ${fmtDur(c.since || 0)}`], ['Bloqueo anti-ciclo', c.lockLeft > 0 ? fmtDur(c.lockLeft) : 'libre'],
+      ['Arranques / h', st.t > 600 ? ((c.starts * 3600) / st.t).toFixed(1) : '—'],
+    ];
+    $('fpKv').innerHTML = rows.map(([a, b]) => `<span>${a}</span><b>${b}</b>`).join('');
+    const why = $('fpWhy'); why.hidden = !c.why; if (c.why) why.textContent = `🔒 Salida retenida: ${c.why}.`;
+    // Gráfico de barras del faceplate: PV/SP (termómetro), salida u y aportes P/I/D.
+    const cv = $('fpCv'), g = cv.getContext('2d'), W = 150, H = 150, lo = sp - 5, hi = sp + 5, yT = (T) => 130 - ((Math.min(hi, Math.max(lo, T)) - lo) / (hi - lo)) * 115;
+    g.clearRect(0, 0, W, H); g.font = '10px system-ui'; g.textAlign = 'center';
+    g.fillStyle = '#0a1016'; g.fillRect(12, 15, 26, 115); g.strokeStyle = '#2e3e52'; g.strokeRect(12.5, 15.5, 25, 114);
+    const pvy = yT(c.pv ?? sp); g.fillStyle = (c.e || 0) > p.alarmOffset ? '#d03b3b' : '#3987e5'; g.fillRect(14, pvy, 22, 130 - pvy);
+    g.strokeStyle = '#fab219'; g.lineWidth = 2; g.beginPath(); g.moveTo(8, yT(sp)); g.lineTo(42, yT(sp)); g.stroke(); g.lineWidth = 1;
+    if (!pid && !man) { g.setLineDash([3, 3]); g.strokeStyle = '#8b9bb0'; [sp + p.hyst, sp - p.hyst].forEach((v) => { g.beginPath(); g.moveTo(10, yT(v)); g.lineTo(40, yT(v)); g.stroke(); }); g.setLineDash([]); }
+    g.fillStyle = '#8b9bb0'; g.fillText('PV', 25, 143); g.fillText(`${hi.toFixed(0)}`, 25, 11);
+    g.fillStyle = '#0a1016'; g.fillRect(50, 15, 18, 115); g.strokeStyle = '#2e3e52'; g.strokeRect(50.5, 15.5, 17, 114);
+    g.fillStyle = man ? '#fab219' : '#9085e9'; g.fillRect(52, 130 - c.u * 115, 14, c.u * 115); g.fillStyle = '#8b9bb0'; g.fillText('u', 59, 143);
+    if (pid && !man) {
+      [['P', c.P, '#3987e5'], ['I', c.Iterm, '#199e70'], ['D', c.D, '#9085e9']].forEach(([n, v, col], k) => {
+        const x = 78 + k * 24, h = Math.max(-1, Math.min(1, v)) * 55;
+        g.fillStyle = '#0a1016'; g.fillRect(x, 15, 18, 115); g.fillStyle = col; g.fillRect(x + 2, h > 0 ? 72 - h : 72, 14, Math.abs(h));
+        g.strokeStyle = '#8b9bb0'; g.beginPath(); g.moveTo(x, 72.5); g.lineTo(x + 18, 72.5); g.stroke(); g.fillStyle = '#8b9bb0'; g.fillText(n, x + 9, 143);
+      });
+    } else { g.fillStyle = '#5b6b80'; g.textAlign = 'left'; g.fillText(man ? 'lazo abierto' : 'histéresis', 78, 75); }
+  }
+
+  function renderPhys() {
+    const st = ST(), p = P(), o = st.evapOut, a = st.air, k = st.kpi, L = st.loads, R = st.R, tab = ui.phys || 'cyc';
+    const r = (n, v, u = '') => `<tr><td>${n}</td><td>${v}${u ? ` <small>${u}</small>` : ''}</td></tr>`, h = (t) => `<tr class="h"><td colspan="2">${t}</td></tr>`;
+    let out = '';
+    if (tab === 'cyc') out = h('Evaporador (lado aire)') + r('Capacidad total Q', (o.Q / 1000).toFixed(2), 'kW') + r('Sensible / latente', `${(o.Qs / 1000).toFixed(2)} / ${(o.Qlat / 1000).toFixed(2)}`, 'kW') + r('Factor de calor sensible', o.SHR.toFixed(2)) + r('T evaporación', o.Tevap.toFixed(1), '°C') + r('ΔT aire–evaporación', o.TD.toFixed(1), 'K') + r('Efectividad ε (NTU)', o.eps.toFixed(2)) + r('UA efectivo (con escarcha)', (o.UA / 1000).toFixed(2), 'kW/K') + r('Escarcha acumulada', st.evap.frost.toFixed(1), 'kg') + r('Condensado', (o.mCond * 3600).toFixed(1), 'kg/h') +
+      h('Compresor y condensador (R-404A aprox.)') + r('P succión', o.Psuc.toFixed(2), 'bar abs') + r('P descarga', o.Pdis.toFixed(2), 'bar abs') + r('Relación de compresión', (o.Pdis / o.Psuc).toFixed(2)) + r('T condensación', o.Tcond.toFixed(1), '°C') + r('Lift térmico', (o.Tcond - o.Tevap).toFixed(1), 'K') + r('COP Carnot / real', `${o.copCarnot.toFixed(2)} / ${o.Q > 0 ? o.cop.toFixed(2) : '—'}`) + r('Potencia compresor', (st.elec.comp / 1000).toFixed(2), 'kW') + r('Calor rechazado', (o.Qcond / 1000).toFixed(2), 'kW');
+    else if (tab === 'air') out = h('Ventilación') + r('Caudal volumétrico', a.Vdot.toFixed(2), 'm³/s') + r('Caudal másico', a.mdot.toFixed(2), 'kg/s') + r('Renovaciones internas', ((a.Vdot * 3600) / (p.L * p.W * p.H)).toFixed(0), '1/h') + r('Potencia ventiladores', (st.elec.fan / 1000).toFixed(2), 'kW') + r('T impulsión / retorno', `${o.Tsup.toFixed(1)} / ${k.Tret.toFixed(1)}`, '°C') +
+      a.col.map((m, j) => r(`Pasillo rack ${j + 1}`, `${m.toFixed(2)} kg/s · ${(a.vRatio[j] * 100).toFixed(0)} %`, 'del ref.')).join('') +
+      h('Psicrometría') + r('HR media', k.rh.toFixed(0), '%') + r('Humedad absoluta w', (st.w * 1000).toFixed(2), 'g/kg') + r('Punto de rocío local (puerta)', k.dew.toFixed(1), '°C') + r('w exterior', (st.wExt * 1000).toFixed(2), 'g/kg') + r('Transpiración producto', (st.mTr * 3600).toFixed(2), 'kg/h') +
+      h('Estratificación') + r('Zona más caliente', `${k.hot.T.toFixed(1)} °C`) + r('Rango entre zonas', (Math.max(...st.T) - Math.min(...st.T)).toFixed(2), 'K');
+    else if (tab === 'env') out = h('Envolvente') + r('U paneles', p.U.toFixed(2), 'W/m²K') + r('Área total', R.wallA.reduce((s, x) => s + x, 0).toFixed(0), 'm²') + r('Conducción paredes', (L.walls / 1000).toFixed(2), 'kW') + r('ΔT exterior–interior', (p.tExt - k.Tavg).toFixed(1), 'K') +
+      h('Puerta') + r('Apertura', (st.door.frac * 100).toFixed(0), '%') + r('Infiltración de aire', st.door.mInf.toFixed(2), 'kg/s') + r('Carga sensible puerta', (L.door / 1000).toFixed(2), 'kW') + r('Carga latente puerta', (L.doorLat / 1000).toFixed(2), 'kW') + r('Cortina de aire', p.curtain ? 'sí (−75 %)' : 'no') + r('Aperturas / tiempo total', `${st.door.count} / ${fmtDur(st.door.totalOpen + (st.door.cmd ? st.t - st.door.openedAt : 0))}`) +
+      h('Internas') + r('Iluminación', (L.lights / 1000).toFixed(2), 'kW') + r('Otros (desescarche, montacargas)', (L.other / 1000).toFixed(2), 'kW');
+    else {
+      const inside = st.pallets.filter((q) => q.state !== 'outside');
+      const resp = inside.reduce((s, q) => s + PRODUCTS[q.prod].resp * q.m * Math.exp(0.07 * q.Tc), 0);
+      const E = inside.reduce((s, q) => s + q.Cs * (q.Ts - p.sp) + q.Cc * (q.Tc - p.sp), 0);
+      const hp = k.hotPallet;
+      out = h('Inventario') + r('Pallets en cámara', `${inside.length}`) + r('Masa de producto', (k.mass / 1000).toFixed(1), 't') + r('T superficie / núcleo', `${f1(k.Ts)} / ${f1(k.Tc)}`, '°C') + r('Calor sensible por retirar', (Math.max(0, E) / 3.6e6).toFixed(1), 'kWh') +
+        r('Calor de respiración', (resp / 1000).toFixed(2), 'kW') + r('Intercambio aire→producto', (-L.product / 1000).toFixed(2), 'kW') +
+        (hp ? h('Pallet más caliente') + r('Pallet', `#${hp.id} · ${PRODUCTS[hp.prod].name}`) + r('T superficie / núcleo', `${hp.Ts.toFixed(1)} / ${hp.Tc.toFixed(1)}`, '°C') + r('Límite de núcleo', PRODUCTS[hp.prod].tMax, '°C') : '') +
+        (k.rhRange ? r('Rango HR recomendado', `${k.rhRange[0]}–${k.rhRange[1]}`, '%') : '');
+    }
+    $('physTbl').innerHTML = out;
+  }
+
   // =================== Ciclo de refresco ===================
   function refresh(force) {
     const now = performance.now();
     if (force || now - ui.lastUI > 150) {
       ui.lastUI = now;
-      renderTop(); renderKPIs(); renderTimeline(); lessons.tick();
+      renderTop(); renderKPIs(); renderTimeline(); lessons.tick(); renderFaceplate(); renderPhys();
       if (!$('tabAlarms').hidden) renderAlarmsTab();
       if (!$('tabBalance').hidden) renderBalance();
       if (ui.sel) showDetail();
@@ -481,7 +569,7 @@ export function initUI(app) {
   }
 
   return {
-    refresh,
+    refresh, setQuality,
     onLoad() {
       ui.sel = null; $('detail').hidden = true; ui.logLen = -1;
       syncControls(); lessons.reset(); refresh(true);

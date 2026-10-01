@@ -3,23 +3,25 @@
 import { wsat } from './thermal.js';
 
 const CP_AIR = 1005, HFG = 2.5e6;
+// Presión de saturación aproximada del R-404A [bar abs]: ln P = A − B/T (ajuste −10…40 °C, error < 5 %).
+export const psatR404A = (TC) => Math.exp(10.495 - 2378 / (TC + 273.15));
 
 export function airflow(st, p, R) {
   const defrost = st.evap.defrostLeft > 0;
   const fanCmd = p.fan / 100;
-  const fanFrac = defrost ? 0 : fanCmd * (p.evapFail ? 0.3 : 1);
+  const fanFrac = defrost || st.cut ? 0 : fanCmd * (p.evapFail ? 0.3 : 1);
   const occ = st.occ, Vdot = p.fanFlow * fanFrac * (1 - 0.3 * occ);
   // Reparto por columna: una columna llena de pallets ofrece más resistencia y recibe menos aire.
   const w = st.colOcc.map((o) => 1.05 - 0.7 * o), sw = w.reduce((a, b) => a + b, 0);
   const col = w.map((x) => (1.25 * Vdot * x) / sw);           // [kg/s] por columna
   const Vref = (p.fanFlow * 0.7 * 0.82) / R.ny;               // caudal de referencia por columna (70 % ventilador)
   st.air = { fanCmd, fanFrac, Vdot, mdot: 1.25 * Vdot, col, vRatio: col.map((m) => m / 1.25 / Vref) };
-  st.elec.fan = defrost ? 0 : p.fanPow * 1000 * Math.pow(fanCmd, 3) * (p.evapFail ? 0.67 : 1);
+  st.elec.fan = defrost || st.cut ? 0 : p.fanPow * 1000 * Math.pow(fanCmd, 3) * (p.evapFail ? 0.67 : 1);
 }
 
 export function evaporator(st, p, Tret) {
   const e = st.evap, a = st.air, u = st.ctrl.u;
-  const avail = p.refrigOn && e.defrostLeft <= 0 ? p.capNom * 1000 * (p.capAvail / 100) : 0;
+  const avail = p.refrigOn && e.defrostLeft <= 0 && !st.cut ? p.capNom * 1000 * (p.capAvail / 100) : 0;
   const Qcomp = u * avail;
   const TD = 3 + 7 * u;                      // diferencia aire-evaporación: sube con la carga del compresor
   const Tevap = Tret - TD, mcp = a.mdot * CP_AIR;
@@ -35,12 +37,15 @@ export function evaporator(st, p, Tret) {
   let Qlat = mCond * HFG;
   if (Qlat > 0.6 * Q) { Qlat = 0.6 * Q; mCond = Qlat / HFG; }
   const Qs = Q - Qlat, Tsup = mcp > 1 ? Tret - Qs / mcp : Tret;
-  const Te = Tevap + 273.15, Tc = p.tExt + 10 + 273.15;
-  const cop = Math.min(7, Math.max(1.2, (p.eta * Te) / Math.max(5, Tc - Te)));
-  st.evapOut = { Q, Qs, Qlat, Qcomp, Qair, avail, airLimited: Qcomp > Qair + 50 && Q > 0, Tevap, Tsup, eps, mCond, cop, TD };
-  st.elec.comp = Q > 0 ? Q / cop : 0;
+  const Tcond = p.tExt + p.condApproach + (p.condDirty ? 8 : 0);
+  const Te = Tevap + 273.15, Tc = Tcond + 273.15, copCarnot = Te / Math.max(5, Tc - Te);
+  const cop = Math.min(7, Math.max(1.2, p.eta * copCarnot));
+  const Wc = Q > 0 ? Q / cop : 0;
+  st.evapOut = { Q, Qs, Qlat, Qcomp, Qair, avail, airLimited: Qcomp > Qair + 50 && Q > 0, Tevap, Tsup, eps, mCond, cop, TD,
+    Tcond, copCarnot, Psuc: psatR404A(Tevap), Pdis: psatR404A(Tcond), Qcond: Q + Wc, UA: mcp > 1 ? -Math.log(1 - Math.min(eps, 0.9999)) * mcp : 0, SHR: Q > 0 ? Qs / Q : 1 };
+  st.elec.comp = Wc;
   st.elec.defrost = e.defrostLeft > 0 ? p.defrostKW * 1000 : 0;
-  st.elec.lights = p.lights * 1000;
+  st.elec.lights = st.cut ? 0 : p.lights * 1000;
 }
 
 export function updateEvapState(st, p, dt, log) {

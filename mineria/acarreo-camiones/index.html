@@ -2,59 +2,207 @@
 <html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <link rel="stylesheet" href="../../shared/style.css"></head>
 <body><div id="app"></div>
+<script src="../../shared/controls.js"></script>
 <script src="../../shared/sim.js"></script>
+<script src="../../shared/gfx.js"></script>
 <script>
-// Ciclo: cola pala → carga → acarreo → cola chancador → descarga → retorno. Unidad de tiempo: minutos.
+// Ciclo: cola pala → carga → acarreo (sube cargado) → cola chancador → descarga a tolva → retorno (baja vacío). Unidad: minutos.
+// Velocidad = mín(límite de despacho, potencia/fuerza de resistencia): F = m·g·(pendiente + rodadura). Consumo = ralentí + SFC·kW.
 const S = { x: 110, y: 330 }, C = { x: 690, y: 120 };
+const G = 9.81, EMPTY = 0.75, ETA = 0.85, SFC = 0.24, IDLE = 28; // m/s², masa vacío/carga útil, η tren motriz, L/kWh, L/h
 const pt = (a, b, f, off) => ({ x: SL.lerp(a.x, b.x, f) + off, y: SL.lerp(a.y, b.y, f) + off });
+const PH = { qS: 'Cola pala', load: 'Cargando', haul: 'Acarreo cargado', qC: 'Cola chancador', dump: 'Descargando', ret: 'Retorno vacío' };
+const mkTruck = (i, t) => ({ ph: 'qS', rem: 0, tot: 1, id: i, dk: 0, v: 0, kw: 0, ret: 0, F: 0, lph: IDLE, fuel: 0, km: 0, tons: 0, cyc: 0, c0: t || 0, last: 0, dn: 0, dnT: 0 });
+// Física de marcha: devuelve {v km/h, kw motor, F kN, ret kW retardo}
+function drive(s, p, loaded) {
+  const m = p.payload * (loaded ? 1 + EMPTY : EMPTY) * 1000, tr = ((loaded ? p.grade : -p.grade) + p.rr + (s.rain ? 2 : 0)) / 100, F = m * G * tr;
+  const vmax = (loaded ? p.vl : p.ve) * (s.rain ? 0.7 : 1), vlim = F > 0 ? ((p.pw * 1000 * ETA) / F) * 3.6 : 1e9, v = Math.min(vmax, vlim), vs = v / 3.6;
+  return { v, F: F / 1000, kw: Math.max(0, (F * vs) / ETA / 1000) + 0.08 * p.pw, ret: F < 0 ? (-F * vs) / 1000 : 0, lim: vlim < vmax };
+}
+// Match factor = camiones disponibles · t carga / t ciclo sin colas (1 pala)
+const matchF = (s, p) => { const a = drive(s, p, true), b = drive(s, p, false), cyc = p.load + p.dump + (p.dist / a.v) * 60 + (p.dist / b.v) * 60; return (s.trucks.filter((t) => !t.dn).length * p.load) / cyc; };
+const onRoute = (t) => t.ph === 'haul' || t.ph === 'ret';
 SL.app({
   title: 'Minería · Ciclo de acarreo',
-  desc: 'Camiones compiten por 1 pala y 1 chancador. Sube la flota hasta que la productividad se sature y crezcan las colas.',
+  desc: 'Camiones compiten por 1 pala y 1 chancador con tolva. Sube la flota hasta que la productividad se sature y crezcan las colas; provoca fallas, lluvia o atollos. Clic en camiones y equipos para inspeccionar.',
   unit: 'min', dt: 0.1, sample: 5,
   clock: (t) => `Turno: ${Math.floor(t / 60)} h ${Math.floor(t % 60)} min`,
   params: [
-    { id: 'n', label: 'Camiones', min: 1, max: 20, step: 1, value: 8, reset: true },
+    { sec: 'Flota y ruta', id: 'n', label: 'Camiones', min: 1, max: 20, step: 1, value: 8, reset: true },
     { id: 'payload', label: 'Carga útil', min: 100, max: 360, step: 10, value: 220, unit: 't' },
-    { id: 'load', label: 'Tiempo de carga', min: 1, max: 8, step: 0.5, value: 3.5, unit: 'min' },
-    { id: 'dump', label: 'Tiempo de descarga', min: 0.5, max: 5, step: 0.5, value: 1.5, unit: 'min' },
     { id: 'dist', label: 'Distancia de acarreo', min: 1, max: 10, step: 0.5, value: 4, unit: 'km' },
-    { id: 'vl', label: 'Vel. cargado', min: 10, max: 40, step: 1, value: 22, unit: 'km/h' },
-    { id: 've', label: 'Vel. vacío', min: 15, max: 50, step: 1, value: 32, unit: 'km/h' },
+    { id: 'grade', label: 'Pendiente de rampa', min: 0, max: 12, step: 0.5, value: 5, unit: '%' },
+    { id: 'rr', label: 'Resistencia a la rodadura', min: 1, max: 6, step: 0.5, value: 2, unit: '%' },
+    { id: 'pw', label: 'Potencia de motor', min: 1000, max: 3000, step: 50, value: 2000, unit: 'kW' },
+    { id: 'mtbf', label: 'MTBF camión', min: 5, max: 200, step: 5, value: 60, unit: 'h' },
+    { id: 'mttr', label: 'MTTR camión', min: 5, max: 120, step: 5, value: 30, unit: 'min' },
+    { sec: 'Carguío y chancado', id: 'load', label: 'Tiempo de carga', min: 1, max: 8, step: 0.5, value: 3.5, unit: 'min' },
+    { id: 'dump', label: 'Tiempo de descarga', min: 0.5, max: 5, step: 0.5, value: 1.5, unit: 'min' },
+    { id: 'cr', label: 'Capacidad chancador', min: 1500, max: 8000, step: 100, value: 4500, unit: 't/h' },
+    { id: 'hop', label: 'Capacidad de tolva', min: 300, max: 1500, step: 50, value: 600, unit: 't' },
+    { sec: 'Control y despacho', id: 'vl', label: 'Límite vel. cargado', min: 10, max: 40, step: 1, value: 22, unit: 'km/h' },
+    { id: 've', label: 'Límite vel. vacío', min: 15, max: 50, step: 1, value: 32, unit: 'km/h' },
+    { id: 'plan', label: 'Meta de producción', min: 1000, max: 8000, step: 100, value: 3500, unit: 't/h' },
+    { id: 'qal', label: 'Alarma de cola', min: 1, max: 10, step: 1, value: 4, unit: 'camiones' },
   ],
   init(p) {
-    const trucks = [], s = { qS: [], qC: [], shov: null, crus: null, tons: 0, bS: 0, bC: 0, wq: 0, trucks };
-    for (let i = 0; i < p.n; i++) { const t = { ph: 'qS', rem: 0, tot: 1, id: i }; trucks.push(t); s.qS.push(t); }
+    const trucks = [], s = { qS: [], qC: [], shov: null, crus: null, tons: 0, bS: 0, bC: 0, wq: 0, trucks, hop: 0, crushed: 0, ckw: 0, kwh: 0, fuel: 0, ema: 0, cycAvg: 0, nCyc: 0, shDn: false, crDn: false, rain: false, qAl: false, hiAl: false, fails: 0, downT: 0 };
+    for (let i = 0; i < p.n; i++) { const t = mkTruck(i); trucks.push(t); s.qS.push(t); }
     return s;
   },
   step(s, dt, p, r) {
-    if (!s.shov && s.qS.length) { s.shov = s.qS.shift(); s.shov.ph = 'load'; s.shov.rem = p.load * (0.7 + 0.6 * r()); }
-    if (s.shov) { s.bS += dt; if ((s.shov.rem -= dt) <= 0) { const t = s.shov; t.ph = 'haul'; t.tot = t.rem = (p.dist / p.vl) * 60; s.shov = null; } }
-    if (!s.crus && s.qC.length) { s.crus = s.qC.shift(); s.crus.ph = 'dump'; s.crus.rem = p.dump * (0.7 + 0.6 * r()); }
-    if (s.crus) { s.bC += dt; if ((s.crus.rem -= dt) <= 0) { const t = s.crus; s.tons += p.payload; t.ph = 'ret'; t.tot = t.rem = (p.dist / p.ve) * 60; s.crus = null; } }
+    const T = s.t || 0;
+    while (s.trucks.length < p.n) { const t = mkTruck(s.trucks.length, T); s.trucks.push(t); s.qS.push(t); } // camión agregado en vivo
+    if (!s.shov && s.qS.length && !s.shDn) { s.shov = s.qS.shift(); s.shov.ph = 'load'; s.shov.rem = p.load * (0.7 + 0.6 * r()); }
+    if (s.shov && !s.shDn) { s.bS += dt; if ((s.shov.rem -= dt) <= 0) { const t = s.shov; t.ph = 'haul'; t.dk = p.dist; t.tot = t.rem = (p.dist / p.vl) * 60; s.shov = null; } }
+    // Descarga sólo si hay espacio en tolva (enclavamiento de nivel alto) y el chancador no está atollado
+    if (!s.crus && s.qC.length && !s.crDn && s.hop + p.payload <= p.hop) { s.crus = s.qC.shift(); s.crus.ph = 'dump'; s.crus.rem = p.dump * (0.7 + 0.6 * r()); }
+    if (s.crus && !s.crDn) { s.bC += dt; if ((s.crus.rem -= dt) <= 0) { const t = s.crus; s.tons += p.payload; s.hop += p.payload; s.ema += p.payload; t.tons += p.payload; t.ph = 'ret'; t.dk = p.dist; t.tot = t.rem = (p.dist / p.ve) * 60; s.crus = null; } }
+    s.ema *= Math.exp(-dt / 60); // ritmo móvil (t/h, τ = 60 min)
+    // Chancador: consume la tolva a su capacidad
+    const feed = s.crDn ? 0 : Math.min(s.hop, (p.cr / 60) * dt);
+    s.hop -= feed; s.crushed += feed; s.cfeed = (feed / dt) * 60;
+    s.ckw = s.crDn ? 0 : 150 + 0.3 * s.cfeed; s.kwh += (s.ckw * dt) / 60;
     for (const t of s.trucks) {
-      if (t.ph === 'haul' && (t.rem -= dt) <= 0) { t.ph = 'qC'; s.qC.push(t); }
-      else if (t.ph === 'ret' && (t.rem -= dt) <= 0) { t.ph = 'qS'; s.qS.push(t); }
+      let d = null;
+      if (t.dn > 0) { t.v = 0; t.kw = 0.05 * p.pw; t.ret = 0; t.F = 0; s.downT += dt; if ((t.dn -= dt) <= 0) { t.dn = 0; SL.log(s, `CAEX-${t.id + 1} reparado, vuelve a ruta`, 'ok'); } }
+      else if (onRoute(t)) {
+        d = drive(s, p, t.ph === 'haul'); t.v = d.v; t.kw = d.kw; t.ret = d.ret; t.F = d.F; t.lim = d.lim;
+        const dk = Math.min(t.dk, (d.v * dt) / 60); t.dk -= dk; t.km += dk; t.rem = (t.dk / Math.max(d.v, 0.1)) * 60;
+        if (r() < dt / (p.mtbf * 60)) { t.dn = SL.exp(r, p.mttr); s.fails++; SL.log(s, `CAEX-${t.id + 1} falla en ruta (${t.dn.toFixed(0)} min)`, 'crit'); }
+        else if (t.dk <= 1e-9) {
+          if (t.ph === 'haul') { t.ph = 'qC'; s.qC.push(t); }
+          else { t.ph = 'qS'; s.qS.push(t); t.last = T - t.c0; t.c0 = T; t.cyc++; s.nCyc++; s.cycAvg += (t.last - s.cycAvg) / Math.min(s.nCyc, 20); }
+        }
+      } else { t.v = 0; t.ret = 0; t.F = 0; t.kw = (t.ph === 'load' || t.ph === 'dump' ? 0.15 : 0.05) * p.pw; }
+      t.lph = IDLE + SFC * t.kw; t.fuel += (t.lph * dt) / 60; s.fuel += (t.lph * dt) / 60;
     }
     s.wq += (s.qS.length + s.qC.length) * dt;
+    // Alarmas por transición de estado
+    const qa = Math.max(s.qS.length, s.qC.length) >= p.qal;
+    if (qa !== s.qAl) { s.qAl = qa; SL.log(s, qa ? `Alarma: cola ≥ ${p.qal} camiones (pala ${s.qS.length} / chancador ${s.qC.length})` : 'Colas normalizadas', qa ? 'warn' : 'ok'); }
+    const hi = s.hop + p.payload > p.hop;
+    if (hi !== s.hiAl) { s.hiAl = hi; if (s.qC.length || !hi) SL.log(s, hi ? 'Tolva en nivel alto: enclavamiento de descarga' : 'Tolva con espacio: descarga habilitada', hi ? 'warn' : 'ok'); }
   },
   draw(g, s, p, W, H) {
-    g.lineWidth = 6; g.strokeStyle = '#2a3646'; g.lineCap = 'round';
-    for (const o of [-14, 14]) { g.beginPath(); g.moveTo(S.x + o, S.y + o); g.lineTo(C.x + o, C.y + o); g.stroke(); }
-    g.font = '13px system-ui'; g.textAlign = 'center';
-    g.fillStyle = '#f5b942'; g.fillRect(S.x - 40, S.y - 25, 60, 50); g.fillStyle = '#000'; g.fillText('PALA', S.x - 10, S.y + 4);
-    g.fillStyle = '#ef5350'; g.fillRect(C.x - 20, C.y - 25, 60, 50); g.fillStyle = '#000'; g.fillText('CHANCADOR', C.x + 10, C.y + 4);
-    s.trucks.forEach((t) => {
-      let q;
-      if (t.ph === 'haul') q = pt(S, C, 1 - t.rem / t.tot, -14);
-      else if (t.ph === 'ret') q = pt(C, S, 1 - t.rem / t.tot, 14 - 0);
-      else if (t.ph === 'qS') q = { x: S.x + 30 + 20 * (s.qS.indexOf(t) + 1), y: S.y + 40 };
-      else if (t.ph === 'qC') q = { x: C.x - 30 - 20 * (s.qC.indexOf(t) + 1), y: C.y - 40 };
-      else q = t.ph === 'load' ? { x: S.x + 30, y: S.y } : { x: C.x - 30, y: C.y };
-      g.fillStyle = t.ph === 'haul' ? '#f5b942' : t.ph === 'ret' ? '#4fc3f7' : t.ph.startsWith('q') ? '#ef5350' : '#3ecf8e';
-      g.fillRect(q.x - 7, q.y - 5, 14, 10);
+    // Rajo en terrazas (izquierda) y plataforma de planta (derecha)
+    ['#3a2f25', '#342a21', '#2e251d', '#282019'].forEach((c, i) => { g.fillStyle = c; g.fillRect(0, 300 + i * 34, 260 - i * 50, 34); g.fillStyle = 'rgba(255,255,255,.05)'; g.fillRect(0, 300 + i * 34, 260 - i * 50, 2); });
+    g.fillStyle = '#2a3038'; g.fillRect(600, C.y + 44, 200, 10);
+    SL.road(g, [[S.x, S.y], [C.x, C.y]], 54); SL.hot('road', 330, 200, 140, 70);
+    SL.tag(g, `Rampa ${p.grade} % · RR ${p.rr + (s.rain ? 2 : 0)} %`, 470, 268, s.rain ? SL.STATE.warn : SL.STATE.idle);
+    // Correa del chancador a la pila de acopio
+    g.fillStyle = '#6e5a46'; g.beginPath(); g.moveTo(C.x + 40, C.y + 44); g.quadraticCurveTo(C.x + 72, C.y - 10 - Math.min(30, s.crushed / 3000), C.x + 104, C.y + 44); g.fill();
+    SL.hot('stock', C.x + 40, C.y + 10, 66, 36);
+    SL.belt(g, [[C.x + 26, C.y + 36], [C.x + 70, C.y + 4]], 10);
+    SL.excavator(g, S.x - 44, S.y + 30, { s: 0.9, t: s.shDn ? 0 : s.t, busy: !!s.shov && !s.shDn }); SL.hot('shovel', S.x - 76, S.y - 30, 112, 64);
+    SL.crusher(g, C.x + 4, C.y + 44, { s: 0.85, load: Math.max(0.1, s.hop / p.hop), state: s.crDn ? 'down' : s.crus || s.hop > 0 ? 'run' : 'idle' }); SL.hot('crusher', C.x - 26, C.y - 18, 60, 64);
+    SL.tag(g, s.shDn ? 'PALA · FALLA' : `PALA · ${s.shov ? 'cargando' : 'en espera'}`, S.x - 20, S.y - 58, s.shDn ? SL.STATE.down : s.shov ? SL.STATE.run : SL.STATE.idle);
+    SL.tag(g, s.crDn ? 'CHANCADOR · ATOLLO' : `CHANCADOR · ${Math.round(s.cfeed || 0)} t/h`, C.x - 20, C.y - 44, s.crDn ? SL.STATE.down : s.hiAl && s.qC.length ? SL.STATE.warn : s.cfeed > 0 ? SL.STATE.run : SL.STATE.idle);
+    SL.gauge(g, 640, 36, 150, 14, s.hop / p.hop, s.hiAl ? '#f5b942' : '#8a6a4a', `Tolva ${Math.round(s.hop)}/${p.hop} t`); SL.hot('crusher', 640, 30, 150, 24);
+    if (s.rain) { g.strokeStyle = 'rgba(159,211,255,.25)'; g.lineWidth = 1; const t = s.t || 0; for (let k = 0; k < 60; k++) { const x = (k * 137 + t * 400) % 800, y = (k * 71 + t * 900) % 450; g.beginPath(); g.moveTo(x, y); g.lineTo(x - 4, y + 12); g.stroke(); } }
+    s.trucks.forEach((t, i) => {
+      let q, dir = 1;
+      const f = SL.clamp(1 - t.dk / p.dist, 0, 1);
+      if (t.ph === 'haul') q = pt(S, C, f, -14);
+      else if (t.ph === 'ret') { q = pt(C, S, f, 14); dir = -1; }
+      else if (t.ph === 'qS') { q = { x: S.x + 50 + 30 * (s.qS.indexOf(t) + 1), y: S.y + 54 }; dir = -1; }
+      else if (t.ph === 'qC') q = { x: C.x - 56 - 30 * (s.qC.indexOf(t) + 1), y: C.y - 26 };
+      else if (t.ph === 'load') { q = { x: S.x + 34, y: S.y + 10 }; dir = -1; } else q = { x: C.x - 36, y: C.y + 40 };
+      const loaded = t.ph === 'haul' || t.ph === 'qC' || t.ph === 'dump';
+      SL.haulTruck(g, q.x, q.y + 6, { s: 0.72, dir, loaded, color: t.dn ? '#8a5a4a' : undefined, state: t.dn ? 'down' : t.ph.startsWith('q') ? 'block' : t.ph === 'load' || t.ph === 'dump' ? 'info' : 'run' });
+      if (t.dn) SL.tag(g, `C${i + 1} FALLA`, q.x, q.y - 30, SL.STATE.down, '600 10px system-ui');
+      SL.hot('truck:' + i, q.x - 16, q.y - 18, 34, 28);
     });
-    g.textAlign = 'left'; g.fillStyle = '#8b9bb0';
-    g.fillText('Amarillo: cargado · Azul: vacío · Rojo: en cola · Verde: operando', 12, H - 12);
+    // Panel de despacho
+    const mf = matchF(s, p), pr = s.ema;
+    SL.rr(g, 10, 10, 232, 66, 6); g.fillStyle = 'rgba(8,12,18,.85)'; g.fill(); g.strokeStyle = '#2e3e52'; g.lineWidth = 1; g.stroke();
+    SL.text(g, 'DESPACHO', 20, 28, '#8b9bb0', '600 11px system-ui');
+    SL.led(g, 228, 24, 3, s.qAl ? SL.STATE.warn : SL.STATE.run);
+    SL.text(g, `Match factor ${mf.toFixed(2)} · ${mf < 0.95 ? 'pala sub-utilizada' : mf > 1.05 ? 'camiones esperan' : 'equilibrado'}`, 20, 46, mf < 0.95 || mf > 1.05 ? '#f5b942' : '#3ecf8e', '12px system-ui');
+    SL.text(g, `Ritmo ${Math.round(pr)} / meta ${p.plan} t/h`, 20, 64, pr >= p.plan ? '#3ecf8e' : '#ef5350', '12px system-ui');
+    SL.hot('disp', 10, 10, 232, 66);
+    SL.text(g, 'Tolva con material = cargado · LED verde ruta · amarillo cola · azul carga/descarga · rojo falla', 12, H - 12, '#8b9bb0', '11px system-ui');
+  },
+  vars(s, p) {
+    const T = Math.max(s.t || 0, 1), a = drive(s, p, true), b = drive(s, p, false), kw = s.trucks.reduce((x, t) => x + t.kw, 0), lph = s.trucks.reduce((x, t) => x + t.lph, 0);
+    const rt = s.trucks.filter(onRoute), av = s.trucks.filter((t) => !t.dn).length, cyc0 = p.load + p.dump + (p.dist / a.v) * 60 + (p.dist / b.v) * 60, mf = matchF(s, p);
+    return {
+      fis: [
+        ['Vel. cargado (subida)', a.v.toFixed(1), 'km/h', a.v / 40, a.lim ? '#f5b942' : undefined],
+        ['Vel. vacío (bajada)', b.v.toFixed(1), 'km/h', b.v / 50],
+        ['Fuerza resistente cargado', a.F.toFixed(0), 'kN'],
+        ['Potencia motor cargado', a.kw.toFixed(0), 'kW', a.kw / p.pw],
+        ['Retardo en bajada', b.ret.toFixed(0), 'kW'],
+        ['Potencia total flota', kw.toFixed(0), 'kW'],
+        ['Consumo flota', lph.toFixed(0), 'L/h', lph / (p.n * (IDLE + SFC * p.pw)), '#c98500'],
+        ['Combustible acumulado', Math.round(s.fuel).toLocaleString(), 'L'],
+        ['Combustible por tonelada', s.tons ? (s.fuel / s.tons).toFixed(3) : '—', 'L/t'],
+        ['Tolva chancador', Math.round(s.hop), 't', s.hop / p.hop, s.hiAl ? '#f5b942' : undefined],
+        ['Alimentación chancador', Math.round(s.cfeed || 0), 't/h', (s.cfeed || 0) / p.cr],
+        ['Potencia chancador', s.ckw.toFixed(0), 'kW'],
+        ['Energía chancado', s.kwh.toFixed(0), 'kWh'],
+        ['Ciclo medio real', s.cycAvg ? s.cycAvg.toFixed(1) : '—', 'min'],
+      ],
+      ctl: [
+        ['Meta de producción', p.plan, 't/h'],
+        ['Ritmo móvil (60 min)', Math.round(s.ema), 't/h', s.ema / p.plan, s.ema >= p.plan ? '#3ecf8e' : '#ef5350'],
+        ['Brecha vs meta', Math.round(s.ema - p.plan), 't/h'],
+        ['Match factor', mf.toFixed(2), '', mf / 2, mf < 0.95 || mf > 1.05 ? '#f5b942' : '#3ecf8e'],
+        ['Ciclo teórico sin colas', cyc0.toFixed(1), 'min'],
+        ['Camiones disponibles', `${av} / ${s.trucks.length}`, '', av / Math.max(1, s.trucks.length)],
+        ['Camiones en ruta', rt.length, ''],
+        ['Cola pala / chancador', `${s.qS.length} / ${s.qC.length}`, '', null, s.qAl ? '#f5b942' : undefined],
+        ['Alarma de cola', s.qAl ? 'ACTIVA' : 'normal', '', null, s.qAl ? '#f5b942' : '#3ecf8e'],
+        ['Enclavamiento tolva alta', s.hiAl ? 'ACTIVO' : 'libre', '', null, s.hiAl ? '#f5b942' : undefined],
+        ['Límite vel. cargado / vacío', `${(p.vl * (s.rain ? 0.7 : 1)).toFixed(0)} / ${(p.ve * (s.rain ? 0.7 : 1)).toFixed(0)}`, 'km/h'],
+        ['Limitado por potencia', a.lim ? 'SÍ (rampa)' : 'no', '', null, a.lim ? '#f5b942' : undefined],
+        ['Pala / chancador', `${s.shDn ? 'FALLA' : 'OK'} / ${s.crDn ? 'ATOLLO' : 'OK'}`, '', null, s.shDn || s.crDn ? '#ef5350' : undefined],
+        ['Fallas de camión', s.fails, ''],
+        ['Disponibilidad flota', (100 * (1 - s.downT / (T * Math.max(1, s.trucks.length)))).toFixed(1), '%'],
+      ],
+    };
+  },
+  actions: [
+    { label: 'Falla de pala', kind: 'crit', on: (s) => s.shDn, run: (s) => { s.shDn = !s.shDn; SL.log(s, s.shDn ? 'Pala detenida por falla hidráulica' : 'Pala reparada', s.shDn ? 'crit' : 'ok'); } },
+    { label: 'Atollo en chancador', kind: 'crit', on: (s) => s.crDn, run: (s) => { s.crDn = !s.crDn; SL.log(s, s.crDn ? 'Chancador atollado: descarga bloqueada' : 'Chancador liberado', s.crDn ? 'crit' : 'ok'); } },
+    { label: 'Camión en panne', kind: 'warn', hint: 'Un camión en ruta queda detenido (MTTR aleatorio)', run: (s, p, r) => { const c = s.trucks.filter((t) => onRoute(t) && !t.dn); if (!c.length) return; const t = c[Math.floor(r() * c.length)]; t.dn = SL.exp(r, p.mttr); s.fails++; } },
+    { label: 'Lluvia en caminos', kind: 'warn', hint: 'Límite de velocidad ×0.7 y rodadura +2 %', on: (s) => s.rain, run: (s) => { s.rain = !s.rain; SL.log(s, s.rain ? 'Lluvia: velocidad restringida, rodadura +2 %' : 'Caminos secos', s.rain ? 'warn' : 'ok'); } },
+    { label: '+1 camión', hint: 'Agrega un camión a la flota', run: (s, p, r, api) => api.set('n', Math.min(20, p.n + 1)) },
+    { label: 'Reparar todo', hint: 'Repara pala, chancador y camiones', run: (s) => { s.shDn = s.crDn = false; s.trucks.forEach((t) => (t.dn = 0)); } },
+  ],
+  inspect(s, p, id) {
+    const st = (on, a, b) => [on ? a : b, on ? '#ef5350' : '#3ecf8e'];
+    if (id.startsWith('truck:')) {
+      const i = +id.split(':')[1], t = s.trucks[i]; if (!t) return null;
+      const m = p.payload * (t.ph === 'haul' || t.ph === 'qC' || t.ph === 'dump' ? 1 + EMPTY : EMPTY), qi = t.ph === 'qS' ? s.qS.indexOf(t) : t.ph === 'qC' ? s.qC.indexOf(t) : -1;
+      const [e, ec] = t.dn ? ['FALLA', '#ef5350'] : [PH[t.ph], t.ph.startsWith('q') ? '#f5b942' : '#3ecf8e'];
+      return { title: `CAEX-${i + 1} · Camión de extracción`, sub: `Carga útil ${p.payload} t · motor ${p.pw} kW · ${t.cyc} ciclos completados`,
+        fis: [['Masa bruta', m.toFixed(0), 't'], ['Velocidad', t.v.toFixed(1), 'km/h', t.v / 50], ['Fuerza resistente', t.F.toFixed(0), 'kN'], ['Potencia motor', t.kw.toFixed(0), 'kW', t.kw / p.pw], ['Potencia de retardo', t.ret.toFixed(0), 'kW'], ['Consumo', t.lph.toFixed(0), 'L/h', t.lph / (IDLE + SFC * p.pw), '#c98500'], ['Combustible', t.fuel.toFixed(0), 'L'], ['Recorrido', t.km.toFixed(1), 'km'], ['Toneladas movidas', Math.round(t.tons).toLocaleString(), 't'], ['Último ciclo', t.last ? t.last.toFixed(1) : '—', 'min']],
+        ctl: [['Estado', e, '', null, ec], ['Posición en cola', qi >= 0 ? qi + 1 : '—', ''], ['Tiempo restante de fase', t.dn ? t.dn.toFixed(1) : onRoute(t) || t.ph === 'load' || t.ph === 'dump' ? t.rem.toFixed(1) : '—', 'min'], ['Distancia restante', onRoute(t) ? t.dk.toFixed(2) : '—', 'km'], ['Límite de velocidad', ((t.ph === 'haul' ? p.vl : p.ve) * (s.rain ? 0.7 : 1)).toFixed(0), 'km/h'], ['Limitado por potencia', t.lim && t.ph === 'haul' ? 'SÍ' : 'no', '']],
+        actions: [
+          ...(t.dn ? [{ label: 'Reparar', run: () => { t.dn = 0; } }] : onRoute(t) ? [{ label: 'Forzar falla', run: (s, p, r) => { t.dn = SL.exp(r, p.mttr); s.fails++; } }] : []),
+          ...(qi > 0 ? [{ label: 'Priorizar en cola', run: (s) => { const q = t.ph === 'qS' ? s.qS : s.qC; q.splice(q.indexOf(t), 1); q.unshift(t); } }] : []),
+        ] };
+    }
+    const T = Math.max(s.t || 0, 1);
+    if (id === 'shovel') { const [e, c] = st(s.shDn, 'FALLA', s.shov ? 'CARGANDO' : 'EN ESPERA');
+      return { title: 'PH-01 · Pala hidráulica', sub: 'Carga un camión a la vez; la cola se atiende FIFO.',
+        fis: [['Ritmo de carga', (p.payload / p.load * 60).toFixed(0), 't/h'], ['Utilización', ((100 * s.bS) / T).toFixed(0), '%', s.bS / T], ['Carga en curso restante', s.shov ? s.shov.rem.toFixed(1) : '—', 'min']],
+        ctl: [['Estado', e, '', null, s.shov || s.shDn ? c : '#8b9bb0'], ['Cola', s.qS.length, 'camiones', s.qS.length / p.qal], ['Match factor', matchF(s, p).toFixed(2), '']],
+        actions: [{ label: s.shDn ? 'Reparar pala' : 'Forzar falla', run: (s) => { s.shDn = !s.shDn; } }] }; }
+    if (id === 'crusher') { const [e, c] = st(s.crDn, 'ATOLLO', s.cfeed > 0 ? 'CHANCANDO' : 'EN VACÍO');
+      return { title: 'CH-01 · Chancador primario + tolva', sub: 'Descarga permitida sólo si la tolva tiene espacio para una carga completa.',
+        fis: [['Nivel de tolva', Math.round(s.hop), 't', s.hop / p.hop], ['Alimentación', Math.round(s.cfeed || 0), 't/h', (s.cfeed || 0) / p.cr], ['Potencia', s.ckw.toFixed(0), 'kW'], ['Energía', s.kwh.toFixed(0), 'kWh'], ['kWh/t', s.crushed ? (s.kwh / s.crushed).toFixed(3) : '—', ''], ['Utilización descarga', ((100 * s.bC) / T).toFixed(0), '%']],
+        ctl: [['Estado', e, '', null, c], ['Enclavamiento nivel alto', s.hiAl ? 'ACTIVO' : 'libre', '', null, s.hiAl ? '#f5b942' : undefined], ['Cola', s.qC.length, 'camiones', s.qC.length / p.qal], ['Capacidad', p.cr, 't/h']],
+        actions: [{ label: s.crDn ? 'Liberar atollo' : 'Forzar atollo', run: (s) => { s.crDn = !s.crDn; } }, { label: 'Vaciar tolva (by-pass)', run: (s) => { s.crushed += s.hop; s.hop = 0; } }] }; }
+    if (id === 'road') { const a = drive(s, p, true), b = drive(s, p, false);
+      return { title: 'Rampa de acarreo', sub: `${p.dist} km · pendiente ${p.grade} % · subida cargado, bajada vacío.`,
+        fis: [['Resistencia total cargado', (p.grade + p.rr + (s.rain ? 2 : 0)).toFixed(1), '%'], ['Resistencia total vacío', (-p.grade + p.rr + (s.rain ? 2 : 0)).toFixed(1), '%'], ['Vel. cargado', a.v.toFixed(1), 'km/h'], ['Vel. vacío', b.v.toFixed(1), 'km/h'], ['Camiones en ruta', s.trucks.filter(onRoute).length, '']],
+        ctl: [['Condición', s.rain ? 'LLUVIA' : 'seco', '', null, s.rain ? '#f5b942' : undefined], ['Límite cargado', p.vl, 'km/h'], ['Límite vacío', p.ve, 'km/h']],
+        actions: [{ label: s.rain ? 'Secar caminos' : 'Lluvia', run: (s) => { s.rain = !s.rain; } }, { label: 'Límite cargado −2 km/h', run: (s, p, r, api) => api.set('vl', Math.max(10, p.vl - 2)) }, { label: 'Límite cargado +2 km/h', run: (s, p, r, api) => api.set('vl', Math.min(40, p.vl + 2)) }] }; }
+    if (id === 'stock') return { title: 'Pila de acopio (mineral chancado)', fis: [['Mineral chancado', Math.round(s.crushed).toLocaleString(), 't'], ['Descargado en tolva', Math.round(s.tons).toLocaleString(), 't']], ctl: [] };
+    if (id === 'disp') return { title: 'Sistema de despacho', sub: 'Asignación fija 1 pala → 1 chancador; cola FIFO.', fis: [], ctl: this.vars(s, p).ctl,
+      actions: [{ label: '+1 camión', run: (s, p, r, api) => api.set('n', Math.min(20, p.n + 1)) }, { label: 'Meta +500 t/h', run: (s, p, r, api) => api.set('plan', Math.min(8000, p.plan + 500)) }, { label: 'Meta −500 t/h', run: (s, p, r, api) => api.set('plan', Math.max(1000, p.plan - 500)) }] };
   },
   kpis(s, p) {
     const h = Math.max(s.t || 0, 1) / 60;
@@ -65,8 +213,9 @@ SL.app({
       { label: 'Utilización chancador', value: ((100 * s.bC) / Math.max(s.t, 1)).toFixed(0) + ' %' },
       { label: 'Cola pala / chancador', value: `${s.qS.length} / ${s.qC.length}` },
       { label: 'Camiones en cola (prom.)', value: (s.wq / Math.max(s.t, 1)).toFixed(1) },
+      { label: 'Combustible', value: s.tons ? (s.fuel / s.tons).toFixed(2) + ' L/t' : '—' },
     ];
   },
-  series: (s) => ({ 'Cola pala': s.qS.length, 'Cola chancador': s.qC.length, 'Toneladas acum.': s.tons }),
+  series: (s) => ({ 'Cola pala': s.qS.length, 'Cola chancador': s.qC.length, 'Toneladas acum.': s.tons, 'Tolva t': s.hop, 'Ritmo t/h': s.ema }),
 });
 </script></body></html>

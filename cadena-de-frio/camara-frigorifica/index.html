@@ -7,7 +7,7 @@
 <link rel="icon" href="data:,">
 <link rel="stylesheet" href="css/app.css">
 <script type="importmap">
-{ "imports": { "three": "../../shared/vendor/three/three.module.min.js", "three/addons/controls/OrbitControls.js": "../../shared/vendor/three/OrbitControls.js" } }
+{ "imports": { "three": "../../shared/vendor/three/three.module.min.js", "three/addons/controls/OrbitControls.js": "../../shared/vendor/three/OrbitControls.js", "three/addons/environments/RoomEnvironment.js": "../../shared/vendor/three/RoomEnvironment.js" } }
 </script>
 </head>
 <body class="mode-eng">
@@ -66,7 +66,13 @@
 
     <section class="card" data-level="eng">
       <h3>Control</h3>
+      <div class="seg wide" id="modeSeg" title="Modo del lazo TIC-01"><button data-v="auto">AUTO</button><button data-v="manual">MANUAL</button></div>
+      <div id="manBox" hidden>
+        <label class="rng"><span>Salida manual compresor</span><output id="oUman"></output><input id="uMan" type="range" min="0" max="100" step="5"></label>
+        <p class="consq">Salida fija: el lazo no corrige. Al volver a AUTO el PID arranca sin salto (seguimiento de la integral).</p>
+      </div>
       <div class="seg wide" id="ctrlSeg"><button data-v="onoff">ON/OFF</button><button data-v="pid">PID</button></div>
+      <label class="rng"><span>Rampa de setpoint</span><output id="oRamp"></output><input id="spRamp" type="range" min="0" max="1" step="0.05"></label>
       <div id="onoffBox">
         <label class="rng"><span>Histéresis ±</span><output id="oHyst"></output><input id="hyst" type="range" min="0.5" max="3" step="0.5"></label>
         <div class="ladder" id="ladder"></div>
@@ -80,6 +86,11 @@
           <label class="rng"><span>Kd (min)</span><output id="oKd"></output><input id="Kd" type="range" min="0" max="0.5" step="0.01"></label>
         </div>
       </div>
+      <div data-level="sim" class="adv">
+        <label class="rng"><span>Tiempo mínimo ON</span><output id="oMinOn"></output><input id="minOn" type="range" min="0" max="600" step="30"></label>
+        <label class="rng"><span>Tiempo mínimo OFF</span><output id="oMinOff"></output><input id="minOff" type="range" min="0" max="600" step="30"></label>
+        <label class="rng"><span>Carga mínima (PID)</span><output id="oUmin"></output><input id="uMin" type="range" min="10" max="60" step="5"></label>
+      </div>
       <p id="ctrlLock" class="lock" hidden></p>
     </section>
 
@@ -89,8 +100,11 @@
       <label class="rng"><span>Capacidad disponible</span><output id="oCap"></output><input id="capAvail" type="range" min="0" max="100" step="5"></label>
       <p id="capLock" class="lock" hidden>🔒 Sistema apagado: no se puede ajustar la capacidad.</p>
       <label class="sw"><input type="checkbox" id="curtain"><span>Cortina de aire en puerta</span></label>
+      <label class="rng"><span>Aproximación de condensación</span><output id="oCondA"></output><input id="condApproach" type="range" min="5" max="20" step="1"></label>
+      <label class="sw"><input type="checkbox" id="condDirty" class="danger"><span>Condensador sucio (+8 K)</span></label>
+      <div class="btn2"><button id="btnCut" title="Corta compresor, ventiladores y luces 10 minutos">⚡ Corte 10 min</button><button id="btnPulse" title="Abre la puerta 60 s y la cierra sola">▯ Pulso puerta 60 s</button></div>
       <div data-level="sim">
-        <label class="sw"><input type="checkbox" id="evapFail"><span>Falla de evaporador</span></label>
+        <label class="sw"><input type="checkbox" id="evapFail" class="danger"><span>Falla de evaporador</span></label>
         <button id="btnDefrost" class="wide">Desescarche ahora</button>
       </div>
     </section>
@@ -119,11 +133,12 @@
       <div class="seg" id="viewSeg"><button data-v="3d" class="on">3D</button><button data-v="planta">PLANTA</button><button data-v="seccion">SECCIÓN</button></div>
       <div class="seg" id="levelSeg" hidden><button data-v="0">Nivel bajo</button><button data-v="1" class="on">Nivel alto</button></div>
       <div class="layers">
-        <label><input type="checkbox" data-layer="heat" checked> Mapa térmico</label>
-        <label><input type="checkbox" data-layer="flow"> Flujo de aire</label>
-        <label><input type="checkbox" data-layer="sensors"> Sensores</label>
-        <label><input type="checkbox" data-layer="pallets" checked> Pallets</label>
+        <label class="chip"><input type="checkbox" data-layer="heat" checked> Mapa térmico</label>
+        <label class="chip"><input type="checkbox" data-layer="flow"> Flujo de aire</label>
+        <label class="chip"><input type="checkbox" data-layer="sensors"> Sensores</label>
+        <label class="chip"><input type="checkbox" data-layer="pallets" checked> Pallets</label>
       </div>
+      <div class="seg small" id="qualSeg" title="Calidad gráfica: Alta = sombras, reflejos y detalle completo"><button data-v="high" class="on">Alta</button><button data-v="medium">Media</button></div>
     </div>
     <div id="scene" class="scene">
       <div id="tip3d" class="tip" hidden></div>
@@ -164,6 +179,21 @@
         <div><small>COP</small><b id="kCop">—</b></div>
       </div>
       <p id="kLimit" class="note" hidden></p>
+    </section>
+
+    <section class="card faceplate" data-level="eng">
+      <h3>TIC-01 · Variables de control <b id="fpMode" class="right">AUTO</b></h3>
+      <div class="fp">
+        <div class="fpbar"><canvas id="fpCv" width="150" height="150"></canvas></div>
+        <div class="kv" id="fpKv"></div>
+      </div>
+      <p id="fpWhy" class="note" hidden></p>
+    </section>
+
+    <section class="card" data-level="eng">
+      <h3>Variables físicas</h3>
+      <div class="seg wide small" id="physSeg"><button data-v="cyc" class="on">Ciclo</button><button data-v="air">Aire</button><button data-v="env">Envolvente</button><button data-v="prod">Producto</button></div>
+      <table id="physTbl" class="ptbl"></table>
     </section>
 
     <section class="card" data-level="eng">
@@ -288,6 +318,7 @@
   </form>
 </dialog>
 
+<script src="../../shared/controls.js"></script>
 <script type="module" src="js/main.js"></script>
 </body>
 </html>

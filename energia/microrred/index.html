@@ -2,54 +2,160 @@
 <html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <link rel="stylesheet" href="../../shared/style.css"></head>
 <body><div id="app"></div>
+<script src="../../shared/controls.js"></script>
 <script src="../../shared/sim.js"></script>
+<script src="../../shared/gfx.js"></script>
 <script>
-// Despacho: PV → carga; excedente → batería; déficit → batería (hasta 10% SOC) → diésel → no servida.
+// Despacho: PV → carga; excedente → batería; déficit → batería (hasta SOC mín.) → diésel → deslastre/no servida.
+// Estrategias: seguidor de carga (diésel solo cubre lo que la batería no alcanza) o ciclo de carga (diésel carga batería hasta SOC alto).
 // Tiempo: 1 día = 240 s simulados (1 s sim = 6 min). dt en horas = dt/10.
-const EFF = 0.95, SOCMIN = 0.1, LPKWH = 0.28;
+const EFF = 0.95, LPKWH = 0.28, CO2L = 2.68, F0 = 60; // η batería, L/kWh diésel, kg CO₂/L, Hz nominal
 const load = (h, pk) => pk * (0.35 + 0.3 * Math.exp(-((h - 8) ** 2) / 8) + 0.6 * Math.exp(-((h - 19) ** 2) / 6) + 0.15 * Math.exp(-((h - 13) ** 2) / 20));
+const POL = ['Seguidor de carga', 'Ciclo de carga'];
 SL.app({
   title: 'Energía · Microrred PV + batería + diésel',
-  desc: 'Sitio aislado (campamento/mina/planta). Dimensiona PV y batería para bajar el consumo de diésel sin perder servicio.',
+  desc: 'Sitio aislado (campamento/mina/planta). Dimensiona PV y batería, elige la estrategia de despacho y provoca nubes, picos o fallas. Clic en los equipos para inspeccionar.',
   unit: 's', dt: 0.1, sample: 2,
   clock: (t) => { const h = (t / 10) % 24; return `Día ${Math.floor(t / 240) + 1} · ${String(Math.floor(h)).padStart(2, '0')}:${String(Math.floor((h % 1) * 60)).padStart(2, '0')}`; },
   params: [
-    { id: 'pv', label: 'PV instalado', min: 0, max: 1500, step: 50, value: 500, unit: 'kWp', reset: true },
+    { sec: 'Dimensionamiento', id: 'pv', label: 'PV instalado', min: 0, max: 1500, step: 50, value: 500, unit: 'kWp', reset: true },
     { id: 'bat', label: 'Batería', min: 0, max: 4000, step: 100, value: 1200, unit: 'kWh', reset: true },
-    { id: 'pk', label: 'Demanda pico', min: 100, max: 1000, step: 50, value: 400, unit: 'kW' },
     { id: 'dg', label: 'Diésel instalado', min: 100, max: 1200, step: 50, value: 450, unit: 'kW' },
+    { sec: 'Carga y clima', id: 'pk', label: 'Demanda pico', min: 100, max: 1000, step: 50, value: 400, unit: 'kW' },
     { id: 'cloud', label: 'Nubosidad', min: 0, max: 0.8, step: 0.05, value: 0.2 },
-    { id: 'price', label: 'Precio diésel', min: 0.5, max: 2.5, step: 0.1, value: 1.1, unit: 'USD/L' },
+    { sec: 'Control de despacho', id: 'pol', label: 'Estrategia', opts: POL, value: 0, reset: false },
+    { id: 'socmin', label: 'SOC mínimo', min: 5, max: 50, step: 5, value: 10, unit: '%' },
+    { id: 'soch', label: 'SOC fin de carga (ciclo)', min: 50, max: 100, step: 5, value: 80, unit: '%' },
+    { id: 'dgmin', label: 'Carga mínima diésel', min: 0, max: 50, step: 5, value: 0, unit: '%' },
+    { sec: 'Economía', id: 'price', label: 'Precio diésel', min: 0.5, max: 2.5, step: 0.1, value: 1.1, unit: 'USD/L' },
   ],
-  init(p) { return { soc: 0.5 * p.bat, pvE: 0, ldE: 0, dgE: 0, uns: 0, curt: 0, cl: 1, pv: 0, ld: 0, dg: 0 }; },
+  init(p) { return { soc: 0.5 * p.bat, pvE: 0, ldE: 0, dgE: 0, uns: 0, curt: 0, cl: 1, pv: 0, ld: 0, dg: 0, bp: 0, un: 0, cu: 0, irr: 0, freq: F0, dgOn: false, starts: 0, dgH: 0, thr: 0, fuel: 0, cloudF: false, surge: false, dgTrip: false, batTrip: false, shed: false, dgMan: false, alLow: false, alUn: false }; },
   step(s, dt, p, r) {
-    const dh = dt / 10, h = ((s.t || 0) / 10) % 24;
+    const dh = dt / 10, h = ((s.t || 0) / 10) % 24, sun = Math.max(0, Math.sin((Math.PI * (h - 6)) / 12));
     s.cl = SL.clamp(s.cl + (r() - 0.5) * 0.08 - 0.02 * (s.cl - (1 - p.cloud)), 0.2, 1);
-    const pv = Math.max(0, Math.sin((Math.PI * (h - 6)) / 12)) * p.pv * s.cl, ld = load(h, p.pk);
-    const pmax = p.bat / 2; // C/2
-    let net = pv - ld, dg = 0, un = 0;
-    if (net >= 0) {
-      const ch = Math.min(net, pmax, ((p.bat - s.soc) / EFF) / dh);
-      s.soc += ch * EFF * dh; s.curt += (net - ch) * dh;
-    } else {
-      let need = -net;
-      const dis = Math.min(need, pmax, Math.max(0, s.soc - SOCMIN * p.bat) / dh);
-      s.soc -= dis * dh; need -= dis * EFF;
-      dg = Math.min(need, p.dg); un = need - dg;
+    const cl = s.cloudF ? Math.min(s.cl, 0.25) : s.cl;
+    s.irr = 1000 * sun * cl;
+    const pv = sun * p.pv * cl, ld = load(h, p.pk) * (s.surge ? 1.3 : 1) * (s.shed ? 0.75 : 1);
+    const pmax = s.batTrip ? 0 : p.bat / 2, smin = (p.socmin / 100) * p.bat, dgCap = s.dgTrip ? 0 : p.dg; // C/2
+    const net = pv - ld, batAv = pmax > 0 ? Math.min(pmax, Math.max(0, s.soc - smin) / dh) * EFF : 0;
+    const short = net < 0 && -net > batAv + 0.5; // la batería no alcanza
+    // Lógica de marcha del grupo (con histéresis en ciclo de carga)
+    const on0 = s.dgOn;
+    if (p.pol === 0) s.dgOn = short || s.dgMan;
+    else { if (short || s.soc <= smin + 0.05 * p.bat || s.dgMan) s.dgOn = true; else if (s.soc >= (p.soch / 100) * p.bat) s.dgOn = false; }
+    if (!dgCap) s.dgOn = false;
+    if (s.dgOn && !on0) { s.starts++; SL.log(s, `Arranca grupo diésel (${p.pol ? 'ciclo de carga' : short ? 'déficit' : 'manual'})`, 'info'); }
+    if (!s.dgOn && on0 && dgCap) SL.log(s, 'Grupo diésel se detiene', 'ok');
+    let dg = 0;
+    if (s.dgOn) {
+      dg = p.pol === 0 && !s.dgMan ? -net - batAv : p.pol === 1 ? -net + pmax : 0;
+      dg = SL.clamp(Math.max(dg, (p.dgmin / 100) * dgCap, s.dgMan ? 0.3 * dgCap : 0), 0, dgCap);
     }
-    s.pv = pv; s.ld = ld; s.dg = dg;
-    s.pvE += Math.min(pv, ld) * dh; s.ldE += ld * dh; s.dgE += dg * dh; s.uns += un * dh;
+    let bal = pv + dg - ld, ch = 0, dis = 0, un = 0, cu = 0;
+    if (bal >= 0) { ch = Math.min(bal, pmax, Math.max(0, (p.bat - s.soc) / EFF) / dh); s.soc += ch * EFF * dh; cu = bal - ch; }
+    else { dis = Math.min(-bal / EFF, pmax, Math.max(0, s.soc - smin) / dh); s.soc -= dis * dh; un = Math.max(0, -bal - dis * EFF); }
+    s.pv = pv; s.ld = ld; s.dg = dg; s.bp = dis * EFF - ch; s.un = un; s.cu = cu;
+    s.freq = F0 - 3 * (un / Math.max(ld, 1)) + (s.dgOn ? 0 : 0.02 * Math.sin((s.t || 0) * 7)); // caída de frecuencia si falta potencia
+    s.pvE += Math.min(pv, ld) * dh; s.ldE += ld * dh; s.dgE += dg * dh; s.uns += un * dh; s.curt += cu * dh;
+    s.fuel += LPKWH * dg * dh; s.thr += (ch + dis) * dh; if (s.dgOn) s.dgH += dh;
+    const low = p.bat > 0 && s.soc <= smin + 0.01 * p.bat;
+    if (low && !s.alLow) SL.log(s, `SOC en mínimo (${p.socmin} %)`, 'warn'); s.alLow = low;
+    if (un > 0.5 && !s.alUn) SL.log(s, `Energía no servida: faltan ${un.toFixed(0)} kW`, 'crit'); else if (un <= 0.5 && s.alUn) SL.log(s, 'Servicio restablecido', 'ok'); s.alUn = un > 0.5;
   },
   draw(g, s, p, W, H) {
-    const node = (x, y, c, t, v) => { g.fillStyle = c; g.fillRect(x - 55, y - 35, 110, 70); g.fillStyle = '#000'; g.font = '14px system-ui'; g.textAlign = 'center'; g.fillText(t, x, y - 6); g.fillText(v, x, y + 16); };
-    g.strokeStyle = '#2a3646'; g.lineWidth = 5;
-    [[150, 100, 400, 225], [150, 350, 400, 225], [400, 225, 650, 225], [650, 100, 400, 225]].forEach((l) => { g.beginPath(); g.moveTo(l[0], l[1]); g.lineTo(l[2], l[3]); g.stroke(); });
-    node(150, 100, '#f5b942', 'Solar PV', s.pv.toFixed(0) + ' kW');
-    node(650, 100, '#ef5350', 'Diésel', s.dg.toFixed(0) + ' kW');
-    node(150, 350, '#4fc3f7', 'Batería', (100 * s.soc / Math.max(p.bat, 1)).toFixed(0) + ' % SOC');
-    node(650, 225, '#3ecf8e', 'Carga', s.ld.toFixed(0) + ' kW');
-    g.fillStyle = '#8b9bb0'; g.fillText('Bus', 400, 222);
-    g.textAlign = 'left';
+    const h = ((s.t || 0) / 10) % 24, day = Math.max(0, Math.sin((Math.PI * (h - 6)) / 12));
+    g.fillStyle = `rgba(56,120,190,${0.1 * day})`; g.fillRect(0, 0, W, H);
+    const bus = [400, 225], bat = s.bp; // > 0: batería descarga
+    const line = (a, b, kw, col) => { SL.pipe(g, [a, b], 5, '#8fa3b8'); const n = Math.min(6, Math.round(Math.abs(kw) / 60)); if (n) (kw >= 0 ? SL.flow(g, a[0], a[1], b[0], b[1], n, col) : SL.flow(g, b[0], b[1], a[0], a[1], n, col)); };
+    line([240, 120], bus, s.pv, '#ffd666');
+    line([230, 335], bus, bat, bat >= 0 ? '#4fc3f7' : '#3ecf8e');
+    line([580, 115], bus, s.dg, '#f5b942');
+    line(bus, [580, 345], s.ld, '#e6edf3');
+    SL.solar(g, 30, 60, 210, 100, p.pv > 0 ? s.pv / p.pv : 0); SL.hot('pv', 30, 40, 210, 120);
+    SL.tag(g, `Solar ${s.pv.toFixed(0)} kW · ${s.irr.toFixed(0)} W/m²`, 135, 176, '#ffd666');
+    if (s.cloudF) SL.tag(g, 'NUBE', 60, 44, SL.STATE.warn);
+    if (s.cu > 1) SL.tag(g, `Recorte ${s.cu.toFixed(0)} kW`, 135, 198, SL.STATE.block);
+    SL.battery(g, 40, 280, 190, 112, s.soc / Math.max(1, p.bat), { flow: -bat }); SL.hot('bat', 40, 280, 190, 112);
+    SL.tag(g, s.batTrip ? 'Inversor BESS · FALLA' : `Batería ${bat > 1 ? 'descarga' : bat < -1 ? 'carga' : 'reposo'} ${Math.abs(bat).toFixed(0)} kW`, 135, 410, s.batTrip ? SL.STATE.down : '#4fc3f7');
+    SL.genset(g, 580, 80, 170, 70, s.dg > 0.5, (s.t || 0) / 10); SL.hot('dg', 580, 60, 170, 90);
+    SL.tag(g, s.dgTrip ? 'Diésel · TRIP' : `Diésel ${s.dg.toFixed(0)} kW · ${(100 * s.dg / p.dg).toFixed(0)} %`, 665, 168, s.dgTrip ? SL.STATE.down : s.dg > 0.5 ? SL.STATE.warn : SL.STATE.idle);
+    SL.building(g, 580, 310, 190, 86, { load: s.ld / Math.max(1, p.pk * 1.2) }); SL.hot('load', 580, 296, 190, 100);
+    SL.tag(g, `Carga ${s.ld.toFixed(0)} kW${s.surge ? ' · PICO' : ''}${s.shed ? ' · DESLASTRE' : ''}`, 675, 412, s.un > 0.5 ? SL.STATE.down : s.surge || s.shed ? SL.STATE.warn : '#e6edf3');
+    SL.machine(g, bus[0] - 46, bus[1] - 40, 92, 80, { state: s.un > 0.5 ? 'down' : 'run' }); SL.hot('bus', bus[0] - 46, bus[1] - 40, 92, 80);
+    SL.text(g, 'Tablero', bus[0] - 12, bus[1] - 10, '#e6edf3', '600 12px system-ui', 'center');
+    SL.text(g, `${s.freq.toFixed(2)} Hz`, bus[0] - 12, bus[1] + 8, Math.abs(s.freq - F0) > 0.3 ? '#ef5350' : '#3ecf8e', '600 12px ui-monospace, monospace', 'center');
+    SL.led(g, bus[0] - 34, bus[1] - 24, 3, s.un > 0.5 ? SL.STATE.down : SL.STATE.run);
+    SL.tag(g, `EMS · ${POL[p.pol]} · SOC mín ${p.socmin} %`, 400, 290, SL.STATE.info); SL.hot('ems', 310, 280, 180, 20);
+    SL.text(g, day > 0 ? '☀ día' : '☾ noche', 400, 30, '#8b9bb0', '12px system-ui', 'center');
+  },
+  vars(s, p) {
+    const socf = s.soc / Math.max(1, p.bat), ren = s.ld > 0 ? SL.clamp((s.ld - s.dg - s.un) / s.ld, 0, 1) : 0;
+    return {
+      fis: [
+        ['Irradiancia', s.irr.toFixed(0), 'W/m²', s.irr / 1000, '#ffd666'],
+        ['Potencia PV', s.pv.toFixed(0), 'kW', p.pv ? s.pv / p.pv : 0, '#ffd666'],
+        ['Demanda', s.ld.toFixed(0), 'kW', s.ld / (p.pk * 1.3)],
+        ['Batería (+desc/−carga)', s.bp.toFixed(0), 'kW', p.bat ? Math.abs(s.bp) / (p.bat / 2) : 0, '#4fc3f7'],
+        ['Tasa C', p.bat ? (Math.abs(s.bp) / p.bat).toFixed(2) : '—', 'C'],
+        ['Energía almacenada', s.soc.toFixed(0), 'kWh', socf, SL.color(socf)],
+        ['Diésel', s.dg.toFixed(0), 'kW', s.dg / p.dg, '#f5b942'],
+        ['Consumo combustible', (LPKWH * s.dg).toFixed(1), 'L/h'],
+        ['Combustible acumulado', s.fuel.toFixed(0), 'L'],
+        ['CO₂ emitido', (s.fuel * CO2L / 1000).toFixed(2), 't'],
+        ['PV recortado', s.cu.toFixed(0), 'kW', null, s.cu > 1 ? '#f5b942' : undefined],
+        ['Potencia no servida', s.un.toFixed(0), 'kW', null, s.un > 0.5 ? '#ef5350' : undefined],
+        ['Frecuencia del bus', s.freq.toFixed(2), 'Hz', null, Math.abs(s.freq - F0) > 0.3 ? '#ef5350' : '#3ecf8e'],
+        ['Ciclos equivalentes batería', p.bat ? (s.thr / 2 / p.bat).toFixed(2) : '—', ''],
+      ],
+      ctl: [
+        ['Estrategia EMS', POL[p.pol], ''],
+        ['SOC', (100 * socf).toFixed(1), '%', socf, SL.color(socf)],
+        ['SOC mín. / fin carga', `${p.socmin} / ${p.soch}`, '%'],
+        ['Carga neta (D − PV)', (s.ld - s.pv).toFixed(0), 'kW'],
+        ['Consigna batería', s.batTrip ? 'BLOQUEADA' : s.bp > 1 ? 'descargar' : s.bp < -1 ? 'cargar' : 'reposo', '', null, s.batTrip ? '#ef5350' : undefined],
+        ['Orden grupo diésel', s.dgTrip ? 'TRIP' : s.dgOn ? (s.dgMan ? 'MARCHA MANUAL' : 'MARCHA') : 'PARADA', '', null, s.dgTrip ? '#ef5350' : s.dgOn ? '#f5b942' : '#8b9bb0'],
+        ['Carga del grupo', (100 * s.dg / p.dg).toFixed(0), '%', s.dg / p.dg],
+        ['Carga mínima grupo', p.dgmin, '%'],
+        ['Arranques diésel', s.starts, ''],
+        ['Horas de marcha diésel', s.dgH.toFixed(1), 'h'],
+        ['Penetración renovable inst.', (100 * ren).toFixed(0), '%', ren, '#3ecf8e'],
+        ['Deslastre de carga', s.shed ? 'ACTIVO (−25 %)' : 'inactivo', '', null, s.shed ? '#f5b942' : undefined],
+        ['Alarma SOC bajo', s.alLow ? 'ACTIVA' : 'normal', '', null, s.alLow ? '#f5b942' : undefined],
+        ['Alarma servicio', s.alUn ? 'CORTE' : 'normal', '', null, s.alUn ? '#ef5350' : undefined],
+      ],
+    };
+  },
+  actions: [
+    { label: 'Paso de nubes', hint: 'Irradiancia cae a ≤ 25 %', kind: 'warn', on: (s) => s.cloudF, run: (s) => { s.cloudF = !s.cloudF; SL.log(s, s.cloudF ? 'Frente nuboso sobre el campo PV' : 'Cielo despejado', s.cloudF ? 'warn' : 'ok'); } },
+    { label: 'Pico de carga +30 %', hint: 'Arranque de molino / chiller', kind: 'warn', on: (s) => s.surge, run: (s) => { s.surge = !s.surge; SL.log(s, s.surge ? 'Pico de demanda +30 %' : 'Demanda vuelve a normal', s.surge ? 'warn' : 'ok'); } },
+    { label: 'Falla del diésel', kind: 'crit', on: (s) => s.dgTrip, run: (s) => { s.dgTrip = !s.dgTrip; SL.log(s, s.dgTrip ? 'Grupo diésel disparó (baja presión de aceite)' : 'Grupo diésel rearmado', s.dgTrip ? 'crit' : 'ok'); } },
+    { label: 'Falla inversor BESS', kind: 'crit', on: (s) => s.batTrip, run: (s) => { s.batTrip = !s.batTrip; SL.log(s, s.batTrip ? 'Inversor de batería fuera de servicio' : 'Inversor de batería en línea', s.batTrip ? 'crit' : 'ok'); } },
+    { label: 'Deslastre de carga', hint: 'Desconecta 25 % de cargas no críticas', on: (s) => s.shed, run: (s) => { s.shed = !s.shed; SL.log(s, s.shed ? 'Deslastre: cargas no críticas desconectadas' : 'Cargas no críticas reconectadas', s.shed ? 'warn' : 'ok'); } },
+    { label: 'Diésel manual', hint: 'Fuerza marcha del grupo (≥ 30 %) para cargar batería', on: (s) => s.dgMan, run: (s) => { s.dgMan = !s.dgMan; SL.log(s, s.dgMan ? 'Operador fuerza marcha del diésel' : 'Diésel vuelve a automático', 'info'); } },
+  ],
+  inspect(s, p, id) {
+    const socf = s.soc / Math.max(1, p.bat);
+    if (id === 'pv') return { title: 'Campo fotovoltaico', sub: `${p.pv} kWp · P = kWp × irradiancia/1000 × nubosidad`,
+      fis: [['Irradiancia', s.irr.toFixed(0), 'W/m²', s.irr / 1000], ['Potencia', s.pv.toFixed(0), 'kW', p.pv ? s.pv / p.pv : 0], ['Factor de nubes', s.cl.toFixed(2), ''], ['Recorte', s.cu.toFixed(0), 'kW'], ['PV útil acumulada', s.pvE.toFixed(0), 'kWh'], ['PV recortada acum.', s.curt.toFixed(0), 'kWh']],
+      ctl: [['Limitación de potencia', s.cu > 1 ? 'ACTIVA' : 'no', ''], ['Evento nube', s.cloudF ? 'sí' : 'no', '']],
+      actions: [{ label: s.cloudF ? 'Despejar' : 'Nublar', run: (s) => { s.cloudF = !s.cloudF; } }, { label: 'PV +100 kWp', run: (s, p, r, api) => api.set('pv', Math.min(1500, p.pv + 100)) }] };
+    if (id === 'bat') return { title: 'BESS · Batería de litio', sub: `${p.bat} kWh · C/2 = ${(p.bat / 2).toFixed(0)} kW · η ${EFF * 100} %`,
+      fis: [['SOC', (100 * socf).toFixed(1), '%', socf, SL.color(socf)], ['Energía', s.soc.toFixed(0), 'kWh'], ['Potencia (+desc)', s.bp.toFixed(0), 'kW'], ['Tasa C', p.bat ? (Math.abs(s.bp) / p.bat).toFixed(2) : '—', 'C'], ['Energía procesada', s.thr.toFixed(0), 'kWh'], ['Ciclos equivalentes', p.bat ? (s.thr / 2 / p.bat).toFixed(2) : '—', ''], ['Autonomía a demanda actual', s.ld > 0 ? (Math.max(0, s.soc - p.socmin / 100 * p.bat) / s.ld).toFixed(1) : '—', 'h']],
+      ctl: [['Estado inversor', s.batTrip ? 'FALLA' : 'en línea', '', null, s.batTrip ? '#ef5350' : '#3ecf8e'], ['SOC mínimo', p.socmin, '%'], ['Alarma SOC bajo', s.alLow ? 'ACTIVA' : 'no', '']],
+      actions: [{ label: s.batTrip ? 'Rearmar inversor' : 'Forzar falla', run: (s) => { s.batTrip = !s.batTrip; } }, { label: 'SOC mín +10 %', run: (s, p, r, api) => api.set('socmin', Math.min(50, p.socmin + 10)) }, { label: 'SOC mín −10 %', run: (s, p, r, api) => api.set('socmin', Math.max(5, p.socmin - 10)) }] };
+    if (id === 'dg') return { title: 'Grupo electrógeno diésel', sub: `${p.dg} kW · consumo ${LPKWH} L/kWh · ${p.price} USD/L`,
+      fis: [['Potencia', s.dg.toFixed(0), 'kW', s.dg / p.dg], ['Consumo', (LPKWH * s.dg).toFixed(1), 'L/h'], ['Combustible acumulado', s.fuel.toFixed(0), 'L'], ['Energía generada', s.dgE.toFixed(0), 'kWh'], ['Horas de marcha', s.dgH.toFixed(1), 'h'], ['CO₂', (s.fuel * CO2L).toFixed(0), 'kg']],
+      ctl: [['Estado', s.dgTrip ? 'TRIP' : s.dgOn ? 'MARCHA' : 'PARADA', '', null, s.dgTrip ? '#ef5350' : s.dgOn ? '#f5b942' : '#8b9bb0'], ['Modo', s.dgMan ? 'MANUAL' : 'AUTO (EMS)', ''], ['Carga mínima', p.dgmin, '%'], ['Arranques', s.starts, '']],
+      actions: [{ label: s.dgTrip ? 'Rearmar' : 'Forzar trip', run: (s) => { s.dgTrip = !s.dgTrip; } }, { label: s.dgMan ? 'Volver a AUTO' : 'Arranque manual', run: (s) => { s.dgMan = !s.dgMan; } }] };
+    if (id === 'load') return { title: 'Carga del sitio', sub: `Perfil diario con picos 08:00 y 19:00 · pico ${p.pk} kW`,
+      fis: [['Demanda', s.ld.toFixed(0), 'kW', s.ld / (p.pk * 1.3)], ['No servida', s.un.toFixed(0), 'kW'], ['Energía demandada', s.ldE.toFixed(0), 'kWh'], ['Energía no servida', s.uns.toFixed(1), 'kWh']],
+      ctl: [['Pico +30 %', s.surge ? 'sí' : 'no', ''], ['Deslastre', s.shed ? 'ACTIVO' : 'no', ''], ['Alarma de corte', s.alUn ? 'CORTE' : 'normal', '', null, s.alUn ? '#ef5350' : undefined]],
+      actions: [{ label: s.shed ? 'Reconectar cargas' : 'Deslastrar 25 %', run: (s) => { s.shed = !s.shed; } }, { label: s.surge ? 'Quitar pico' : 'Provocar pico', run: (s) => { s.surge = !s.surge; } }] };
+    if (id === 'bus') return { title: 'Tablero · bus AC', sub: 'Balance: PV + diésel ± batería = demanda − no servida',
+      fis: [['PV', s.pv.toFixed(0), 'kW'], ['Diésel', s.dg.toFixed(0), 'kW'], ['Batería', s.bp.toFixed(0), 'kW'], ['Demanda', s.ld.toFixed(0), 'kW'], ['Recorte', s.cu.toFixed(0), 'kW'], ['Frecuencia', s.freq.toFixed(2), 'Hz']], ctl: [['Alarma servicio', s.alUn ? 'CORTE' : 'normal', '']] };
+    if (id === 'ems') return { title: 'EMS · controlador de despacho', sub: 'Seguidor de carga: diésel solo cubre lo que la batería no puede. Ciclo de carga: diésel a plena carga hasta SOC fin.',
+      fis: [], ctl: this.vars(s, p).ctl,
+      actions: [{ label: 'Cambiar estrategia', run: (s, p, r, api) => api.set('pol', p.pol ? 0 : 1) }] };
   },
   kpis(s, p) {
     const fuel = s.dgE * LPKWH;
@@ -61,8 +167,9 @@ SL.app({
       { label: 'Costo combustible', value: '$' + (fuel * p.price).toFixed(0) },
       { label: 'Energía no servida', value: s.uns.toFixed(0) + ' kWh' },
       { label: 'PV recortado', value: s.curt.toFixed(0) + ' kWh' },
+      { label: 'Arranques diésel', value: s.starts },
     ];
   },
-  series: (s, p) => ({ PV: s.pv, Carga: s.ld, Diésel: s.dg, 'SOC %': (100 * s.soc) / Math.max(p.bat, 1) }),
+  series: (s, p) => ({ PV: s.pv, Carga: s.ld, Diésel: s.dg, 'SOC %': (100 * s.soc) / Math.max(p.bat, 1), 'Batería kW': s.bp }),
 });
 </script></body></html>

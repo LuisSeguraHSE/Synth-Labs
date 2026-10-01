@@ -2,67 +2,187 @@
 <html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <link rel="stylesheet" href="../../shared/style.css"></head>
 <body><div id="app"></div>
+<script src="../../shared/controls.js"></script>
 <script src="../../shared/sim.js"></script>
+<script src="../../shared/gfx.js"></script>
 <script>
 // Producto grande: colchón/rollo/panel. Unidad: segundos desde las 07:00. Fatiga en traslado manual.
+// Física: gasto metabólico por persona (Pandolf, terreno plano): M = 1.5·W + 2·(W+L)·(L/W)² + 1.5·(W+L)·v² [W];
+// índice de levantamiento NIOSH LI = carga/RWL; transportador de listones: F = μ·(m_listones + m_piezas)·g, P = F·v/η + P0.
 const hh = (t) => { const h = 7 + t / 3600; return String(Math.floor(h)).padStart(2, '0') + ':' + String(Math.floor((h % 1) * 60)).padStart(2, '0'); };
-const SPC = 2.4, VB = 0.3;
+const BW = 70, VW = 0.9, MCH = 30, MUC = 0.1, ETA = 0.75, P0 = 0.3, GR = 9.81; // kg persona, m/s marcha, kg/m listones, μ, η, kW giro 90°
 const rate = (a, t) => a.filter((x) => x > t - 3600).length;
+const fat = (s, p) => 0.0045 * (p.w / 25) * Math.pow(Math.max(0, s.t - s.tf) / 3600, 1.8);
+const met = (L, v) => 1.5 * BW + 2 * (BW + L) * Math.pow(L / BW, 2) + 1.5 * (BW + L) * v * v;
+const rwl = (p) => 23 * 0.56 * 0.835 * 0.865 * Math.max(0.45, 0.94 - 0.2 * (p.rate / 60)) * 0.9; // kg (H 45 cm, V 20 cm, D 100 cm, agarre pobre)
+const beltSt = (s) => (s.jam ? 'ATASCO' : s.bst ? 'ACUMULANDO' : 'MARCHA');
 SL.app({
   title: 'Demo F · Producto grande (colchón, rollo, panel)',
-  desc: 'Pieza de 1.5–2 m y 15–40 kg. "Hoy": dos personas la cargan 20 m y la fatiga baja el ritmo a las 16:00. "Propuesto": transportador de listones/banda ancha con giro 90° lento hacia mesa de empaque.',
+  desc: 'Pieza de 1.5–2 m y 15–40 kg. "Hoy": dos personas la cargan 20 m y la fatiga baja el ritmo a las 16:00. "Propuesto": transportador de listones/banda ancha con giro 90° lento hacia mesa de empaque. Clic en producción, equipo, transportador y roll-pack.',
   pitch: '"Su cuello no es la resortera; es mover el colchón terminado sin matar a la gente a las 4 de la tarde."',
   obj: '"Es muy custom." → El módulo es estándar (tramos de 12 m); lo que se personaliza es el ancho, no el software.',
   unit: 's', dt: 0.5, sample: 60, speeds: [1, 20, 120, 480],
   clock: (t) => 'Turno ' + hh(t),
   params: [
-    { id: 'mode', label: 'Escenario', opts: ['Hoy: 2 personas cargan', 'Propuesto: transportador de listones'], value: 0 },
+    { sec: 'Escenario y producción', id: 'mode', label: 'Escenario', opts: ['Hoy: 2 personas cargan', 'Propuesto: transportador de listones'], value: 0 },
     { id: 'rate', label: 'Producción terminada', min: 30, max: 75, step: 5, value: 55, unit: 'pzas/h' },
-    { id: 'w', label: 'Peso de la pieza', min: 15, max: 40, step: 1, value: 28, unit: 'kg' },
+    { sec: 'Físicos', id: 'w', label: 'Peso de la pieza', min: 15, max: 40, step: 1, value: 28, unit: 'kg' },
     { id: 'len', label: 'Largo de la pieza', min: 1.5, max: 2, step: 0.1, value: 1.9, unit: 'm' },
     { id: 'dist', label: 'Distancia a empaque', min: 10, max: 30, step: 1, value: 20, unit: 'm' },
+    { sec: 'Control del transportador', id: 'vb', label: 'Velocidad de listones', min: 0.15, max: 0.5, step: 0.05, value: 0.3, unit: 'm/s' },
+    { id: 'spc', label: 'Espaciamiento entre piezas', min: 2, max: 4, step: 0.1, value: 2.4, unit: 'm' },
+    { id: 'acc', label: 'Tope en mesa (fotocelda para banda)', min: 2, max: 8, step: 1, value: 5, unit: 'pzas' },
   ],
-  init() { return { q: 0, team: { rem: 0, tot: 1, on: false }, belt: [], pack: { q: 0, rem: 0, busy: false }, done: [], n: 0, floor: 0, at1h: null, carried: 0 }; },
+  init() { return { q: 0, team: { rem: 0, tot: 1, on: false }, belt: [], pack: { q: 0, rem: 0, busy: false }, done: [], n: 0, floor: 0, at1h: null, carried: 0, tf: 0, walk: 0, kcal: 0, met: 0, kw: 0, kwh: 0, pbusy: 0, bst: false, jam: false, pkDn: false, peak: false, help: false, fLv: 0, accAl: false, stops: 0 }; },
   step(s, dt, p, r) {
-    const hoy = p.mode === 0, h = s.t / 3600, f = 1 + 0.0045 * (p.w / 25) * Math.pow(h, 1.8);
-    if (r() < (p.rate / 3600) * dt) s.q++;
+    const hoy = p.mode === 0, h = s.t / 3600, f = 1 + fat(s, p);
+    if (r() < ((p.rate * (s.peak ? 1.5 : 1)) / 3600) * dt) s.q++;
+    s.met = 0; s.kw = 0;
     if (hoy) {
       const tm = s.team;
-      if (tm.on && (tm.rem -= dt) <= 0) { tm.on = false; s.pack.q++; if (r() < 0.03 * f) s.floor++; }
-      if (!tm.on && s.q > 0) { s.q--; tm.on = true; tm.tot = tm.rem = ((2 * p.dist) / 0.9 + 18) * f * (0.92 + 0.16 * r()); s.carried++; }
+      if (tm.on && (tm.rem -= dt) <= 0) { tm.on = false; s.pack.q++; if (r() < 0.03 * f) { s.floor++; SL.log(s, `Pieza tocó el piso (fatiga ×${f.toFixed(2)})`, 'warn'); } }
+      if (!tm.on && s.q > 0) { s.q--; tm.on = true; tm.tot = tm.rem = ((2 * p.dist) / 0.9 + 18) * f * (0.92 + 0.16 * r()); s.carried++; s.walk += 2 * p.dist; }
+      if (tm.on) { const ph = 1 - tm.rem / tm.tot; s.met = met(ph < 0.5 ? p.w / 2 : 0, VW / f); s.kcal += (2 * s.met * dt) / 4184; }
+      const lv = f > 1.3 ? 2 : f > 1.15 ? 1 : 0;
+      if (lv > s.fLv) SL.log(s, `Fatiga del equipo ×${f.toFixed(2)} (${hh(s.t)})`, lv > 1 ? 'crit' : 'warn');
+      s.fLv = lv;
     } else {
-      s.belt.forEach((b) => (b.d += VB * dt));
-      if (s.q > 0 && (!s.belt.length || s.belt[s.belt.length - 1].d >= SPC)) { s.q--; s.belt.push({ d: 0 }); if (r() < 0.002) s.floor++; }
-      while (s.belt.length && s.belt[0].d >= p.dist) { s.belt.shift(); s.pack.q++; }
+      s.bst = s.pack.q >= p.acc;
+      const stop = s.bst || s.jam;
+      if (stop && !s.wasStop) { s.stops++; if (!s.jam) SL.log(s, `Mesa llena (${s.pack.q}): fotocelda detiene la banda`, 'warn'); }
+      s.wasStop = stop;
+      if (!stop) {
+        s.belt.forEach((b) => (b.d += p.vb * dt));
+        if (s.q > 0 && (!s.belt.length || s.belt[s.belt.length - 1].d >= p.spc)) { s.q--; s.belt.push({ d: 0 }); if (r() < 0.002) s.floor++; }
+        while (s.belt.length && s.belt[0].d >= p.dist) { s.belt.shift(); s.pack.q++; }
+        s.kw = (MUC * (MCH * p.dist + s.belt.length * p.w) * GR * p.vb) / 1000 / ETA + P0;
+      } else s.kw = 0.05;
+      s.kwh += (s.kw * dt) / 3600;
     }
+    if (!s.accAl && s.q > 6) { s.accAl = true; SL.log(s, `Producción acumulando (${s.q} piezas en espera)`, 'warn'); } else if (s.accAl && s.q < 3) s.accAl = false;
     const pk = s.pack;
+    if (pk.busy) s.pbusy += dt;
     if (pk.busy && (pk.rem -= dt) <= 0) { pk.busy = false; s.n++; s.done.push(s.t); }
-    if (!pk.busy && pk.q > 0) { pk.q--; pk.busy = true; pk.rem = 32 * (1 + 0.01 * h) * (0.9 + 0.2 * r()); }
+    if (!pk.busy && pk.q > 0 && !s.pkDn) { pk.q--; pk.busy = true; pk.rem = 32 * (1 + 0.01 * h) * (0.9 + 0.2 * r()) * (s.help ? 0.6 : 1); }
     if (s.at1h === null && s.t >= 3600) s.at1h = s.n;
     while (s.done.length && s.done[0] < s.t - 3600) s.done.shift();
   },
   draw(g, s, p, W, H) {
-    const hoy = p.mode === 0, x0 = 90, x1 = 640, y = 210, PXM = (x1 - x0) / p.dist, pl = p.len * PXM;
-    g.fillStyle = '#243040'; g.fillRect(20, y - 40, 65, 80); SL.text(g, 'Prod.', 52, y + 4, '#e6edf3', '12px system-ui', 'center');
-    g.fillStyle = '#243040'; g.fillRect(x1 + 5, y - 40, 120, 80); SL.text(g, 'Empaque', x1 + 65, y - 15, '#e6edf3', '13px system-ui', 'center');
-    g.fillStyle = s.pack.busy ? '#3ecf8e' : '#2a3646'; g.beginPath(); g.arc(x1 + 65, y + 15, 14, 0, 7); g.fill();
-    const pc = (x, col) => { g.fillStyle = col || '#d7c9a7'; g.fillRect(x, y - 9, Math.min(pl, 38), 18); };
+    const hoy = p.mode === 0, x0 = 190, x1 = 610, y = 220, fy = y + 26, PXM = (x1 - x0) / p.dist, pl = Math.min(p.len * PXM, 64);
+    g.fillStyle = 'rgba(255,255,255,.05)'; g.fillRect(10, fy, 780, 2);
+    SL.machine(g, 10, y - 84, 100, 110, { label: 'Producción', sub: 'colchones', state: s.q > 6 ? 'block' : 'run', fs: 12, tag: s.q > 6 ? 'acumulando' : s.peak ? 'pico +50 %' : null });
+    SL.hot('prod', 10, y - 100, 100, 126);
+    for (let i = 0; i < Math.min(s.q, 10); i++) SL.mattress(g, 114 + (i % 2) * 4, fy - 12 - i * 8, 66, 11, hoy ? '#f0d9cc' : '#e4e0d4');
+    SL.table(g, x1 + 34, y - 4, 140, 10); SL.hot('table', x1 + 30, y - 30, 150, 58);
+    SL.machine(g, x1 + 64, y - 114, 104, 72, { label: 'Roll-pack', sub: s.pkDn ? 'FALLA' : s.pack.busy ? 'empacando' : 'libre', state: s.pkDn ? 'down' : s.pack.busy ? 'run' : 'idle', fs: 12, tag: s.pkDn ? 'EN FALLA' : null });
+    SL.hot('pack', x1 + 64, y - 130, 104, 88);
+    if (s.pack.busy) SL.mattress(g, x1 + 50, y - 18, 96, 14, '#cfe3f5');
+    for (let i = 0; i < Math.min(s.pack.q, 5); i++) SL.mattress(g, x1 + 44, fy - 12 - i * 8, 80, 11);
+    SL.person(g, x1 + 186, fy, { dir: -1, busy: s.pack.busy }); SL.hot('packer', x1 + 170, fy - 52, 30, 56);
+    if (s.help) SL.person(g, x1 + 20, fy, { dir: 1, busy: s.pack.busy, shirt: '#2e7d5b' });
     if (hoy) {
-      g.strokeStyle = '#2a3646'; g.setLineDash([6, 6]); g.lineWidth = 2; g.beginPath(); g.moveTo(x0, y); g.lineTo(x1, y); g.stroke(); g.setLineDash([]);
-      for (let i = 0; i < Math.min(s.q, 12); i++) pc(28 + (i % 4) * 12, '#ef5350');
+      g.strokeStyle = 'rgba(239,83,80,.5)'; g.setLineDash([6, 6]); g.lineWidth = 2; g.beginPath(); g.moveTo(x0, fy - 1); g.lineTo(x1, fy - 1); g.stroke(); g.setLineDash([]);
       const tm = s.team;
-      if (tm.on) { const f = 1 - tm.rem / tm.tot, d = f < 0.5 ? f * 2 : 2 - f * 2, x = x0 + d * (x1 - x0); if (f < 0.5) pc(x - 19); for (const o of [-14, 14]) { g.fillStyle = '#4fc3f7'; g.beginPath(); g.arc(x, y + o * 1.3, 8, 0, 7); g.fill(); } }
-      SL.text(g, 'Traslado manual: 2 personas · ida y vuelta', x0, y - 60, '#ef5350', '13px system-ui');
+      if (tm.on) {
+        const f = 1 - tm.rem / tm.tot, d = f < 0.5 ? f * 2 : 2 - f * 2, x = x0 + d * (x1 - x0), dir = f < 0.5 ? 1 : -1, walk = s.t * 5;
+        if (f < 0.5) SL.mattress(g, x - pl / 2, fy - 40, pl, 12);
+        SL.person(g, x - pl / 2 - 4, fy, { dir, busy: f < 0.5, walk });
+        SL.person(g, x + pl / 2 + 4, fy, { dir, busy: f < 0.5, walk: walk + 1.5 });
+      }
+      SL.hot('team', x0, fy - 70, x1 - x0, 76);
+      const ft = fat(s, p), li = p.w / 2 / rwl(p);
+      SL.gauge(g, x0, fy + 30, 220, 12, Math.min(1, ft / 0.3), ft > 0.2 ? SL.STATE.down : ft > 0.1 ? SL.STATE.warn : SL.STATE.run, `Fatiga del equipo +${(ft * 100).toFixed(0)} %`);
+      SL.tag(g, `NIOSH LI ${li.toFixed(1)}`, x0 + 280, fy + 36, li > 3 ? SL.STATE.down : li > 1 ? SL.STATE.warn : SL.STATE.run);
+      SL.tag(g, `${Math.round(s.met)} W/persona`, x0 + 400, fy + 36, s.met > 300 ? SL.STATE.warn : SL.STATE.info);
+      SL.text(g, 'Traslado manual: 2 personas · ida y vuelta', x0, y - 100, '#ef5350', '600 13px system-ui');
     } else {
-      SL.belt(g, [[x0, y], [x1, y]], 26); for (let x = x0; x < x1; x += 10) { g.strokeStyle = '#1c2633'; g.lineWidth = 1; g.beginPath(); g.moveTo(x, y - 13); g.lineTo(x, y + 13); g.stroke(); }
-      s.belt.forEach((b) => pc(x0 + b.d * PXM - Math.min(pl, 38) / 2));
-      g.strokeStyle = '#f5b942'; g.lineWidth = 3; g.beginPath(); g.arc(x1 - 10, y + 70, 70, -1.2, -0.3); g.stroke();
-      SL.text(g, 'Listones/banda ancha · giro 90° lento · 0 personas en traslado', x0, y - 60, '#3ecf8e', '13px system-ui');
+      const path = [[x0, y], [x1 - 30, y], [x1 + 12, y + 30]], stop = s.bst || s.jam;
+      SL.belt(g, path, 32, s.jam ? '#4a2a2a' : '#3a4654');
+      s.belt.forEach((b) => { const q = SL.along(path, b.d * PXM); SL.mattress(g, q.x - pl / 2, q.y - 12, pl, 12); });
+      SL.hot('belt', x0, y - 20, x1 - 30 - x0, 40); SL.hot('turn', x1 - 34, y - 20, 52, 56);
+      SL.tag(g, `${beltSt(s)} · ${stop ? 0 : p.vb.toFixed(2)} m/s · ${s.kw.toFixed(2)} kW`, (x0 + x1) / 2, y - 40, s.jam ? SL.STATE.down : s.bst ? SL.STATE.warn : SL.STATE.run);
+      SL.led(g, x1 + 24, y + 36, 3, s.bst ? SL.STATE.warn : SL.STATE.run); SL.text(g, 'PE', x1 + 32, y + 40, '#8b9bb0', '10px system-ui');
+      if (s.jam) SL.tag(g, 'ATASCO GIRO 90°', x1 - 10, y + 56, SL.STATE.down);
+      SL.text(g, 'Transportador de listones · giro 90° lento · 0 personas en traslado', x0, y - 100, '#3ecf8e', '600 13px system-ui');
     }
-    SL.text(g, `Piezas en espera en producción: ${s.q} · en mesa de empaque: ${s.pack.q}`, 20, H - 14);
+    SL.text(g, `Piezas en espera: ${s.q} · en mesa de empaque: ${s.pack.q} · tocaron el piso: ${s.floor}`, 20, H - 14);
+  },
+  vars(s, p) {
+    const hoy = p.mode === 0, f = 1 + fat(s, p), T = Math.max(s.t, 1), li = p.w / 2 / rwl(p), up = s.pbusy / T, lastH = rate(s.done, s.t);
+    const fis = [
+      ['Peso / largo de pieza', `${p.w} / ${p.len.toFixed(1)}`, 'kg / m'],
+      ['Throughput última hora', s.t < 3600 ? rate(s.done, s.t) + ' (parcial)' : lastH, 'pzas/h', lastH / 75],
+      ['Utilización roll-pack', (100 * up).toFixed(0), '%', up],
+      ['Piezas en espera', s.q, 'pzas', Math.min(1, s.q / 10), s.q > 6 ? '#ef5350' : undefined],
+    ].concat(hoy ? [
+      ['Carga por persona', (p.w / 2).toFixed(1), 'kg'],
+      ['Velocidad de marcha', (VW / f).toFixed(2), 'm/s', VW / f / 1.2],
+      ['Gasto metabólico (actual)', Math.round(s.met), 'W/persona', s.met / 400, s.met > 300 ? '#f5b942' : undefined],
+      ['Energía gastada (2 personas)', s.kcal.toFixed(0), 'kcal'],
+      ['Distancia recorrida por persona', (s.walk / 1000).toFixed(2), 'km'],
+      ['Masa movida a mano', ((s.carried * p.w) / 1000).toFixed(2), 't'],
+      ['Tiempo de traslado', ((2 * p.dist) / 0.9 + 18).toFixed(0) + ' × ' + f.toFixed(2), 's'],
+    ] : [
+      ['Velocidad de listones', s.bst || s.jam ? '0.00' : p.vb.toFixed(2), 'm/s', p.vb / 0.5, '#4fc3f7'],
+      ['Tiempo de tránsito', (p.dist / p.vb).toFixed(0), 's'],
+      ['Piezas sobre transportador', s.belt.length, 'pzas'],
+      ['Masa sobre transportador', (s.belt.length * p.w).toFixed(0), 'kg'],
+      ['Capacidad (v / espaciamiento)', ((3600 * p.vb) / p.spc).toFixed(0), 'pzas/h', p.rate / ((3600 * p.vb) / p.spc)],
+      ['Potencia motor', s.kw.toFixed(2), 'kW', s.kw / 1.5, '#c98500'],
+      ['Energía', s.kwh.toFixed(3), 'kWh'],
+      ['Energía por pieza', s.n ? ((1000 * s.kwh) / s.n).toFixed(1) : '—', 'Wh/pza'],
+    ]);
+    const ctl = [
+      ['Escenario', hoy ? 'Traslado manual' : 'Transportador', ''],
+      ['Takt de producción', (3600 / (p.rate * (s.peak ? 1.5 : 1))).toFixed(0), 's/pza'],
+      ['Pico de producción', s.peak ? '+50 %' : 'no', '', null, s.peak ? '#f5b942' : undefined],
+      ['Roll-pack', s.pkDn ? 'FALLA' : s.pack.busy ? 'EMPACANDO' : 'LIBRE', '', null, s.pkDn ? '#ef5350' : undefined],
+      ['Piezas en mesa de empaque', s.pack.q, 'pzas', s.pack.q / p.acc],
+      ['Refuerzo en empaque', s.help ? 'SÍ (−40 % ciclo)' : 'no', ''],
+    ].concat(hoy ? [
+      ['Factor de fatiga', '×' + f.toFixed(2), '', (f - 1) / 0.5, f > 1.3 ? '#ef5350' : f > 1.15 ? '#f5b942' : '#3ecf8e'],
+      ['Horas desde rotación', ((s.t - s.tf) / 3600).toFixed(1), 'h'],
+      ['RWL (NIOSH)', rwl(p).toFixed(1), 'kg/persona'],
+      ['Índice de levantamiento LI', li.toFixed(2), '', li / 4, li > 3 ? '#ef5350' : li > 1 ? '#f5b942' : '#3ecf8e'],
+      ['Riesgo ergonómico', li > 3 ? 'ALTO' : li > 1 ? 'MODERADO' : 'aceptable', ''],
+    ] : [
+      ['Estado transportador', beltSt(s), '', null, s.jam ? '#ef5350' : s.bst ? '#f5b942' : '#3ecf8e'],
+      ['SP velocidad', p.vb.toFixed(2), 'm/s'],
+      ['Espaciamiento mínimo', p.spc.toFixed(1), 'm'],
+      ['Tope en mesa (fotocelda PE)', `${s.pack.q}/${p.acc}`, 'pzas'],
+      ['Paros por acumulación/atasco', s.stops, ''],
+    ]);
+    return { fis, ctl };
+  },
+  actions: [
+    { label: 'Pico de producción +50 %', kind: 'warn', on: (s) => s.peak, run: (s) => { s.peak = !s.peak; SL.log(s, s.peak ? 'Pico de producción: +50 %' : 'Producción normal', s.peak ? 'warn' : 'ok'); } },
+    { label: 'Falla del roll-pack', kind: 'crit', on: (s) => s.pkDn, run: (s) => { s.pkDn = !s.pkDn; SL.log(s, s.pkDn ? 'Roll-pack en falla' : 'Roll-pack reparado', s.pkDn ? 'crit' : 'ok'); } },
+    { label: 'Atasco en giro 90°', kind: 'crit', on: (s) => s.jam, run: (s) => { s.jam = !s.jam; SL.log(s, s.jam ? 'Atasco en giro 90°: transportador detenido' : 'Atasco despejado, transportador en marcha', s.jam ? 'crit' : 'ok'); } },
+    { label: 'Rotar equipo de traslado', hint: 'Entra un equipo descansado: la fatiga se reinicia', run: (s) => { s.tf = s.t; s.fLv = 0; } },
+    { label: 'Refuerzo en empaque', on: (s) => s.help, run: (s) => { s.help = !s.help; SL.log(s, s.help ? 'Segundo operario en empaque' : 'Refuerzo retirado de empaque', 'info'); } },
+    { label: 'Vaciar espera a piso', kind: 'warn', hint: 'Se sacan las piezas en espera a un área de piso', run: (s) => { s.floor += s.q; s.q = 0; } },
+  ],
+  inspect(s, p, id) {
+    const f = 1 + fat(s, p), T = Math.max(s.t, 1), li = p.w / 2 / rwl(p);
+    if (id === 'prod') return { title: 'Producción · salida de colchones', sub: `${p.rate} pzas/h nominal · pieza ${p.w} kg × ${p.len} m`,
+      fis: [['Piezas en espera', s.q, 'pzas', Math.min(1, s.q / 10)], ['Masa en espera', (s.q * p.w).toFixed(0), 'kg'], ['Área ocupada', (s.q * 2.2).toFixed(1), 'm²']],
+      ctl: [['Takt', (3600 / (p.rate * (s.peak ? 1.5 : 1))).toFixed(0), 's/pza'], ['Alarma acumulación (>6)', s.accAl ? 'ACTIVA' : 'normal', '', null, s.accAl ? '#ef5350' : undefined]],
+      actions: [{ label: s.peak ? 'Fin del pico' : 'Pico +50 %', run: (s) => { s.peak = !s.peak; } }] };
+    if (id === 'team') return { title: 'Equipo de traslado (2 personas)', sub: 'Levantamiento en equipo y marcha ida/vuelta',
+      fis: [['Carga por persona', (p.w / 2).toFixed(1), 'kg'], ['Velocidad de marcha', (VW / f).toFixed(2), 'm/s'], ['Gasto metabólico', Math.round(s.met), 'W/persona', s.met / 400], ['Energía gastada', s.kcal.toFixed(0), 'kcal'], ['Distancia por persona', (s.walk / 1000).toFixed(2), 'km'], ['Traslados', s.carried, '']],
+      ctl: [['Fatiga', '×' + f.toFixed(2), '', (f - 1) / 0.5, f > 1.3 ? '#ef5350' : undefined], ['LI NIOSH', li.toFixed(2), '', li / 4, li > 1 ? '#f5b942' : undefined], ['Estado', s.team.on ? 'EN TRASLADO' : 'ESPERANDO', '']],
+      actions: [{ label: 'Rotar equipo', run: (s) => { s.tf = s.t; s.fLv = 0; } }] };
+    if (id === 'belt' || id === 'turn') return { title: id === 'turn' ? 'Módulo de giro 90° lento' : `Transportador de listones · ${p.dist} m`, sub: `Listones ${MCH} kg/m · μ = ${MUC} · η = ${ETA}`,
+      fis: [['Velocidad', s.bst || s.jam ? '0' : p.vb.toFixed(2), 'm/s'], ['Piezas sobre banda', s.belt.length, ''], ['Masa transportada', (s.belt.length * p.w).toFixed(0), 'kg'], ['Fuerza de arrastre', ((MUC * (MCH * p.dist + s.belt.length * p.w) * GR) / 1000).toFixed(2), 'kN'], ['Potencia', s.kw.toFixed(2), 'kW', s.kw / 1.5], ['Energía', s.kwh.toFixed(3), 'kWh']],
+      ctl: [['Estado', beltSt(s), '', null, s.jam ? '#ef5350' : s.bst ? '#f5b942' : '#3ecf8e'], ['Fotocelda de mesa', s.bst ? 'OCUPADA → paro' : 'libre', ''], ['Paros', s.stops, '']],
+      actions: [{ label: s.jam ? 'Despejar atasco' : 'Forzar atasco', run: (s) => { s.jam = !s.jam; } }, { label: 'Velocidad +0.05', run: (s, p, r, api) => api.set('vb', Math.min(0.5, +(p.vb + 0.05).toFixed(2))) }] };
+    if (id === 'pack' || id === 'packer' || id === 'table') return { title: id === 'table' ? 'Mesa de empaque' : id === 'packer' ? 'Operario de empaque' : 'Roll-pack (enrolladora/embolsadora)', sub: 'Ciclo ≈ 32 s por pieza, +1 %/h de turno',
+      fis: [['Piezas en mesa', s.pack.q, 'pzas', s.pack.q / p.acc], ['Utilización', ((100 * s.pbusy) / T).toFixed(0), '%', s.pbusy / T], ['Empacadas', s.n, ''], ['Resto del ciclo', s.pack.busy ? s.pack.rem.toFixed(0) : '—', 's']],
+      ctl: [['Estado', s.pkDn ? 'FALLA' : s.pack.busy ? 'EMPACANDO' : 'LIBRE', '', null, s.pkDn ? '#ef5350' : undefined], ['Refuerzo', s.help ? 'SÍ' : 'no', '']],
+      actions: [{ label: s.pkDn ? 'Reparar roll-pack' : 'Forzar falla', run: (s) => { s.pkDn = !s.pkDn; } }, { label: s.help ? 'Retirar refuerzo' : 'Agregar refuerzo', run: (s) => { s.help = !s.help; } }] };
   },
   kpis(s, p) {
-    const h = s.t / 3600, f = 1 + 0.0045 * (p.w / 25) * Math.pow(h, 1.8), lastH = rate(s.done, s.t);
+    const f = 1 + fat(s, p), lastH = rate(s.done, s.t);
     return [
       { label: 'Unidades/h — primera hora', value: s.at1h === null ? '—' : s.at1h },
       { label: 'Unidades/h — última hora', value: s.t < 3600 ? '—' : lastH },

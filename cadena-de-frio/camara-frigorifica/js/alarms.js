@@ -47,6 +47,27 @@ const RULES = [
     impact: () => 'Moderado: recuperación lenta',
   },
   {
+    id: 'POWER', level: 'crit', delay: 0, title: 'Corte de energía',
+    test: (st) => st.cut,
+    msg: (st) => `Sin energía: restablece en ${Math.max(0, Math.round((st.cutUntil - st.t) / 60))} min`,
+    cause: () => ({ key: 'off', text: 'Corte de suministro eléctrico' }),
+    impact: () => 'Alto: la cámara gana calor sin compensación',
+  },
+  {
+    id: 'COND_HP', level: 'warn', delay: 300, title: 'Alta presión de condensación',
+    test: (st) => st.evapOut.Q > 0 && st.evapOut.Tcond > 48,
+    msg: (st) => `T condensación ${st.evapOut.Tcond.toFixed(0)} °C (${st.evapOut.Pdis.toFixed(1)} bar): el COP cae a ${st.evapOut.cop.toFixed(2)}`,
+    cause: (st, p) => ({ key: 'cond', text: p.condDirty ? 'Condensador sucio / ventilador de condensador degradado' : 'Temperatura exterior alta' }),
+    impact: () => 'Moderado: más consumo eléctrico por kW de frío',
+  },
+  {
+    id: 'MANUAL', level: 'warn', delay: 0, title: 'Control en manual',
+    test: (st, p) => p.ctrlMode === 'manual',
+    msg: (st, p) => `Salida fija al ${p.uMan} %: la temperatura no se regula`,
+    cause: () => ({ key: 'user', text: 'Operador pasó el lazo a manual' }),
+    impact: () => 'Riesgo de desviación si cambia la carga',
+  },
+  {
     id: 'SYS_OFF', level: 'warn', delay: 0, title: 'Refrigeración apagada',
     test: (st, p) => !p.refrigOn,
     msg: () => 'El sistema frigorífico está apagado',
