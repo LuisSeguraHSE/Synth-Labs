@@ -53,10 +53,16 @@ Ver [`cadena-de-frio/`](cadena-de-frio/) · [▶ Abrir cámara frigorífica 3D](
    - `actions: [{ label, kind:'warn'|'crit', on(s,p), run(s,p,rng,api) }]`: botones de perturbación/operación en vivo.
    - `SL.hot(id,x,y,w,h)` dentro de `draw` + `inspect(s,p,id) → { title, sub, fis, ctl, actions }`: tooltip al pasar el cursor e inspector al hacer clic.
    - `SL.log(s, texto, nivel)`: bitácora y marcador en las tendencias. `sec:'…'` en un parámetro agrupa los sliders.
+   - `heat: [{ id, label, unit, max, mode:'max'|'sum', fn(s,p) → [[x, y, valor, radio_px], …] }]`: capas de **mapa de calor**
+     (selector sobre el lienzo, modo instantáneo o promedio en el tiempo, isolíneas al 25/50/75 %, marcador del pico,
+     lectura bajo el cursor). Rampa secuencial naranja de un solo tono: transparente en cero, más claro = mayor valor.
 3. Añadir la tarjeta en `index.html` y un `README.md` local.
 
 ## Interactividad común (2D)
 Todas las simulaciones 2D: clic sobre equipos para inspeccionar sus variables físicas y de control (con acciones propias: forzar falla, reparar, priorizar…), botones de **acciones en vivo**, pestañas KPIs / Físicas / Control, bitácora de eventos con marcadores en el gráfico, leyenda conmutable y cursor con lectura en tendencias, valor exacto al hacer clic en la lectura LCD de cada slider, y atajos **Espacio** (pausa), **R** (reiniciar), **Esc** (cerrar inspector).
+
+## Mapa de calor y nivel de detalle
+Cada simulación 2D tiene capas de mapa de calor con variables físicas reales (congestión, utilización, potencia, temperatura, esfuerzo físico, riesgo…), instantáneas o promediadas en el tiempo. El kit `shared/gfx.js` dibuja con volumen y animación: sombras de contacto, metal cepillado, gabinetes con HMI y baliza andon, operarios con EPP completo, cajas con tapa y etiqueta, tarimas, ruedas con llantas que giran, bandas con tacos en movimiento y tambores, tuberías con bridas, tanques con oleaje y escalera, instrumentos de aguja, ventiladores, señalética, demarcación de piso y luminarias.
 
 ## Sistema de controles
 `shared/controls.css` + `shared/controls.js`: teclas con profundidad y LED, segmentados, pestañas con indicador, faders con escala y relleno, interruptores, chips de capa y lecturas LCD. Lo usan las 2D y la cámara 3D.
