@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Vista previa de modelos · Cold Room</title><link rel="icon" href="data:,">
+<style>html,body{margin:0;height:100%;background:#0b1016;color:#e6edf3;font:13px system-ui}#hud{position:fixed;left:10px;top:8px;background:rgba(8,12,18,.8);padding:6px 10px;border-radius:6px}</style>
+<script type="importmap">{ "imports": { "three": "../../../../shared/vendor/three/three.module.min.js", "three/addons/controls/OrbitControls.js": "../../../../shared/vendor/three/OrbitControls.js", "three/addons/environments/RoomEnvironment.js": "../../../../shared/vendor/three/RoomEnvironment.js", "three/addons/": "../../../../shared/vendor/three/addons/" } }</script>
+</head><body><div id="hud">Vista previa · ?m=modulo (exporta demo(scene, ctx) → update(dt))</div>
+<script type="module">
+// Banco de pruebas: carga js/models/<m>.js y llama a su demo(scene, ctx). ctx.t = tiempo; la cámara orbita el origen.
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+const q = new URLSearchParams(location.search), m = q.get('m') || 'kit';
+const r = new THREE.WebGLRenderer({ antialias: true }); r.setPixelRatio(Math.min(2, devicePixelRatio)); r.setSize(innerWidth, innerHeight);
+r.toneMapping = THREE.NeutralToneMapping; r.shadowMap.enabled = true; r.shadowMap.type = THREE.PCFSoftShadowMap; document.body.appendChild(r.domElement);
+const scene = new THREE.Scene(); scene.background = new THREE.Color(0x0b1016);
+scene.environment = new THREE.PMREMGenerator(r).fromScene(new RoomEnvironment(), 0.04).texture; scene.environmentIntensity = 0.6;
+const cam = new THREE.PerspectiveCamera(40, innerWidth / innerHeight, 0.05, 200); cam.position.set(...(q.get('cam') || '5,3,6').split(',').map(Number));
+const ctl = new OrbitControls(cam, r.domElement); ctl.target.set(...(q.get('tgt') || '0,1,0').split(',').map(Number)); ctl.update();
+scene.add(new THREE.HemisphereLight(0xdde8ff, 0x1a2230, 0.8)); const sun = new THREE.DirectionalLight(0xffffff, 1.8); sun.position.set(-6, 12, 8); sun.castShadow = true; sun.shadow.mapSize.set(2048, 2048);
+Object.assign(sun.shadow.camera, { left: -12, right: 12, top: 12, bottom: -12 }); scene.add(sun);
+const floor = new THREE.Mesh(new THREE.PlaneGeometry(60, 60), new THREE.MeshStandardMaterial({ color: 0x6b7178, roughness: 0.9 })); floor.rotation.x = -Math.PI / 2; floor.receiveShadow = true; scene.add(floor);
+const mod = await import(`./${m}.js`); const ctx = { t: 0, THREE }; const upd = mod.demo ? mod.demo(scene, ctx) : null;
+window.__preview = { scene, cam, ctl, ctx, ready: true };
+let last = performance.now();
+(function loop(now) { const dt = Math.min(0.05, (now - last) / 1000); last = now; ctx.t += dt; if (upd) upd(dt, ctx); ctl.update(); r.render(scene, cam); requestAnimationFrame(loop); })(last);
+addEventListener('resize', () => { r.setSize(innerWidth, innerHeight); cam.aspect = innerWidth / innerHeight; cam.updateProjectionMatrix(); });
+</script></body></html>

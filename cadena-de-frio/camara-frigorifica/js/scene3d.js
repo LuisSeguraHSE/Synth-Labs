@@ -8,6 +8,10 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { GTAOPass } from 'three/addons/postprocessing/GTAOPass.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { heatRGB } from './heat.js';
 import { SLOT } from './config.js';
 
@@ -264,6 +268,13 @@ export function createScene(container, handlers) {
   sun.shadow.mapSize.set(2048, 2048); sun.shadow.bias = -0.0004; sun.shadow.normalBias = 0.02;
   scene.add(sun, sun.target);
 
+  // Oclusión ambiental (GTAO) solo en calidad Alta: contacto entre piezas, rincones y bajo los pallets.
+  const composer = new EffectComposer(renderer), gtao = new GTAOPass(scene, camera, 2, 2);
+  gtao.updateGtaoMaterial({ radius: 0.45, distanceExponent: 1.4, thickness: 1.2, scale: 1.0, samples: 12 });
+  gtao.updatePdMaterial({ lumaPhi: 10, depthPhi: 2, normalPhi: 3, radius: 6, rings: 2, samples: 12 });
+  gtao.blendIntensity = 0.85;
+  composer.addPass(new RenderPass(scene, camera)); composer.addPass(gtao); composer.addPass(new OutputPass());
+  let useAO = true;
   const labels = document.createElement('div'); labels.className = 'labels3d'; container.appendChild(labels);
   const S = {
     layers: { heat: true, flow: false, sensors: false, pallets: true, slice: true }, view: '3d', level: 1, sel: null, tween: null, fanAngle: 0, condAngle: 0, t: 0, quality: 'high',
@@ -1328,7 +1339,7 @@ export function createScene(container, handlers) {
       if (tw.t >= 1) S.tween = null;
     }
     controls.update();
-    renderer.render(scene, camera);
+    if (useAO && S.quality === 'high') composer.render(dtR); else renderer.render(scene, camera);
   }
 
   // Tiras de la cortina: péndulo amortiguado por tira; el flujo de la puerta y el montacargas las desplazan.
@@ -1448,6 +1459,7 @@ export function createScene(container, handlers) {
     const w = container.clientWidth, h = container.clientHeight;
     renderer.setSize(w, h, false); renderer.domElement.style.width = w + 'px'; renderer.domElement.style.height = h + 'px';
     camera.aspect = w / Math.max(1, h); camera.updateProjectionMatrix();
+    composer.setPixelRatio(renderer.getPixelRatio()); composer.setSize(w, h);
   }
   new ResizeObserver(resize).observe(container);
 
@@ -1455,6 +1467,7 @@ export function createScene(container, handlers) {
     build, update, setView, setLayers, setLevel, setQuality, select, setSlice, sampleT,
     sliceInfo: () => (W3 && W3.sl.info ? { ...W3.sl.info } : null),
     get view() { return S.view; }, get layers() { return S.layers; }, get slice() { return { ...S.slice }; },
+    setAO(on) { useAO = !!on; }, get ao() { return useAO; },
     get renderer() { return renderer; }, get camera() { return camera; }, get controls() { return controls; },
   };
 }
