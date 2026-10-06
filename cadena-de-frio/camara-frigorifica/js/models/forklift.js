@@ -631,9 +631,11 @@ export class ForkliftDriver {
     if (cmd.active && cmd.path && cmd.path.length > 1) {
       const key = keyOf(cmd.path);
       if (key !== this.key) {
-        this.key = key; this.sim = { path: new Path2(cmd.path, 1.2), rev: false }; this.sPrev = null; this.vT = 0;
-        const st = this._poseOn(this.sim, 0), far = Math.hypot(st.x - this.pose.x, st.z - this.pose.z) > 0.3 || Math.abs(wrapAngle(st.h - this.pose.h)) > 0.25;
-        this.sApproach = 0; if (far) this._startLegs(planRoute(this.pose, st), 'approach'); else { this.mode = 'follow'; this.track = this.sim; this.s = 0; this.u = 0; this.a = 0; }
+        // Ruta nueva: se engancha en la pose de la consigna actual (cmd.s), lo que permite encadenar tramos de avance y
+        // marcha atrás (maniobras en K) sin replanificar; si la máquina está lejos, primero se aproxima.
+        this.key = key; this.sim = { path: new Path2(cmd.path, cmd.radius ?? 1.2), rev: false }; this.sPrev = null; this.vT = 0;
+        const s0 = clamp(cmd.s || 0, 0, this.sim.path.length), st = this._poseOn(this.sim, s0), far = Math.hypot(st.x - this.pose.x, st.z - this.pose.z) > 0.3 || Math.abs(wrapAngle(st.h - this.pose.h)) > 0.25;
+        this.sApproach = s0; if (far) this._startLegs(planRoute(this.pose, st), 'approach'); else { this.mode = 'follow'; this.track = this.sim; this.s = s0; this.u = 0; this.a = 0; }
       }
       const L = this.sim.path.length, sT = clamp(cmd.s || 0, 0, L);
       const raw = this.sPrev === null ? 0 : (sT - this.sPrev) / Math.max(dt, 1e-3); this.sPrev = sT;

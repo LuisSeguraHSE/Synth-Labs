@@ -37,7 +37,19 @@ camara-frigorifica/
     ├── alarms.js       alarmas por reglas con retardo, causa probable, impacto y acción sugerida
     ├── explain.js      «¿Qué está pasando?», causa dominante y consecuencias de cada cambio
     ├── sim.js          orquestador de paso fijo (1 s) + corrida sin interfaz para A/B
-    ├── scene3d.js      MOTOR VISUAL 3D: sala, puerta, evaporador, racks, pallets, montacargas, mapa térmico, flujo, sensores
+    ├── scene3d.js      MOTOR VISUAL 3D: arma la escena con los modelos, mapa térmico, corte, flujo, sensores, vistas y calidad
+    ├── logistics.js    logística visual del ingreso (camión, plataforma, transpaleta, montacargas, transelevadores) y operarios
+    └── models/         modelos 3D de alto detalle (procedurales, sin archivos externos); preview.html?m=<módulo> los muestra
+        ├── kit.js        geometría (bisel, revolución, neumáticos), texturas/normales procedurales, materiales PBR, Path2,
+        │                 resortes, smoothDamp, perfiles de velocidad
+        ├── storage.js    rack selectivo (puntal perforado, largueros, arriostres, deck), tarima, cartón impreso, film,
+        │                 esquineros, panel sándwich, zócalo, cam-locks, colgadores, piso epoxi, sumideros
+        ├── equipment.js  evaporador (ventiladores con inercia, escarcha, desescarche con goteo), unidad condensadora,
+        │                 puerta corrediza con perfil de motor y cortina de tiras (péndulos)
+        ├── forklift.js   montacargas contrapesado con operador; conductor cinemático con aceleración y sobreaceleración
+        ├── truck.js      camión frigorífico con suspensión, puertas, plataforma elevadora retráctil y maniobra de atraque
+        ├── person.js     operario articulado con EPP, marcha con pies anclados (IK) y acciones
+        └── handling.js   transelevador de pasillo estrecho, transpaleta manual y estación P&D
     ├── charts.js       gráfico temporal (temperaturas y potencias), cursor compartido, marcadores de eventos
     ├── heat.js         escala térmica semántica única (azul frío · verde normal · amarillo caliente · rojo crítico)
     ├── lessons.js      laboratorio guiado paso a paso
@@ -83,26 +95,27 @@ y perfiles de uso con datos de sensores.
   todo como mapa de calor cenital, sigue al nivel elegido y muestra racks, pallets cortados, evaporador y puerta. Al pasar
   el cursor se lee la temperatura interpolada del punto; al hacer clic, su detalle. Es una visualización del modelo
   por zonas, no una medición.
-- **Nivel de detalle:** entorno exterior (asfalto con demarcación vial, bahía del camión, cebra, zona achurada, vereda
-  perimetral, bolardos, marquesina con canaleta y foco, cantoneras y remates de panel); paneles con juntas, micro-nervado,
-  tapas de cam-lock y zócalo sanitario; sumideros con rejilla, cintas antideslizantes y flechas; luminarias LED estancas con
-  difusor y colgantes; bandeja portacables con cables y derivación al evaporador; líneas frigoríficas con codos (succión
-  con aislamiento Armaflex, líquido de cobre con filtro deshidratador y visor, pasamuros, soportes con abrazaderas) y drenaje
-  con resistencia; evaporador con venturis, rejillas de aros y radios, curvas de retorno del serpentín, colectores, válvula
-  de expansión, distribuidor, resistencia de bandeja, caja de conexiones y placa; unidad condensadora con serpentín
-  aleteado, rejilla de ventilador, compartimiento con malla (compresor scroll, recibidor, acumulador), válvulas de servicio,
-  tablero eléctrico y seccionador; puerta con tirador, visor enmarcado, burletes, carros, cortina de tiras que oscilan por
-  separado y se apartan al paso del montacargas; racks con etiquetas de ubicación, placas de carga, protectores de columna,
-  pernos de anclaje y protector de cabecera; pallets con tarima, 36 cartones, film con brillo, esquineros, hoja superior y
-  etiqueta (los cartones exteriores muestran la temperatura de superficie y los interiores la de núcleo); sensores con
-  caja ventilada, vaina, cable y LED; seguridad (extintor, pulsador de incendio, salida luminosa, apertura de emergencia,
-  alarma de hombre atrapado, luz de emergencia, estación de EPP); termómetro de pared y registrador circular con datos
-  reales; montacargas con faros, cadenas y punto azul de seguridad; camión con plataforma elevadora, luces, calzas y
-  rotulado. Texturas generadas en canvas (sin archivos externos), señalética en un atlas, repeticiones en `InstancedMesh`
-  y piezas estáticas fusionadas por material.
-- **Calidad gráfica:** *Alta* (sombras suaves, reflejos de entorno, film de pallets y todo el detalle fino) o *Media* para
-  equipos modestos (omite el detalle fino y recalcula el corte 2 veces por segundo); baja sola a Media si no se sostienen
-  ~25 FPS.
+- **Nivel de detalle:** todos los objetos salen de `js/models/` (geometría procedural de detalle real: perfiles de chapa,
+  biseles, pernos, perforaciones por *alphaMap*, mapas normales generados en canvas). Envolvente vista como «casa de
+  muñecas»: la cara interior del panel sándwich (micro-nervado, juntas cada 1,2 m) es opaca y la que mira a la cámara se
+  descarta, con piel exterior translúcida; zócalo sanitario, cam-locks y colgadores; piso epoxi con sumideros y bandas
+  antideslizantes. Racks con puntales perforados reales, largueros escalonados con conectores y pasadores, arriostres,
+  deck de malla, protectores y placas de carga; el bastidor mide `palletD − 0,2 m` para que el pallet apoye en ambos
+  largueros (nivel 0 sobre un larguero bajo a 0,15 m). Pallets: tarima de bloques, 36 cartones impresos, film, esquineros,
+  hoja superior y etiqueta. El cartón se ve impreso; con la capa **Mapa térmico** se tiñe por temperatura (exteriores =
+  superficie, interiores = núcleo) y sin ella solo queda un tinte leve.
+- **Animación realista:** la escena reproduce el ingreso que decide el simulador con un retardo fijo (110 s; 138 s si la
+  puerta se abre solo al paso de cada pallet) para que el camión llegue: atraque en marcha atrás guiado por un señalista,
+  apertura de puertas, plataforma elevadora que se despliega, operario con transpaleta que saca cada pallet, baja con la
+  plataforma y escanea la etiqueta; montacargas que lo toma con una maniobra en K y lo deja en la estación **P&D** frente a
+  la puerta (la cortina de tiras se aparta a su paso); un **transelevador** por pasillo lo toma lateralmente y lo ubica.
+  Los pasillos (~1,5 m entre pallets) y la franja junto a la puerta (~1,3 m) no admiten el giro de un montacargas, por eso
+  el almacenamiento interior es automático. Un técnico hace rondas exteriores y revisa la condensadora (condensador sucio,
+  refrigeración cortada) o entra al evaporador (falla, desescarche) solo con la puerta abierta; un supervisor recorre el
+  patio con su tableta. A ×20/×100 todo se posiciona directamente sobre su trayectoria.
+- **Calidad gráfica:** *Alta* (oclusión ambiental GTAO, sombras suaves, reflejos de entorno, film de pallets, técnico y
+  supervisor, todo el detalle fino) o *Media* para equipos modestos (sin GTAO ni sombras, omite el detalle fino y a esos dos
+  operarios, recalcula el corte 2 veces por segundo); baja sola a Media si no se sostienen ~25 FPS.
 - **Causa → efecto:** banner de puerta (kW, tiempo, kWh), «¿Por qué cambió la temperatura?», diagrama de balance,
   consecuencias al mover un control, «¿Qué está pasando?» por reglas, controles bloqueados según el contexto.
 - **Gráfico temporal:** aire / superficie / núcleo con setpoint y límite de alarma, y un segundo panel de
@@ -131,5 +144,10 @@ y perfiles de uso con datos de sensores.
 - **Ciclo frigorífico completo:** sustituir `evaporator()` en `refrigeration.js` por un modelo de compresor +
   condensador + válvula que devuelva los mismos campos (`Q`, `Qs`, `Qlat`, `Tevap`, `Tsup`, `cop`).
 - **Más zonas:** `GRID` en `config.js` (la advección asume 2 niveles).
+- **Nuevo modelo 3D:** crear `js/models/<nombre>.js` que importe de `kit.js` (geometrías cacheadas, `materials()`,
+  `mergeT` para fusionar por material y reducir draw calls) y exporte una fábrica `create…()` → `{ group, rig/update }`
+  más `demo(scene)` para verlo en `js/models/preview.html?m=<nombre>`. En `scene3d.js` se agrega en `build()` y se anima
+  en `update()` leyendo `st`/`p` (solo lectura). Lo repetido va en `InstancedMesh`; el detalle fino, en el grupo `hi`
+  (oculto en calidad Media). Comportamientos con varias piezas que se coordinan van en `logistics.js`.
 
 Fuera de alcance del MVP: CFD, psicrometría avanzada, refrigerante, mantenimiento predictivo, MPC, múltiples cámaras e IoT real.

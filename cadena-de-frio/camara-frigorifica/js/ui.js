@@ -244,7 +244,7 @@ export function initUI(app) {
     const what = lay.slice ? 'corte térmico interpolado' : 'aire por zona';
     $('heatLegend').innerHTML = `<b>Mapa térmico</b> · ${what} (°C) · <span id="legTime"></span><div class="ramp" style="background:linear-gradient(90deg,${grad})"></div>` +
       `<div class="ticks"><span>${p.sp - 2}° frío</span><span>${p.sp}° normal</span><span>caliente</span><span>${p.sp + p.alarmOffset}° crítico</span></div>` +
-      `<div class="muted">Pallets: color = temperatura de núcleo${lay.heat ? ' · cajas = aire por zona' : ''}</div>` +
+      (lay.heat ? `<div class="muted">Pallets: cartones teñidos por temperatura (exteriores = superficie, interiores = núcleo) · cajas = aire por zona</div>` : `<div class="muted">Pallets: cartón impreso con leve tinte térmico · activa «Mapa térmico» para teñirlos por temperatura</div>`) +
       (lay.slice ? `<div class="lgs"><b>Corte ${sl.mode === 'h' ? 'horizontal' : 'longitudinal'}</b> · <span id="legSlice"></span>` +
         `<div class="muted" title="Interpolación entre las ${app.sim.R.n} zonas del modelo + chorro del evaporador, puerta abierta y pallets (dentro de la carga: de superficie a núcleo)"><i class="iso"></i>isoterma <i class="iso lim"></i>límite · ▲ máx · cursor = °C</div></div>` : '');
   }

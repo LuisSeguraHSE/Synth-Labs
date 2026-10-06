@@ -357,8 +357,7 @@ function build(o) {
     B.p(M.refl, rbox(0.01, 0.05, 0.07, 0.004), T(XR - 0.008, 0.66, s * 1.12));
   }
   B.p(M.plate, new THREE.PlaneGeometry(0.4, 0.2).rotateY(-PI / 2), T(XR - 0.01, 0.8, 0)); B.p(M.black, box(0.01, 0.22, 0.42), T(XR - 0.004, 0.8, 0)); B.p(M.markerW, box(0.02, 0.015, 0.06), T(XR - 0.015, 0.915, 0));
-  for (let i = 0; i < 12; i++) B.p(i % 2 ? M.refl : M.red, box(0.1, 0.12, 2.3 / 12), T(XR + 0.06, 0.48, -1.15 + (i + 0.5) * (2.3 / 12)));
-  for (const s of [-1, 1]) B.p(M.chassis, box(0.06, 0.3, 0.06), T(XR + 0.12, 0.66, s * 0.42));
+  // (la barra antiempotramiento va integrada en la plataforma elevadora)
 
   // ===== EQUIPO DE FRÍO (frontal de la caja) =====
   const UY = 3.4;
@@ -423,9 +422,78 @@ function build(o) {
   };
   mkWheel(WB, TF, true); mkWheel(WB, -TF, true); mkWheel(0, (TRO + TRI) / 2, false, true); mkWheel(0, -(TRO + TRI) / 2, false, true);
 
+
+  // ===== PLATAFORMA ELEVADORA TRASERA RETRÁCTIL (bajo chasis, 1,5 t) =====
+  // Carro deslizante sobre dos rieles bajo la caja; brazos de elevación en paralelogramo con cilindros; plataforma de
+  // 1,8 × 2,3 m de chapa estriada con un tramo plegable (se pliega encima para guardarla); banderines y balizas LED.
+  const tl = buildTailLift(M, bodyIn);
   C.build(cabIn, bendCab); B.build(bodyIn); U.build(unsprung);
   root.traverse((m) => { if (m.isMesh && m.material.transparent) m.castShadow = false; });
-  return { root, body, cab, unsprung, doors, rods, wheels, fan, propSpin, M };
+  return { root, body, cab, unsprung, doors, rods, wheels, fan, propSpin, M, tl };
+}
+
+
+// ---------------------------------------------------------------- Plataforma elevadora (geometría + cinemática)
+// Coordenadas del camión: la plataforma sale hacia −X (detrás de la caja). P = pivote de los brazos (en el carro),
+// H = bisagra de la plataforma (borde del lado del camión, a nivel de la cara superior). TL.top(lift) da la altura.
+export const TL = { LA: 0.75, PY: 0.56, PXD: XR + 0.32, PXS: XR + 1.9, DEPTH: 1.8, FOLD: 0.9, WID: 2.3, T: 0.06 };
+function buildTailLift(M, parent) {
+  const g = new THREE.Group(); g.name = 'plataforma'; parent.add(g);
+  const F = new Bin();
+  for (const s of [-1, 1]) { F.p(M.chassis, box(1.8, 0.09, 0.07), T(XR + 1.1, 0.68, s * 0.55)); for (const x of [XR + 0.3, XR + 1.95]) F.p(M.chassis, box(0.08, 0.32, 0.06), T(x, 0.86, s * 0.55)); }
+  F.p(M.black, rbox(0.16, 0.22, 0.09, 0.015), T(XR + 0.42, 1.0, HW + 0.05)); // botonera de mando lateral
+  F.p(M.red, cyl(0.02, 0.02, 0.02, 12).rotateX(PI / 2), T(XR + 0.38, 1.05, HW + 0.1)); F.p(M.markerW, cyl(0.016, 0.016, 0.02, 12).rotateX(PI / 2), T(XR + 0.46, 1.05, HW + 0.1));
+  F.p(M.black, polyTube([[XR + 0.42, 0.89, HW + 0.05], [XR + 0.5, 0.75, HW - 0.1], [XR + 0.6, 0.7, 0.6]], 0.008, 5));
+  F.build(g);
+  const slide = new THREE.Group(); slide.position.set(TL.PXS, TL.PY, 0); g.add(slide);
+  const S = new Bin();
+  S.p(M.chassis, cyl(0.05, 0.05, 1.2, 14).rotateX(PI / 2), null);                                          // tubo de pivote
+  for (const s of [-1, 1]) { S.p(M.chassis, box(0.5, 0.06, 0.05), T(0.15, 0.08, s * 0.55)); S.p(M.steel, box(0.1, 0.1, 0.08), T(0.36, 0.1, s * 0.55)); }
+  S.p(M.chassis, box(0.12, 0.3, 1.2), T(0.25, -0.02, 0));                                                   // grupo hidráulico
+  S.build(slide);
+  const arms = [], cyls = [];
+  for (const s of [-1, 1]) {
+    const a = new THREE.Group(); a.position.set(0, 0, s * 0.5); slide.add(a); const A = new Bin();
+    A.p(M.chassis, box(TL.LA, 0.08, 0.06), T(-TL.LA / 2, 0, 0)); A.p(M.steel, cyl(0.035, 0.035, 0.09, 12).rotateX(PI / 2), T(-TL.LA, 0, 0)); A.build(a); arms.push(a);
+    const barrel = new THREE.Mesh(cyl(0.035, 0.035, 0.36, 12), M.chassis), rod = new THREE.Mesh(cyl(0.018, 0.018, 1, 10), M.chrome);
+    barrel.castShadow = rod.castShadow = true; slide.add(barrel, rod); cyls.push({ s, barrel, rod });
+  }
+  const plat = new THREE.Group(); g.add(plat);
+  const P = new Bin(), hw = TL.WID / 2, Lin = TL.DEPTH - TL.FOLD;
+  P.p(M.tread, box(Lin, TL.T, TL.WID), T(-Lin / 2, -TL.T / 2, 0));
+  P.p(M.red, box(0.04, 0.012, TL.WID), T(-0.02, 0.003, 0));
+  P.build(plat);
+  const flap = new THREE.Group(); flap.position.set(-Lin, 0, 0); plat.add(flap);
+  const Fp = new Bin();
+  Fp.p(M.tread, box(TL.FOLD, TL.T, TL.WID), T(-TL.FOLD / 2, -TL.T / 2, 0));
+  for (const s of [-1, 1]) { Fp.p(M.red, box(TL.FOLD, 0.008, 0.06), T(-TL.FOLD / 2, 0.002, s * (hw - 0.03))); Fp.p(M.refl, box(0.03, TL.T + 0.01, 0.3), T(-TL.FOLD + 0.015, -TL.T / 2, s * (hw - 0.2))); }
+  Fp.p(M.red, box(0.03, 0.012, TL.WID), T(-TL.FOLD + 0.03, 0.003, 0));
+  Fp.p(M.chassis, box(0.03, 0.035, TL.WID - 0.3), T(-TL.FOLD + 0.015, 0.0175, 0));                       // tope antirrodadura (rollstop)
+  Fp.build(flap);
+  const flags = []; for (const s of [-1, 1]) { // banderines de señalización en las esquinas exteriores + LED ámbar
+    const f = new THREE.Group(); f.position.set(-TL.FOLD + 0.06, 0, s * (hw - 0.06)); flap.add(f); const B2 = new Bin();
+    B2.p(M.chassis, cyl(0.012, 0.012, 0.5, 8), T(0, 0.25, 0)); B2.p(M.red, box(0.004, 0.22, 0.3), T(0, 0.38, -s * 0.15)); B2.p(M.refl, box(0.005, 0.07, 0.3), T(0, 0.38, -s * 0.15)); B2.p(M.indR, rbox(0.03, 0.03, 0.06, 0.008), T(0, 0.52, 0)); B2.build(f); flags.push(f);
+  }
+  g.traverse((m) => { if (m.isMesh) { m.castShadow = true; m.receiveShadow = true; } });
+  return { g, slide, arms, cyls, plat, flap, flags, deploy: 0, lift: 0 };
+}
+// Ángulo de brazo para una altura de plataforma (cara superior) y = PY + LA·sin φ
+const tlPhi = (y) => Math.asin(clamp((y - TL.PY) / TL.LA, -0.99, 0.99));
+function poseTailLift(t, deploy, lift) {
+  const d = clamp(deploy, 0, 1), sl = smootherstep(d / 0.4), uf = smootherstep((d - 0.4) / 0.3), lw = smootherstep((d - 0.7) / 0.3);
+  const phiS = tlPhi(TL.PY), phiL = tlPhi(lerp(TL.T, FL, clamp(lift, 0, 1))), phi = lerp(phiS, phiL, lw);
+  t.slide.position.x = lerp(TL.PXS, TL.PXD, sl); t.slide.visible = true;
+  for (const a of t.arms) a.rotation.z = -phi; // el brazo apunta hacia −X; φ > 0 sube la bisagra
+  const hx = t.slide.position.x - TL.LA * Math.cos(phi), hy = TL.PY + TL.LA * Math.sin(phi);
+  t.plat.position.set(hx, hy, 0); t.flap.rotation.z = -PI * (1 - uf) * 0.995; // se despliega pasando por arriba
+  for (const f of t.flags) f.visible = uf > 0.9;
+  for (const c of t.cyls) { // cilindro: del carro (0.3, −0.12) a la mitad del brazo
+    const A = new THREE.Vector3(0.3, -0.13, c.s * 0.38), Bp = new THREE.Vector3(-TL.LA * 0.55 * Math.cos(phi), TL.LA * 0.55 * Math.sin(phi), c.s * 0.38), d2 = Bp.clone().sub(A), L = d2.length(), u = d2.clone().normalize();
+    const q = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), u);
+    c.barrel.quaternion.copy(q); c.barrel.position.copy(A).addScaledVector(u, 0.18);
+    const rl = Math.max(0.05, L - 0.3); c.rod.quaternion.copy(q); c.rod.scale.y = rl; c.rod.position.copy(Bp).addScaledVector(u, -rl / 2);
+  }
+  t.deploy = d; t.lift = lift; t.top = hy; t.hx = hx;
 }
 
 // ---------------------------------------------------------------- Rig animado (suspensión, ruedas, puertas, luces, equipo de frío)
@@ -438,6 +506,7 @@ export class TruckRig {
     this.doorT = 0; this.fanW = 0; this.engine = true; this.reefer = true; this.lightsOn = true;
     this.gear = 'D'; this.indicate = 0; this.hazard = false; this.holdBrake = false; this.brake = false; this.reversing = false; this.beeper = false; this.beep = false;
     this.override = {}; // p.ej. { brake: true } fuerza una luz
+    poseTailLift(this.tl, 0, 0);
   }
   // Pose del centro del eje trasero en el suelo. steer (opcional) = ángulo de bicicleta de la dirección; snap = teletransporte.
   setPose(x, z, heading, steer, snap = false) {
@@ -448,6 +517,10 @@ export class TruckRig {
     this.group.position.set(x, 0, z); this.group.rotation.y = -heading;
   }
   setDoors(t) { this.doorT = clamp(t, 0, 1); }
+  // Plataforma elevadora: deploy 0 (guardada bajo el chasis) … 1 (desplegada); lift 0 (suelo) … 1 (nivel del piso de carga).
+  // this.platform = Object3D en la bisagra (cara superior, borde del camión); su −X local apunta hacia fuera del camión.
+  setTailLift(deploy, lift) { this.tlMoving = Math.abs(deploy - this.tl.deploy) + Math.abs(lift - this.tl.lift) > 1e-5; poseTailLift(this.tl, deploy, lift); }
+  get platform() { return this.tl.plat; }
   get doorsOpen() { return this.doorT >= 0.999; }
   update(dt) {
     if (!(dt > 0)) return; this.time += dt;
@@ -490,6 +563,7 @@ export class TruckRig {
     const li = ov.left ?? ((this.hazard || this.indicate < 0) && blink), ri = ov.right ?? ((this.hazard || this.indicate > 0) && blink);
     L.indL.emissiveIntensity = li ? 2.6 : 0; L.indR.emissiveIntensity = ri ? 2.6 : 0;
     set(L.interior, t > 0.08 ? 1.8 : 0); L.display.emissiveIntensity = this.reefer ? 1.2 : 0.05;
+    if (this.tl.deploy > 0.05 && !(ri || li)) L.indR.emissiveIntensity = Math.max(L.indR.emissiveIntensity, blink && this.tlMoving ? 2.2 : 0);
   }
 }
 
@@ -593,6 +667,12 @@ export class TruckDriver {
       }
     }
   }
+  // Salto directo al estado atracado (simulación acelerada): puertas abiertas, motor en ralentí, freno puesto.
+  snapDocked() {
+    const R = this.rig; this.u = this.uDock; this.w = 0; this.th = 0; this.v = 0; this.steer = 0; this.doorT = 1; this.state = 'docked'; this.timer = 5; this.docked = true; this.progress = 1;
+    this.path = new Path2([[this.u + 8, 0], [this.u, 0]], 1); this.s = this.path.length; R.group.visible = true; R.engine = true; R.gear = 'N'; R.setPose(...this._world(), 0, true);
+  }
+  snapAway() { const R = this.rig; this.state = 'away'; this.docked = false; this.progress = 0; this.doorT = 0; this.v = 0; R.group.visible = false; R.engine = false; }
   _world() { const H = this.dock.heading, c = Math.cos(H), s = Math.sin(H); return [this.dock.x + this.u * c - this.w * s, this.dock.z + this.u * s + this.w * c, H + this.th]; }
   update(dt, { wantDocked = false } = {}) {
     if (!(dt > 0)) return; let left = Math.min(dt, 0.25);
@@ -621,6 +701,10 @@ export function demo(scene) {
   for (const [w, h, d, x, y, z] of [[0.3, 4.5, 4.75, 0.15, 2.25, -3.625], [0.3, 4.5, 4.75, 0.15, 2.25, 3.625], [0.3, 1.5, 2.5, 0.15, 3.75, 0]]) { const m = new THREE.Mesh(box(w, h, d), wm); m.position.set(x, y, z); m.castShadow = m.receiveShadow = true; wall.add(m); }
   for (const z of [-0.82, 0.82]) { const m = new THREE.Mesh(rbox(0.12, 0.25, 0.3, 0.03), K.rubber); m.position.set(-0.06, 0.95, z); wall.add(m); }
   for (const z of [-1.6, 1.6]) { const m = new THREE.Mesh(box(12, 0.01, 0.12), K.paintYellow); m.position.set(-6, 0.006, z); wall.add(m); }
+  if (q.has('tl')) { // camión estático con la plataforma: ?tl=deploy,lift
+    const { rig } = T0, [dp, lf] = q.get('tl').split(',').map(Number); wall.visible = false; rig.group.visible = true; rig.setPose(0, 0, 0, 0, true); rig.setDoors(1); rig.setTailLift(dp, lf || 0);
+    return (dt) => { rig.update(dt); };
+  }
   if (q.has('door')) {
     const { rig } = T0; wall.visible = false; rig.group.visible = true; rig.setPose(0, 0, 0, +(q.get('steer') || 0), true); rig.setDoors(+q.get('door')); rig.gear = 'D';
     return (dt) => { rig.setPose(0, 0, 0, +(q.get('steer') || 0)); rig.update(dt); };
